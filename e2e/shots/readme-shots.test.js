@@ -18,6 +18,12 @@ const OUT = process.env.ARCALO_MAIL_SHOTS ?? path.resolve(import.meta.dirname, "
 const ONLY = process.env.ARCALO_MAIL_SCENES?.split(",") ?? null;
 const scene = (name, fn) => test(name, { skip: Boolean(ONLY && !ONLY.includes(name)) }, fn);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// No proxy of the machine that makes the pictures shows up in Settings → Network (the app gets
+// this process's environment).
+for (const k of ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"]) {
+  delete process.env[k];
+  delete process.env[k.toLowerCase()];
+}
 const ENV = { ARCALO_MAIL_NOW: String(NOW), TZ: "Europe/London" };
 
 let work, personal, app, dataDir;
@@ -72,6 +78,31 @@ scene("setup", async () => {
   await app.close();
   app = null;
   await work.delay(0);
+});
+
+scene("setup-microsoft", async () => {
+  // Signing in with Microsoft: the app waits for the browser (nobody follows the address here).
+  app = await launch({ locale: "en-GB", env: { ...ENV, ...work.microsoftEnv() } });
+  await app.fill(".setup-fields input[autocomplete=name]", "Emma Larsen");
+  await app.fill(".setup-fields input[type=email]", "emma@northwind.example");
+  await clickText(".setup-other .btn", "Sign in with Microsoft");
+  await app.waitFor(".setup-microsoft .setup-progress");
+  await app.browser.execute(() => document.activeElement?.blur());
+  await shot("setup-microsoft");
+  await app.close();
+  app = null;
+});
+
+scene("setup-gmail", async () => {
+  // A Gmail address: the guide to an app password.
+  app = await launch({ locale: "en-GB", env: ENV });
+  await app.fill(".setup-fields input[autocomplete=name]", "Emma Larsen");
+  await app.fill(".setup-fields input[type=email]", "name@gmail.com");
+  await app.waitFor(".guide");
+  await app.browser.execute(() => document.activeElement?.blur());
+  await shot("setup-gmail");
+  await app.close();
+  app = null;
 });
 
 scene("inbox", async () => {
@@ -145,6 +176,23 @@ scene("contrast", async () => {
   await openMessage("Photos from the offsite");
   await shot("contrast");
   await setTheme("light");
+});
+
+scene("palette", async () => {
+  await openFolder("Work", "Inbox");
+  await app.keys(["Control", "k"]);
+  await app.waitFor(".palette");
+  await app.type("go");
+  await shot("palette");
+  await app.keys("Escape");
+});
+
+scene("network", async () => {
+  await app.click(".sidebar-head .icon-btn");
+  await app.waitFor(".settings-nav");
+  await clickText(".settings-nav-item", "Network");
+  await shot("network");
+  await app.keys("Escape");
 });
 
 scene("narrow", async () => {

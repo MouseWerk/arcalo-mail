@@ -6,7 +6,7 @@
 
 <p align="center">
   <b>Your mail, on your computer.</b><br>
-  A calm, local-first e-mail app for IMAP and SMTP accounts, from the makers of
+  A calm, local-first e-mail app for IMAP/SMTP, Microsoft 365, Outlook.com, Gmail and JMAP accounts, from the makers of
   <a href="https://arcalo.mousewerk.de">Arcalo</a>. No telemetry, remote images blocked until you load them.
 </p>
 
@@ -25,6 +25,9 @@ Arcalo Mail keeps a copy of your mailboxes on your computer and works on that co
 answers while you type, and reading, archiving, flagging and writing go on without a connection. Changes reach the
 server in the background, in order, as soon as it can be reached. The app talks to your mail provider and nothing
 else.
+
+It works with any IMAP/SMTP provider, signs in to Microsoft 365 and Outlook.com with Microsoft (no password in the
+app), guides you to a Gmail app password, and speaks JMAP where the provider offers it (Fastmail and others).
 
 It speaks English and German and follows your system's language unless you choose one.
 
@@ -78,24 +81,65 @@ server" asks the server and adds what it finds.
 ### Adding an account
 
 Enter your name, address and password. Arcalo Mail looks up the servers itself: presets for common providers (GMX,
-WEB.DE, T-Online, mailbox.org, Posteo, iCloud, IONOS, STRATO, Gmail, Yahoo and others), the provider's own
-autoconfig file, the Thunderbird provider database and DNS records. Then it signs in to both servers and says
-plainly what went wrong if something did: a wrong password, a provider that wants an app password or IMAP switched
-on first, an unknown certificate (with its fingerprint to compare and trust), a server that does not answer.
-Everything can also be set up by hand.
+WEB.DE, T-Online, mailbox.org, Posteo, iCloud, IONOS, STRATO, Gmail, Fastmail, Yahoo and others), the provider's
+own autoconfig file, the Thunderbird provider database, DNS records and JMAP at the provider's well-known address.
+Then it signs in and says plainly what went wrong if something did: a wrong password, a provider that wants an app
+password or IMAP switched on first, an unknown certificate (with its fingerprint to compare and trust), a server
+that does not answer. Everything can also be set up by hand, IMAP/SMTP or JMAP.
 
 <p align="center">
   <img src="docs/screenshots/setup.png" alt="The first start: adding an account while the servers found in the provider's autoconfig file are checked" width="100%">
 </p>
 
+### Microsoft 365 and Outlook.com
+
+Microsoft accounts sign in with Microsoft: Arcalo Mail opens Microsoft's sign-in page in your browser, you sign in
+there and allow access to your mail, and the app continues on its own. Your password never reaches the app; it
+keeps a sign-in token in your system's credential store and uses IMAP and SMTP with OAuth (XOAUTH2). Addresses at
+outlook.com, hotmail.com and live.com go there directly, Microsoft 365 domains are recognized by their mail
+servers, and the button works for any other. When an organization has not approved the app yet, or has switched
+off sending over SMTP for the mailbox, the app says so and what IT can do (details in
+[docs/microsoft.md](docs/microsoft.md)).
+
+<p align="center">
+  <img src="docs/screenshots/setup-microsoft.png" alt="Signing in with Microsoft: the app waits while the sign-in runs in the browser" width="100%">
+</p>
+
+### Gmail
+
+Until signing in with Google arrives, Gmail and Google Workspace work over IMAP with an app password. For a Gmail
+address the setup shows how to make one (2-Step Verification on, then the app passwords of your Google account) and
+opens the page for you. Labels show as folders; All Mail, Starred and Important are not downloaded twice, search
+shows each message once, archiving takes a message out of the inbox, and Gmail files sent mail itself.
+
+<p align="center">
+  <img src="docs/screenshots/setup-gmail.png" alt="A Gmail address in the setup: the steps to create an app password and the button that opens Google's page" width="100%">
+</p>
+
+### JMAP
+
+Where the provider offers JMAP (Fastmail, Stalwart, Cyrus and others), Arcalo Mail uses it instead of IMAP: one
+connection over HTTPS, changes since the last visit in one request, new mail pushed the moment it arrives. It signs
+in with the password (or app password) or an API token. A JMAP account behaves like any other: offline, search,
+the outbox, undo.
+
 ### Settings, themes and small windows
 
 Settings apply at once: accounts with their name, sender name, signature and servers; a light, dark, high-contrast
-or the system's theme; conversations and preview lines; notifications for new mail; remote images and the senders
-you trust. The layout holds up from 900 pixels wide.
+or the system's theme; conversations and preview lines; what is downloaded ahead; notifications for new mail;
+remote images and the senders you trust; proxy profiles. `Ctrl+K` (`Cmd+K` on a Mac) opens the command palette:
+every command and every folder, a few keys away. The layout holds up from 900 pixels wide.
 
 <p align="center">
   <img src="docs/screenshots/settings.png" alt="Settings, appearance: theme, language, conversations and preview lines" width="100%">
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/network.png" alt="Settings, network: the standard profile uses the system's proxy; which profile each kind of connection takes" width="100%">
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/palette.png" alt="The command palette: commands and the folders of both accounts" width="100%">
 </p>
 
 <p align="center">
@@ -108,27 +152,35 @@ you trust. The layout holds up from 900 pixels wide.
 
 ## Features
 
-- **Accounts:** any IMAP/SMTP provider; TLS or STARTTLS, password sign-in; several accounts side by side, each with
-  its own connection.
-- **Sync:** new mail through IMAP IDLE; only what changed since the last visit where the server supports QRESYNC or
-  CONDSTORE; folder roles from the server (Inbox, Drafts, Sent, Archive, Spam, Trash); reconnects with growing
-  pauses while the network is gone.
+- **Accounts:** any IMAP/SMTP provider with TLS or STARTTLS; Microsoft 365 and Outlook.com with Microsoft sign-in
+  (OAuth 2.0 with PKCE, XOAUTH2); Gmail and Google Workspace with an app password; JMAP with push. Several accounts
+  side by side, each with its own connection.
+- **Sync:** new mail through IMAP IDLE or JMAP push; only what changed since the last visit where the server supports
+  QRESYNC, CONDSTORE or JMAP changes; folder roles from the server (Inbox, Drafts, Sent, Archive, Spam, Trash);
+  reconnects at once after sleep or a network change, and with growing pauses while the network is gone.
+- **Network:** proxy profiles as in Arcalo (none, the system's, or an HTTP or SOCKS5 proxy with exceptions), chosen
+  per kind of connection: mail servers, sign-in, the setup's lookups.
 - **Offline:** reading, searching and every action work without a connection; changes and messages wait in the
-  Outbox and go out in order when the server is back. The newest messages of each folder are fetched ahead, large
-  ones and attachments when you open them.
+  Outbox and go out in order when the server is back. The newest messages of each folder (or all of the last 30
+  days) are fetched ahead, large ones and attachments when you open them.
+- **Conversations:** by the reply headers, and replies that lost them by their subject.
 - **Folders:** create, rename and delete folders; move messages by menu or key; spam and archive with one key.
-- **Notifications:** a desktop notification for new mail and the unread count on the app icon.
+- **Notifications:** a desktop notification for new mail, the unread count on the app icon and in the tray, with
+  quick actions there.
+- **Diagnostics:** Settings → About exports a text file for a support request: versions, settings, servers and the
+  recent connection log, without addresses, messages or passwords.
 - **Keyboard and screen readers:** the whole app works with the keyboard, focus stays visible, controls are
   labeled, and there is a high-contrast theme.
 
 ## Privacy
 
 - **Local-first.** Your mail is stored in one SQLite database in your user folder and searched there.
-- **No telemetry.** The app connects only to the mail servers you set up and, while you add an account, to the
-  lookups that find their addresses. No analytics, no crash upload, no server of ours in between.
+- **No telemetry.** The app connects only to the mail servers you set up, Microsoft's sign-in for Microsoft
+  accounts and, while you add an account, to the lookups that find their addresses. No analytics, no crash upload,
+  no server of ours in between.
 - **Remote content blocked.** Images from the internet load only when you say so, for one message or one sender.
-- **Passwords** are kept in your system's credential store (Windows Credential Manager, the macOS keychain, the
-  Secret Service on Linux), never in the database, the settings or a log. On a Linux desktop without a keyring they
+- **Passwords and sign-in tokens** are kept in your system's credential store (Windows Credential Manager, the
+  macOS keychain, the Secret Service on Linux), never in the database, the settings or a log. On a Linux desktop without a keyring they
   go to a file only your user can read, and the settings say so.
 
 ## Platforms
@@ -174,11 +226,17 @@ npm --prefix ui run typecheck && npm --prefix ui test
 npm ci --prefix e2e && e2e/run.sh
 ```
 
-`crates/mail-testserver` is a small IMAP and SMTP server for tests (its options are listed at the top of
-`src/main.rs`); no test talks to a real mail server. The screenshots above come from `cd e2e && npm run shots`,
+`crates/mail-testserver` is a small IMAP, SMTP and JMAP server for tests with an OAuth identity provider (its
+options are listed at the top of `src/main.rs`); no local test talks to a real mail server. In CI a conformance
+job also runs the client against Dovecot and GreenMail containers
+(`cargo test -p mail-testserver --test conformance -- --ignored`, see `tests/conformance.rs`).
+
+A build signs in to Microsoft only with a client id: `ARCALO_MAIL_MS_CLIENT_ID=… cargo tauri build`
+([docs/microsoft.md](docs/microsoft.md)). The screenshots above come from `cd e2e && npm run shots`,
 with made-up people on reserved example domains.
 
-More: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/plan.md](docs/plan.md), [docs/i18n.md](docs/i18n.md).
+More: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/plan.md](docs/plan.md), [docs/microsoft.md](docs/microsoft.md),
+[docs/i18n.md](docs/i18n.md).
 
 ## License
 

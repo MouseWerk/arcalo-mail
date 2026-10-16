@@ -12,6 +12,10 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # The Microsoft (Entra) client id of Arcalo Mail, compiled into the builds below
+  # (docs/microsoft.md). A repository variable, not a secret: public client ids are not secret.
+  # Empty until the owner registered the app; such a build has no Microsoft sign-in.
+  ARCALO_MAIL_MS_CLIENT_ID: ${{ vars.ARCALO_MAIL_MS_CLIENT_ID }}
 
 jobs:
   checks:
@@ -64,6 +68,50 @@ jobs:
         with:
           name: e2e-screenshots
           path: e2e/screenshots
+
+  conformance:
+    name: Conformance against Dovecot and GreenMail
+    runs-on: ubuntu-24.04
+    services:
+      # GreenMail: IMAP without QRESYNC and SMTP that delivers locally; any user signs in.
+      greenmail:
+        image: greenmail/standalone:2.1.14
+        env:
+          GREENMAIL_OPTS: -Dgreenmail.setup.test.all -Dgreenmail.hostname=0.0.0.0 -Dgreenmail.auth.disabled -Dgreenmail.verbose
+        ports:
+          - 3025:3025
+          - 3143:3143
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.94.1
+      - uses: Swatinem/rust-cache@v2
+      # Dovecot 2.4 with QRESYNC, CONDSTORE, MOVE and IDLE: started here because it needs the
+      # configuration file of the checkout (ci/dovecot/ci.conf).
+      - name: Dovecot
+        run: |
+          docker run -d --name dovecot -p 31143:31143 \
+            -e USER_PASSWORD='{PLAIN}conformance' \
+            -v "$PWD/ci/dovecot/ci.conf:/etc/dovecot/conf.d/ci.conf:ro" \
+            dovecot/dovecot:2.4.5
+          for i in $(seq 1 60); do (echo > /dev/tcp/127.0.0.1/31143) 2>/dev/null && break; sleep 1; done
+          for i in $(seq 1 60); do (echo > /dev/tcp/127.0.0.1/3143) 2>/dev/null && break; sleep 1; done
+      - run: cargo test -p mail-testserver --test conformance --no-run
+      - name: Dovecot (QRESYNC)
+        env:
+          ARCALO_MAIL_CONFORMANCE_IMAP: 127.0.0.1:31143
+          ARCALO_MAIL_CONFORMANCE_USER: maria@example.org
+          ARCALO_MAIL_CONFORMANCE_PASSWORD: conformance
+        run: cargo test -p mail-testserver --test conformance -- --ignored --nocapture
+      - name: GreenMail (no QRESYNC, SMTP)
+        env:
+          ARCALO_MAIL_CONFORMANCE_IMAP: 127.0.0.1:3143
+          ARCALO_MAIL_CONFORMANCE_SMTP: 127.0.0.1:3025
+          ARCALO_MAIL_CONFORMANCE_USER: maria@example.org
+          ARCALO_MAIL_CONFORMANCE_PASSWORD: conformance
+        run: cargo test -p mail-testserver --test conformance -- --ignored --nocapture
+      - name: Server logs
+        if: failure()
+        run: docker logs dovecot || true
 
   desktop:
     name: Desktop build (${{ matrix.name }})

@@ -26,10 +26,29 @@ the decisions that are still open. Versions stay 0.x until milestone 1 is done (
 - Tests: core unit tests against the fake server, protocol tests against the test server on loopback, UI tests,
   e2e (setup, reading, writing, search, offline) in CI on Linux, README screenshots from `e2e/shots`.
 
-Left for milestone 1: proxy profiles from Arcalo; reacting to network changes and sleep/wake (now: the backoff
-retries); a setting for how much mail is fetched ahead; subject-based threading for mail without headers; tray
-icon, command palette and the diagnostics package; the signed update feed; a conformance run against Dovecot and
-Greenmail in CI in addition to the own test server.
+Milestone 1 leftovers done in milestone 2: proxy profiles, reconnecting after sleep and network changes, the
+prefetch setting, subject threading, the tray icon, the command palette, the diagnostics export and the
+conformance job against Dovecot and GreenMail. Still open: the signed update feed.
+
+## Where we are (milestone 2, Microsoft, Gmail, JMAP)
+
+- **Microsoft 365 / Outlook.com**: OAuth 2.0 with PKCE in the system browser and a loopback redirect on
+  127.0.0.1, tenant `common`, IMAP and SMTP with XOAUTH2, the refresh token in the credential store and refreshed
+  before expiry and after a refusal, clear errors for admin consent and SMTP AUTH switched off. The client id
+  comes from `ARCALO_MAIL_MS_CLIENT_ID` at build time (a GitHub Actions variable); without it the setup says so
+  and offers IMAP with an app password. Owner steps: [microsoft.md](microsoft.md). Microsoft Graph as a second
+  transport is not built: IMAP and SMTP cover Outlook.com and Microsoft 365 where SMTP AUTH is allowed.
+- **Gmail / Google Workspace**: IMAP with an app password (owner decision), detected by domain or MX, with an
+  in-app guide; All Mail, Starred and Important are not fetched ahead and searched once, archiving goes to All
+  Mail, Gmail files sent mail itself.
+- **JMAP**: discovery through `/.well-known/jmap` and the Fastmail preset, Basic or Bearer, `Mailbox/get` and
+  `changes`, `Email/query`, `get` and `changes`, `Email/set`, `Email/import`, `EmailSubmission/set`, push over
+  EventSource or polling, on the same store and sync engine (`jmap::JmapSession` implements `ImapClient`).
+- **Mobile sign-in (milestone 3)**: the redirect `de.mousewerk.arcalo.mail://oauth` is registered in the Entra app
+  and `oauth.rs` takes it; the platform browser session (Custom Tabs, `ASWebAuthenticationSession`) and the
+  scheme handler are milestone 3 work.
+- Tests: the fake identity provider and JMAP server in the core and the test server, XOAUTH2 over the wire,
+  e2e for the Microsoft sign-in, the Gmail guide, JMAP, folders and bulk actions; conformance in CI.
 
 ## Milestone 1 – desktop, one IMAP/SMTP account
 
@@ -64,7 +83,7 @@ Goal: daily use with one IMAP/SMTP account on Windows, macOS and Linux.
     tray with unread count, notifications for new mail, command palette, keyboard shortcuts, diagnostics package
     without mail content, e2e tests (WebdriverIO + tauri-driver) against the fake server.
 
-## Milestone 2 – OAuth for Microsoft and Google, JMAP
+## Milestone 2 – OAuth for Microsoft and Google, JMAP (done except Google sign-in and Graph)
 
 1. **OAuth 2.0 with PKCE** as a public client (no client secret in the app): the system browser with a loopback
    redirect on desktop (RFC 8252), the platform's auth session on mobile (custom scheme / App Link). Refresh token
