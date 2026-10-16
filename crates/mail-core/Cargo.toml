@@ -1,0 +1,25 @@
+[package]
+name = "mail-core"
+description = "Local-first core of Arcalo Mail: accounts, the local store with full-text search, parsing, HTML sanitizing and the sync engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+# The in-memory IMAP server (`imap::fake`) for tests of other crates (the shell, later e2e helpers).
+fake = []
+
+[dependencies]
+# HTML mail: allow-list sanitizing; remote content is removed unless the user allows it.
+ammonia = "4.1.7"
+mail-parser = "0.11.9"
+# The local store: SQLite with FTS5 (part of the bundled build). Arcalo builds SQLCipher instead;
+# Arcalo Mail switches to `bundled-sqlcipher` when encryption at rest lands (docs/plan.md).
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+thiserror = "2.0.20"
+
+[dev-dependencies]
+tokio = { version = "1.53.1", features = ["rt", "macros"] }

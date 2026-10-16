@@ -1,0 +1,10 @@
+/target/
+/src-tauri/target/
+/src-tauri/gen/
+*.db
+*.db-wal
+*.db-shm
+.DS_Store
+node_modules/
+/ui/dist/
+/e2e/screenshots/

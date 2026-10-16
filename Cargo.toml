@@ -1,0 +1,19 @@
+[workspace]
+resolver = "2"
+members = ["crates/mail-core", "src-tauri"]
+# The Tauri shell needs the platform WebView SDK (WebView2 on Windows, webkit2gtk on Linux), so the
+# headless default build is the core only; CI builds the shell in its own jobs.
+default-members = ["crates/mail-core"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/MouseWerk/arcalo-mail"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+opt-level = 3
