@@ -165,7 +165,7 @@ async fn a_real_server() {
     // Sending, where the server takes mail.
     if let Some(smtp) = &t.smtp {
         let raw = message(&format!("s-{run}@example.org"), &format!("Gesendet {run}"), &t.user);
-        mail_core::smtp::send(smtp, &t.user, &t.password, &t.user, &[t.user.clone()], &raw).await.unwrap();
+        mail_core::smtp::send(smtp, &t.user, &t.password, &t.user, std::slice::from_ref(&t.user), &raw).await.unwrap();
         let deadline = Instant::now() + Duration::from_secs(20);
         loop {
             c.select("INBOX", None).await.unwrap();
