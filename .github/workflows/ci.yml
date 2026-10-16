@@ -37,7 +37,33 @@ jobs:
       # The shell embeds ui/dist at compile time, so clippy needs the built UI.
       - run: npm --prefix ui run build
       - run: cargo clippy --workspace --all-targets -- -D warnings
-      - run: cargo test -p mail-core -p arcalo-mail
+      - run: cargo test -p mail-core -p mail-testserver -p arcalo-mail
+
+  e2e:
+    name: End-to-end tests (Linux)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.94.1
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: System packages (WebKitGTK, WebDriver, Xvfb)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libdbus-1-dev webkit2gtk-driver xvfb x11-utils dbus
+      - run: npm ci --prefix ui
+      - run: cargo install tauri-driver --locked
+      # The app against the IMAP/SMTP test server on the runner (crates/mail-testserver); no
+      # connection leaves the machine.
+      - name: End-to-end tests against the desktop app
+        run: npm ci --prefix e2e && e2e/run.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-screenshots
+          path: e2e/screenshots
 
   desktop:
     name: Desktop build (${{ matrix.name }})

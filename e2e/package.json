@@ -1,0 +1,12 @@
+{
+  "name": "arcalo-mail-e2e",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test --test-concurrency=1 --test-reporter=spec tests/*.test.js",
+    "shots": "node --test --test-concurrency=1 --test-reporter=spec shots/readme-shots.test.js"
+  },
+  "dependencies": {
+    "webdriverio": "^9.32.0"
+  }
+}
