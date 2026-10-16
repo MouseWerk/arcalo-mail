@@ -45,6 +45,49 @@ pub struct ParsedMessage {
     pub html: Option<String>,
     pub attachments: Vec<AttachmentInfo>,
     pub snippet: String,
+    /// The list and automation headers the inbox is sorted by ([`crate::triage`]).
+    #[serde(default)]
+    pub list: ListHeaders,
+}
+
+/// What the header says about where a message comes from: a mailing list or newsletter, a
+/// machine, a person.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListHeaders {
+    /// `List-Id` without the angle brackets.
+    pub list_id: Option<String>,
+    /// `List-Unsubscribe` as sent: `<https://…>, <mailto:…>`.
+    pub unsubscribe: Option<String>,
+    /// `List-Unsubscribe-Post: List-Unsubscribe=One-Click` (RFC 8058).
+    pub one_click: bool,
+    /// `List-Post`: a discussion list people write to.
+    pub list_post: bool,
+    /// `Precedence` in lower case (`bulk`, `list`, `junk`).
+    pub precedence: Option<String>,
+    /// `Auto-Submitted` other than `no` (RFC 3834): written by a machine.
+    pub auto_submitted: bool,
+}
+
+/// One line of a header as sent: folded lines joined, surrounding blanks removed.
+fn raw_header(m: &mail_parser::Message<'_>, name: &str) -> Option<String> {
+    let v = m.header_raw(name)?;
+    let joined = v.split(['\r', '\n']).map(str::trim).filter(|l| !l.is_empty()).collect::<Vec<_>>().join(" ");
+    (!joined.is_empty()).then_some(joined)
+}
+
+fn list_headers(m: &mail_parser::Message<'_>) -> ListHeaders {
+    ListHeaders {
+        list_id: raw_header(m, "List-Id").map(|v| match (v.rfind('<'), v.rfind('>')) {
+            (Some(a), Some(b)) if a < b => v[a + 1..b].trim().to_ascii_lowercase(),
+            _ => v.trim().to_ascii_lowercase(),
+        }),
+        unsubscribe: raw_header(m, "List-Unsubscribe"),
+        one_click: raw_header(m, "List-Unsubscribe-Post")
+            .is_some_and(|v| v.replace(' ', "").eq_ignore_ascii_case("List-Unsubscribe=One-Click")),
+        list_post: raw_header(m, "List-Post").is_some_and(|v| !v.eq_ignore_ascii_case("NO")),
+        precedence: raw_header(m, "Precedence").map(|v| v.to_ascii_lowercase()),
+        auto_submitted: raw_header(m, "Auto-Submitted").is_some_and(|v| !v.trim().eq_ignore_ascii_case("no")),
+    }
 }
 
 fn addresses(a: Option<&mail_parser::Address<'_>>) -> Vec<Address> {
@@ -126,6 +169,7 @@ pub fn parse(raw: &[u8]) -> Result<ParsedMessage> {
         html,
         attachments,
         snippet,
+        list: list_headers(&m),
     })
 }
 
@@ -272,6 +316,28 @@ Content-Transfer-Encoding: base64\r\n\r\nJVBERi0xLjQK\r\n--X--\r\n";
         let single = sample("s@x", "Kurz", None, "Text");
         assert_eq!(structure(&single).len(), 1);
         assert!(section(&single, "1").is_some());
+    }
+
+    #[test]
+    fn list_and_automation_headers() {
+        let raw = "From: Field Notes <letters@fieldnotes.example>\r\nSubject: Ausgabe 48\r\n\
+List-Id: Field Notes <letters.fieldnotes.example>\r\n\
+List-Unsubscribe: <https://fieldnotes.example/u?t=1>,\r\n <mailto:leave@fieldnotes.example?subject=leave>\r\n\
+List-Unsubscribe-Post: List-Unsubscribe=One-Click\r\nPrecedence: Bulk\r\n\r\nHallo\r\n";
+        let l = parse(raw.as_bytes()).unwrap().list;
+        assert_eq!(l.list_id.as_deref(), Some("letters.fieldnotes.example"));
+        assert_eq!(
+            l.unsubscribe.as_deref(),
+            Some("<https://fieldnotes.example/u?t=1>, <mailto:leave@fieldnotes.example?subject=leave>")
+        );
+        assert!(l.one_click && !l.list_post && !l.auto_submitted);
+        assert_eq!(l.precedence.as_deref(), Some("bulk"));
+        let auto = parse(b"From: x@example.org\r\nAuto-Submitted: auto-generated\r\nList-Post: <mailto:l@x>\r\n\r\nx")
+            .unwrap()
+            .list;
+        assert!(auto.auto_submitted && auto.list_post);
+        let person = parse(b"From: x@example.org\r\nAuto-Submitted: no\r\n\r\nx").unwrap().list;
+        assert_eq!(person, ListHeaders::default());
     }
 
     #[test]

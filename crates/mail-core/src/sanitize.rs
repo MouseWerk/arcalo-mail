@@ -6,6 +6,9 @@
 //! message or the sender; [`Sanitized::blocked_remote`] says how many were removed, for the
 //! „Externe Inhalte laden“ bar. The reading pane then shows the result in an `<iframe sandbox>`
 //! without scripts and with its own Content Security Policy (docs/ARCHITECTURE.md).
+//!
+//! Tracking pixels and link trackers go before that, whatever the user allowed
+//! ([`crate::tracking`]); [`Sanitized::trackers`] counts them for the „Tracker entfernt“ note.
 
 use std::borrow::Cow;
 use std::collections::HashSet;
@@ -19,6 +22,8 @@ pub struct Sanitized {
     pub html: String,
     /// Remote images and other resources that were removed.
     pub blocked_remote: usize,
+    /// Tracking pixels and link trackers that were removed.
+    pub trackers: usize,
 }
 
 /// CSS properties kept in `style` attributes: layout and type, nothing that loads a resource.
@@ -104,11 +109,21 @@ fn is_remote(url: &str) -> bool {
     u.starts_with("http:") || u.starts_with("https:") || u.starts_with("//")
 }
 
-/// Cleans the HTML of a message. `allow_remote`: keep remote images (the user chose to load
-/// them).
+/// Cleans the HTML of a message and removes its trackers. `allow_remote`: keep remote images
+/// (the user chose to load them).
 pub fn sanitize_html(html: &str, allow_remote: bool) -> Sanitized {
+    sanitize_html_with(html, allow_remote, true)
+}
+
+/// [`sanitize_html`]; `trackers: false` leaves links and pictures as they are (the user's own
+/// message in the compose sheet).
+pub fn sanitize_html_with(html: &str, allow_remote: bool, trackers: bool) -> Sanitized {
+    let (html, pixels) = if trackers { crate::tracking::strip_pixels(html) } else { (html.to_string(), 0) };
+    let html = html.as_str();
     let blocked = Arc::new(AtomicUsize::new(0));
     let counter = blocked.clone();
+    let links = Arc::new(AtomicUsize::new(0));
+    let link_counter = links.clone();
     let mut b = ammonia::Builder::default();
     b.url_schemes(HashSet::from(["http", "https", "mailto", "tel", "cid", "data"]))
         .link_rel(Some("noopener noreferrer"))
@@ -123,6 +138,13 @@ pub fn sanitize_html(html: &str, allow_remote: bool) -> Sanitized {
             (_, "style") => Some(Cow::Owned(clean_style(value))),
             // `data:` only for pictures; a link must not open a document made by the sender.
             (_, "href") if value.trim_start().to_ascii_lowercase().starts_with("data:") => None,
+            ("a", "href") if trackers => match crate::tracking::clean_link(value) {
+                Some(clean) => {
+                    link_counter.fetch_add(1, Ordering::Relaxed);
+                    Some(Cow::Owned(clean))
+                }
+                None => Some(Cow::Borrowed(value)),
+            },
             ("img", "src") if is_remote(value) && !allow_remote => {
                 counter.fetch_add(1, Ordering::Relaxed);
                 None
@@ -130,7 +152,11 @@ pub fn sanitize_html(html: &str, allow_remote: bool) -> Sanitized {
             _ => Some(Cow::Borrowed(value)),
         });
     let html = b.clean(html).to_string();
-    Sanitized { html, blocked_remote: blocked.load(Ordering::Relaxed) }
+    Sanitized {
+        html,
+        blocked_remote: blocked.load(Ordering::Relaxed),
+        trackers: pixels + links.load(Ordering::Relaxed),
+    }
 }
 
 fn escape(text: &str, out: &mut String) {
@@ -147,8 +173,9 @@ fn escape(text: &str, out: &mut String) {
     }
 }
 
-/// One line of text with its web addresses as links.
-fn linkify(line: &str, out: &mut String) {
+/// One line of text with its web addresses as links, their trackers removed (counted in
+/// `trackers`).
+fn linkify(line: &str, out: &mut String, trackers: &mut usize) {
     let mut rest = line;
     while let Some(i) = ["https://", "http://"].iter().filter_map(|p| rest.find(p)).min() {
         escape(&rest[..i], out);
@@ -159,10 +186,13 @@ fn linkify(line: &str, out: &mut String) {
         while url.ends_with(['.', ',', ';', ':', ')', '!', '?']) {
             url = &url[..url.len() - 1];
         }
+        let clean = crate::tracking::clean_link(url);
+        *trackers += usize::from(clean.is_some());
+        let shown = clean.as_deref().unwrap_or(url);
         out.push_str("<a href=\"");
-        escape(url, out);
+        escape(shown, out);
         out.push_str("\" rel=\"noopener noreferrer\">");
-        escape(url, out);
+        escape(shown, out);
         out.push_str("</a>");
         rest = &rest[i + url.len()..];
     }
@@ -172,6 +202,12 @@ fn linkify(line: &str, out: &mut String) {
 /// The text of a message as HTML for the same frame: escaped, line breaks kept, web addresses
 /// as links, quoted lines (`> `) as quotes.
 pub fn text_to_html(text: &str) -> String {
+    text_to_html_counted(text).0
+}
+
+/// [`text_to_html`] and the number of links whose trackers were removed.
+pub fn text_to_html_counted(text: &str) -> (String, usize) {
+    let mut trackers = 0;
     let mut out = String::with_capacity(text.len() + 64);
     out.push_str("<div class=\"plain\">");
     let mut depth = 0usize;
@@ -190,7 +226,7 @@ pub fn text_to_html(text: &str) -> String {
             content = content.trim_start().strip_prefix('>').unwrap_or(content);
         }
         let content = if level > 0 { content.strip_prefix(' ').unwrap_or(content) } else { content };
-        linkify(content, &mut out);
+        linkify(content, &mut out, &mut trackers);
         out.push_str("<br>");
     }
     while depth > 0 {
@@ -198,7 +234,7 @@ pub fn text_to_html(text: &str) -> String {
         depth -= 1;
     }
     out.push_str("</div>");
-    out
+    (out, trackers)
 }
 
 /// Where the quoted part of an HTML reply starts (the earlier message below the answer), so
@@ -322,6 +358,26 @@ mod tests {
         let s = sanitize_html("<a href=\"https://example.org\">a</a><a href=\"data:text/html,x\">b</a>", false);
         assert!(s.html.contains("rel=\"noopener noreferrer\""), "{}", s.html);
         assert!(!s.html.contains("data:text/html"), "{}", s.html);
+    }
+
+    #[test]
+    fn trackers_go_even_with_remote_images_allowed() {
+        let html = "<p>Neu</p><img src=\"https://news.example.org/open.php?id=1\" width=\"1\" height=\"1\">\
+                    <a href=\"https://example.org/a?utm_source=news&amp;id=2\">Lesen</a>\
+                    <img src=\"https://cdn.example.org/bild.jpg\">";
+        for allow in [false, true] {
+            let s = sanitize_html(html, allow);
+            assert_eq!(s.trackers, 2, "{}", s.html);
+            assert!(!s.html.contains("open.php") && !s.html.contains("utm_source"), "{}", s.html);
+            assert!(s.html.contains("https://example.org/a?id=2"), "{}", s.html);
+            assert_eq!(s.blocked_remote, usize::from(!allow), "the picture is a remote image, not a tracker");
+        }
+        let own = sanitize_html_with(html, true, false);
+        assert_eq!(own.trackers, 0);
+        assert!(own.html.contains("utm_source"), "the compose sheet keeps the user's links");
+        let (text, n) = text_to_html_counted("Siehe https://example.org/x?utm_medium=mail und https://example.org/y");
+        assert_eq!(n, 1);
+        assert!(text.contains("href=\"https://example.org/x\"") && !text.contains("utm_medium"), "{text}");
     }
 
     #[test]

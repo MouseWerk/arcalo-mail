@@ -12,7 +12,7 @@
 use serde_json::{Map, Value};
 
 /// Version written by this release.
-pub const SETTINGS_VERSION: u32 = 4;
+pub const SETTINGS_VERSION: u32 = 5;
 
 /// One step `from → from + 1`: changes the settings object and says what it did (`None`:
 /// nothing to do for these settings).
@@ -28,6 +28,7 @@ pub const STEPS: [Step; SETTINGS_VERSION as usize] = [
     Step { from: 1, name: "mail_basics", run: mail_basics },
     Step { from: 2, name: "fetch_threads_network", run: fetch_threads_network },
     Step { from: 3, name: "phones", run: phones },
+    Step { from: 4, name: "inbox_tools", run: inbox_tools },
 ];
 
 /// Version 0 is settings written before versions existed (development builds): nothing to
@@ -90,6 +91,24 @@ fn phones(map: &mut Map<String, Value>) -> Option<String> {
     (!added.is_empty()).then(|| format!("added {}", added.join(", ")))
 }
 
+/// Version 5: the inbox that sorts itself and the time tools, written with their defaults (the
+/// Screener and Focus off, the unified inbox and the newsletter bundles on).
+fn inbox_tools(map: &mut Map<String, Value>) -> Option<String> {
+    let mut added = vec![];
+    for (key, value) in [
+        ("screener", Value::Bool(false)),
+        ("focus", Value::Bool(false)),
+        ("unified_inbox", Value::Bool(true)),
+        ("bundles", Value::Bool(true)),
+    ] {
+        if !map.contains_key(key) {
+            map.insert(key.into(), value);
+            added.push(key);
+        }
+    }
+    (!added.is_empty()).then(|| format!("added {}", added.join(", ")))
+}
+
 /// Runs the steps the settings still need; returns what they did.
 pub fn migrate(map: &mut Map<String, Value>) -> Vec<String> {
     let from = map.get("version").and_then(Value::as_u64).unwrap_or(0) as u32;
@@ -122,7 +141,7 @@ mod tests {
         let mut m: Map<String, Value> = serde_json::from_str(r#"{"version":1,"undo_send_secs":10}"#).unwrap();
         let done = migrate(&mut m);
         // mail_basics, fetch_threads_network and the later steps.
-        assert_eq!(done.len(), 3, "{done:?}");
+        assert_eq!(done.len(), 4, "{done:?}");
         assert!(done[0].starts_with("mail_basics: "), "{done:?}");
         assert_eq!(m["undo_send_secs"], 10);
         assert_eq!(m["notifications"], true);
@@ -134,7 +153,7 @@ mod tests {
         let mut m: Map<String, Value> = serde_json::from_str(r#"{"version":2,"prefetch":"none"}"#).unwrap();
         let done = migrate(&mut m);
         assert_eq!(done[0], "fetch_threads_network: added subject_threads, network");
-        assert_eq!(done.len(), 2, "and the phones' step: {done:?}");
+        assert_eq!(done.len(), 3, "and the later steps: {done:?}");
         assert_eq!(m["prefetch"], "none", "kept");
         assert_eq!(m["network"]["profiles"][0]["id"], "standard");
         assert!(migrate(&mut m).is_empty(), "idempotent");
@@ -144,10 +163,20 @@ mod tests {
     fn version_4_adds_the_swipes_and_the_background_check_once() {
         let mut m: Map<String, Value> = serde_json::from_str(r#"{"version":3,"swipe_left":"delete"}"#).unwrap();
         let done = migrate(&mut m);
-        assert_eq!(done, ["phones: added swipe_right, background_check"]);
+        assert_eq!(done[0], "phones: added swipe_right, background_check");
         assert_eq!(m["swipe_left"], "delete", "kept");
         assert_eq!(m["swipe_right"], "read");
         assert_eq!(m["background_check"], true);
+        assert!(migrate(&mut m).is_empty(), "idempotent");
+    }
+
+    #[test]
+    fn version_5_adds_the_inbox_tools_once() {
+        let mut m: Map<String, Value> = serde_json::from_str(r#"{"version":4,"focus":true}"#).unwrap();
+        let done = migrate(&mut m);
+        assert_eq!(done, ["inbox_tools: added screener, unified_inbox, bundles"]);
+        assert_eq!(m["focus"], true, "kept");
+        assert_eq!(m["screener"], false);
         assert!(migrate(&mut m).is_empty(), "idempotent");
     }
 

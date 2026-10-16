@@ -21,6 +21,9 @@
 //! * `POST /smtp-8bitmime?offered=0`: SMTP offers only AUTH and SMTPUTF8 (as GreenMail) and
 //!   refuses 8-bit messages
 //! * `GET /.well-known/jmap`, `/jmap/…`: the same mailboxes over JMAP (`jmap.rs`)
+//! * `/unsubscribe…`, `/track…`, `/img…` (any method): a sender's web side, as a newsletter's
+//!   one-click unsubscribe address (RFC 8058), its tracking pixel or its pictures; every request
+//!   is noted (pictures get a 1×1 GIF) and `GET /web` lists them
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -121,6 +124,13 @@ fn autoconfig(host: &str, imap: u16, smtp: u16) -> String {
     )
 }
 
+/// A transparent 1×1 GIF.
+const GIF: &[u8] = &[
+    0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0x01, 0x00, 0x01, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff,
+    0x21, 0xf9, 0x04, 0x01, 0x00, 0x00, 0x00, 0x00, 0x2c, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x02,
+    0x02, 0x44, 0x01, 0x00, 0x3b,
+];
+
 async fn handle(stream: TcpStream, shared: Arc<Shared>) -> std::io::Result<()> {
     let mut r = BufReader::new(stream);
     let mut first = String::new();
@@ -160,6 +170,27 @@ async fn handle(stream: TcpStream, shared: Arc<Shared>) -> std::io::Result<()> {
         stream.write_all(&reply.body).await?;
         return stream.flush().await;
     }
+    if ["/unsubscribe", "/track", "/img"].iter().any(|p| path.starts_with(p)) {
+        shared.web.lock().unwrap().push(crate::WebRequest {
+            method: method.clone(),
+            path: target.clone(),
+            content_type: headers.iter().find(|(k, _)| k == "content-type").map(|(_, v)| v.clone()),
+            body: String::from_utf8_lossy(&body).into_owned(),
+        });
+        let (ctype, out): (&str, Vec<u8>) = if path.starts_with("/unsubscribe") {
+            ("text/plain", b"unsubscribed".to_vec())
+        } else {
+            ("image/gif", GIF.to_vec())
+        };
+        let mut stream = r.into_inner();
+        let head = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            out.len()
+        );
+        stream.write_all(head.as_bytes()).await?;
+        stream.write_all(&out).await?;
+        return stream.flush().await;
+    }
     if path.starts_with("/jmap") || path == "/.well-known/jmap" {
         return crate::jmap::handle(r, &method, &target, &headers, body, shared).await;
     }
@@ -194,6 +225,10 @@ async fn handle(stream: TcpStream, shared: Arc<Shared>) -> std::io::Result<()> {
             ("200 OK", "text/plain", b"ok".to_vec())
         }
         ("GET", "/state") => ("200 OK", "application/json", state(&shared).to_string().into_bytes()),
+        ("GET", "/web") => {
+            let web = shared.web.lock().unwrap().clone();
+            ("200 OK", "application/json", serde_json::to_vec(&web).unwrap_or_default())
+        }
         ("GET", "/autoconfig") => {
             let (imap, smtp) = *shared.ports.lock().unwrap();
             let host = q.get("host").map_or("127.0.0.1", String::as_str);

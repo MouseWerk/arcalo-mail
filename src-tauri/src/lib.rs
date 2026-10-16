@@ -3,7 +3,8 @@
 //! notices to the UI (`mail-notice` events), desktop notifications and the unread badge. The
 //! same crate builds the desktop app and, through `run` as the mobile entry point, the Android
 //! and iOS apps; what the phones do differently is in `mobile` (the workers run while the app is
-//! in front, a background check of its own otherwise, the browser session of the sign-in).
+//! in front, a background check of its own otherwise, the browser session of the sign-in). A
+//! clock thread does what the time tools have due (`run_clock`).
 
 mod background;
 mod commands;
@@ -128,11 +129,77 @@ fn notify_new_mail(app: &AppHandle, account_id: i64, messages: &[i64]) {
         return;
     }
     let store = state.store();
-    let list = store.summaries(messages).unwrap_or_default();
+    // Focus and the Screener decide which new messages are worth telling about.
+    let messages = mail_core::triage::worth_telling(&store, account_id, messages).unwrap_or_else(|_| messages.to_vec());
+    let list = store.summaries(&messages).unwrap_or_default();
     let account = store.account(account_id).ok();
     drop(store);
     let Some((title, body)) = background::new_mail_text(&list, account.as_ref()) else { return };
     let _ = app.notification().builder().title(title).body(body).show();
+}
+
+/// How often the clock looks at the time tools while the app runs (`ARCALO_MAIL_TICK_SECS`
+/// shortens it for the e2e tests).
+fn tick_interval() -> std::time::Duration {
+    let secs = std::env::var("ARCALO_MAIL_TICK_SECS").ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(10);
+    std::time::Duration::from_secs(secs.clamp(1, 60))
+}
+
+/// Does what the time tools have due (`mail_core::later::tick`): messages to send later go to
+/// the queue, snoozed messages come back, reminders without an answer are told. The accounts'
+/// workers hear of their queue, the UI of the changed lists (`mail-notice`) and of the
+/// reminders (`reminders`).
+pub fn tick_now(app: &AppHandle) {
+    let Some(state) = app.try_state::<AppState>() else { return };
+    let (tick, notifications) = {
+        let store = state.store();
+        let tick = match mail_core::later::tick(&store, mail_core::store::now()) {
+            Ok(t) => t,
+            Err(e) => {
+                mail_core::diag::log("clock", &format!("time tools: {e}"));
+                return;
+            }
+        };
+        (tick, mail_core::settings::load(&store).map(|s| s.notifications).unwrap_or(true))
+    };
+    if !tick.changed() {
+        return;
+    }
+    state.kick(&tick.accounts);
+    for a in &tick.accounts {
+        let _ = app.emit("mail-notice", &Notice::Changed { account_id: *a, mailboxes: vec![] });
+    }
+    if !tick.reminders.is_empty() {
+        let _ = app.emit("reminders", &tick.reminders);
+        #[cfg(desktop)]
+        let in_front = app.get_webview_window("main").and_then(|w| w.is_focused().ok()).unwrap_or(false);
+        #[cfg(mobile)]
+        let in_front = mobile::in_front();
+        if notifications && !in_front {
+            use tauri_plugin_notification::NotificationExt;
+            for r in &tick.reminders {
+                let (title, body) = background::reminder_text(r);
+                let _ = app.notification().builder().title(title).body(body).show();
+            }
+        }
+    }
+    update_badge(app);
+}
+
+/// The clock: [`tick_now`] at the start (a message whose time came while the computer was off
+/// goes out now) and every few seconds while the app runs. Started with the workers, so a
+/// phone launched only for its background check leaves the time tools to that check.
+fn run_clock(app: AppHandle) {
+    static STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if STARTED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+    let _ = std::thread::Builder::new().name("clock".into()).spawn(move || {
+        loop {
+            tick_now(&app);
+            std::thread::sleep(tick_interval());
+        }
+    });
 }
 
 /// How a worker reaches an account's servers, with its secret from the credential store.
@@ -226,6 +293,7 @@ pub fn start_worker(app: &AppHandle, account: &Account) {
 /// front again).
 pub fn start_workers(app: &AppHandle) {
     let Some(state) = app.try_state::<AppState>() else { return };
+    run_clock(app.clone());
     let accounts = state.store().accounts().unwrap_or_default();
     for a in &accounts {
         if state.worker(a.id).is_none() {
@@ -410,6 +478,33 @@ pub fn run() {
             commands::retry_outbox,
             commands::discard_outbox,
             commands::set_in_front,
+            commands::send_later,
+            commands::scheduled_messages,
+            commands::unschedule,
+            commands::send_scheduled_now,
+            commands::inbox_list,
+            commands::inbox_counts,
+            commands::bundle_messages,
+            commands::set_sender_category,
+            commands::screener_senders,
+            commands::screener_allow,
+            commands::screener_block,
+            commands::screener_forget,
+            commands::blocked_senders,
+            commands::subscriptions,
+            commands::unsubscribe,
+            commands::unsubscribed_by_link,
+            commands::set_pinned,
+            commands::set_read_later,
+            commands::read_later,
+            commands::snooze,
+            commands::unsnooze,
+            commands::snoozed,
+            commands::set_followup,
+            commands::dismiss_followups,
+            commands::followups,
+            commands::time_counts,
+            commands::tick,
         ])
         .run(tauri::generate_context!())
         .expect("Arcalo Mail failed to start");

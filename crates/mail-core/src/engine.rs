@@ -530,6 +530,13 @@ async fn sync_round<C: Connector>(ctx: &Ctx<C>, conn: &mut C::Imap, caps: Capabi
         if r.changed() || touched.iter().any(|n| ctx.mailbox_named(n) == Some(id)) {
             ctx.notice(Notice::Changed { account_id: ctx.account_id, mailboxes: vec![id] });
         }
+        if Some(id) == inbox && r.added > 0 {
+            // Mail of senders the user turned away (the Screener) leaves the inbox at once.
+            let moved = crate::triage::move_blocked(&ctx.store, Some(ctx.account_id))?;
+            if !moved.hidden.is_empty() {
+                ctx.notice(Notice::Changed { account_id: ctx.account_id, mailboxes: vec![id] });
+            }
+        }
         if Some(id) == inbox && !r.new_unread.is_empty() {
             ctx.notice(Notice::NewMail { account_id: ctx.account_id, messages: r.new_unread });
         }

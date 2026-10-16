@@ -15,6 +15,7 @@ pub mod error;
 pub mod i18n;
 pub mod imap;
 pub mod jmap;
+pub mod later;
 pub mod netwatch;
 pub mod network;
 pub mod oauth;
@@ -29,5 +30,8 @@ pub mod smtp;
 pub mod store;
 pub mod sync;
 pub mod thread;
+pub mod tracking;
+pub mod triage;
+pub mod unsubscribe;
 
 pub use error::{Error, Result};

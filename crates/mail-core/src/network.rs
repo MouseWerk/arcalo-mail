@@ -52,6 +52,8 @@ pub enum Service {
     Graph,
     /// The release feed of the desktop updater.
     UpdateFeed,
+    /// A newsletter's one-click unsubscribe address (RFC 8058), only when the user asks.
+    Unsubscribe,
 }
 
 /// Opening the TCP connection and the TLS handshake together.
@@ -480,7 +482,7 @@ impl Service {
     /// The route group of a service ([`ROUTE_GROUPS`]).
     pub fn group(self) -> &'static str {
         match self {
-            Service::Imap | Service::Smtp | Service::Jmap | Service::Graph => "mail",
+            Service::Imap | Service::Smtp | Service::Jmap | Service::Graph | Service::Unsubscribe => "mail",
             Service::OAuthMicrosoft | Service::OAuthGoogle => "sign_in",
             Service::Autoconfig => "setup",
             Service::UpdateFeed => "updates",

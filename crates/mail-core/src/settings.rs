@@ -103,6 +103,17 @@ pub struct Settings {
     /// Phones: look for new mail in the background (Android about every 15 minutes, iOS when
     /// the system allows) and tell about it.
     pub background_check: bool,
+    /// The Screener: mail from first-time senders waits in „Neue Absender“ until the user lets
+    /// the sender in or turns it away (`triage`). Off by default.
+    pub screener: bool,
+    /// When the Screener was switched on (Unix seconds): mail from before stays where it is.
+    pub screener_since: Option<i64>,
+    /// Focus: the inbox shows people and pinned messages only, and only they notify.
+    pub focus: bool,
+    /// With two accounts or more, the inbox of all accounts („Alle Posteingänge“) opens first.
+    pub unified_inbox: bool,
+    /// The newsletters tab shows one row per sender, opened as a stream of its issues.
+    pub bundles: bool,
 }
 
 impl Default for Settings {
@@ -124,6 +135,23 @@ impl Default for Settings {
             swipe_left: SwipeAction::Archive,
             swipe_right: SwipeAction::Read,
             background_check: true,
+            screener: false,
+            screener_since: None,
+            focus: false,
+            unified_inbox: true,
+            bundles: true,
+        }
+    }
+}
+
+impl Settings {
+    /// Notes when the Screener was switched on (it holds back mail from then on), and forgets it
+    /// when the Screener goes off.
+    pub fn mark_screener(&mut self, at: i64) {
+        match (self.screener, self.screener_since) {
+            (true, None) => self.screener_since = Some(at),
+            (false, Some(_)) => self.screener_since = None,
+            _ => {}
         }
     }
 }
@@ -150,6 +178,17 @@ pub fn save(store: &Store, settings: &Settings) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_screener_remembers_when_it_started() {
+        let mut s = Settings { screener: true, ..Settings::default() };
+        s.mark_screener(100);
+        s.mark_screener(200);
+        assert_eq!(s.screener_since, Some(100), "kept while on");
+        s.screener = false;
+        s.mark_screener(300);
+        assert_eq!(s.screener_since, None);
+    }
 
     #[test]
     fn defaults_round_trip_and_unknown_keys_stay() {

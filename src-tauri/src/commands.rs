@@ -10,9 +10,12 @@ use mail_core::actions::{self, MessageView, Undo};
 use mail_core::autoconfig::{Discovered, Lookup};
 use mail_core::compose::{Draft, FileAttachment, mime_for};
 use mail_core::engine::{CheckResult, Command, Notice};
+use mail_core::later;
 use mail_core::outbox;
 use mail_core::settings::Settings;
 use mail_core::store::{Contact, Mailbox, MessageSummary};
+use mail_core::triage::{self, Category, InboxQuery};
+use mail_core::unsubscribe::Method;
 use serde::Serialize;
 use tauri::{AppHandle, State};
 
@@ -70,8 +73,9 @@ pub fn get_settings(state: State<'_, AppState>) -> Res<Settings> {
 /// Applies at once; the UI keeps the previous value for „Rückgängig“. New network profiles
 /// reconnect every account through them.
 #[tauri::command]
-pub fn set_settings(app: AppHandle, state: State<'_, AppState>, settings: Settings) -> Res<()> {
+pub fn set_settings(app: AppHandle, state: State<'_, AppState>, mut settings: Settings) -> Res<()> {
     settings.network.validate()?;
+    settings.mark_screener(mail_core::store::now());
     let before = mail_core::settings::load(&state.store())?;
     mail_core::settings::save(&state.store(), &settings)?;
     apply_language(settings.language);
@@ -661,21 +665,60 @@ pub struct Queued {
     delay: u32,
 }
 
+/// Sends a message (after the undo window); `followup_secs`: „Erinnern, wenn keine Antwort“
+/// that long after it went out.
 #[tauri::command]
-pub async fn send_message(state: State<'_, AppState>, draft: Draft) -> Res<Queued> {
+pub async fn send_message(state: State<'_, AppState>, draft: Draft, followup_secs: Option<i64>) -> Res<Queued> {
     let mut files = read_files(&draft.attachments)?;
     files.extend(forwarded(&state, &draft.forwarded).await?);
     let store = state.store();
     let delay = mail_core::settings::load(&store)?.undo_send_secs.min(30);
     let (outbox_id, message_id) = actions::queue_send(&store, &draft, &files, delay)?;
+    if let Some(secs) = followup_secs.filter(|s| *s > 0) {
+        let due = mail_core::store::now() + delay as i64 + secs;
+        later::add_followup(&store, draft.account_id, &message_id, due, draft.subject.trim())?;
+    }
     drop(store);
     state.kick(&[draft.account_id]);
     Ok(Queued { outbox_id, message_id, delay })
 }
 
 #[tauri::command]
-pub fn cancel_send(state: State<'_, AppState>, outbox_id: i64) -> Res<bool> {
-    actions::cancel_send(&state.store(), outbox_id)
+pub fn cancel_send(state: State<'_, AppState>, outbox_id: i64, message_id: Option<String>) -> Res<bool> {
+    let store = state.store();
+    let ok = actions::cancel_send(&store, outbox_id)?;
+    // A reminder asked for with the message goes with it.
+    if ok && let Some(mid) = message_id {
+        later::forget_followup(&store, &mid)?;
+    }
+    Ok(ok)
+}
+
+/// „Später senden“: the message waits here until `at` (Unix seconds).
+#[tauri::command]
+pub async fn send_later(state: State<'_, AppState>, draft: Draft, at: i64, followup_secs: Option<i64>) -> Res<i64> {
+    let mut files = read_files(&draft.attachments)?;
+    files.extend(forwarded(&state, &draft.forwarded).await?);
+    let (id, _) = later::schedule_send(&state.store(), &draft, &files, at, followup_secs.filter(|s| *s > 0))?;
+    Ok(id)
+}
+
+#[tauri::command]
+pub fn scheduled_messages(state: State<'_, AppState>) -> Res<Vec<later::Scheduled>> {
+    later::scheduled(&state.store())
+}
+
+/// Takes a scheduled message back; returns its draft for the compose sheet.
+#[tauri::command]
+pub fn unschedule(state: State<'_, AppState>, id: i64) -> Res<Draft> {
+    later::unschedule(&state.store(), id)
+}
+
+#[tauri::command]
+pub fn send_scheduled_now(state: State<'_, AppState>, id: i64) -> Res<()> {
+    let account = later::send_now(&state.store(), id)?;
+    state.kick(&[account]);
+    Ok(())
 }
 
 /// Saves the draft in Drafts; returns its Message-ID for the next save.
@@ -781,6 +824,184 @@ pub async fn attachment_preview(state: State<'_, AppState>, id: i64) -> Res<Prev
         ));
     }
     Ok(Preview { mime_type: a.mime_type, data_b64: base64::engine::general_purpose::STANDARD.encode(data) })
+}
+
+// ---------------------------------------------------------------------------- the sorted inbox
+
+/// A page of the sorted inbox (one account, or all of them).
+#[tauri::command]
+pub fn inbox_list(state: State<'_, AppState>, query: InboxQuery, offset: u32, limit: u32) -> Res<Page> {
+    let (total, items) = triage::inbox(&state.store(), &query, limit.min(500), offset)?;
+    Ok(Page { total, offset, items })
+}
+
+#[tauri::command]
+pub fn inbox_counts(state: State<'_, AppState>, account_id: Option<i64>) -> Res<triage::InboxCounts> {
+    triage::counts(&state.store(), account_id)
+}
+
+/// A bundle of the newsletters tab: the sender's messages, newest first.
+#[tauri::command]
+pub fn bundle_messages(
+    state: State<'_, AppState>,
+    account_id: Option<i64>,
+    sender: String,
+) -> Res<Vec<MessageSummary>> {
+    triage::bundle(&state.store(), account_id, &sender, 30)
+}
+
+/// „Absender verschieben“: every message of the sender shows in this tab (`None`: as sorted).
+#[tauri::command]
+pub fn set_sender_category(state: State<'_, AppState>, email: String, category: Option<Category>) -> Res<()> {
+    triage::set_sender_category(&state.store(), &email, category)
+}
+
+#[tauri::command]
+pub fn screener_senders(state: State<'_, AppState>, account_id: Option<i64>) -> Res<Vec<triage::WaitingSender>> {
+    triage::waiting_senders(&state.store(), account_id)
+}
+
+#[tauri::command]
+pub fn screener_allow(state: State<'_, AppState>, email: String) -> Res<()> {
+    triage::allow_sender(&state.store(), &email)
+}
+
+/// „Abweisen“: the sender's mail moves to the „Screened Out“ folder, now and later.
+#[tauri::command]
+pub fn screener_block(app: AppHandle, state: State<'_, AppState>, email: String) -> Res<Undo> {
+    let u = triage::block_sender(&state.store(), &email)?;
+    after(&app, &state, u)
+}
+
+/// Takes the Screener's answer for a sender back.
+#[tauri::command]
+pub fn screener_forget(state: State<'_, AppState>, email: String) -> Res<()> {
+    triage::forget_sender(&state.store(), &email)
+}
+
+#[tauri::command]
+pub fn blocked_senders(state: State<'_, AppState>) -> Res<Vec<String>> {
+    triage::blocked_senders(&state.store())
+}
+
+#[tauri::command]
+pub fn subscriptions(state: State<'_, AppState>) -> Res<Vec<triage::Subscription>> {
+    triage::subscriptions(&state.store())
+}
+
+/// What „Abbestellen“ did: unsubscribed with one click, sent the e-mail the list asks for, or
+/// found only a page the user opens after confirming it.
+#[derive(Serialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum Unsubscribed {
+    Done,
+    Sent { to: String },
+    Link { url: String },
+}
+
+/// „Abbestellen“ for a sender: one click (RFC 8058) through `mail_core::network`, else an
+/// e-mail through the account, else the page to confirm.
+#[tauri::command]
+pub async fn unsubscribe(state: State<'_, AppState>, sender: String) -> Res<Unsubscribed> {
+    let (account, header, one_click) = mail_core::unsubscribe::latest(&state.store(), &sender)?;
+    let method = mail_core::unsubscribe::best(&header, one_click).ok_or_else(|| {
+        Error::Invalid(
+            mail_core::tr!(
+                "Für diesen Absender gibt es keine Abmeldeadresse.",
+                "This sender gives no way to unsubscribe."
+            )
+            .into(),
+        )
+    })?;
+    match method {
+        Method::OneClick { url } => {
+            mail_core::unsubscribe::post_one_click(&url).await?;
+            mail_core::unsubscribe::record(&state.store(), &sender, "one_click")?;
+            Ok(Unsubscribed::Done)
+        }
+        Method::Mailto { to, subject, body } => {
+            let draft = mail_core::unsubscribe::mailto_draft(account, &to, &subject, &body);
+            {
+                let store = state.store();
+                actions::queue_send(&store, &draft, &[], 0)?;
+                mail_core::unsubscribe::record(&store, &sender, "mailto")?;
+            }
+            state.kick(&[account]);
+            Ok(Unsubscribed::Sent { to })
+        }
+        Method::Link { url } => Ok(Unsubscribed::Link { url }),
+    }
+}
+
+/// The user opened the unsubscribe page of a sender (after confirming it).
+#[tauri::command]
+pub fn unsubscribed_by_link(state: State<'_, AppState>, sender: String) -> Res<()> {
+    mail_core::unsubscribe::record(&state.store(), &sender, "link")
+}
+
+// ---------------------------------------------------------------------------- time tools
+
+#[tauri::command]
+pub fn set_pinned(state: State<'_, AppState>, ids: Vec<i64>, on: bool) -> Res<()> {
+    later::set_pinned(&state.store(), &ids, on)
+}
+
+#[tauri::command]
+pub fn set_read_later(state: State<'_, AppState>, ids: Vec<i64>, on: bool) -> Res<()> {
+    later::set_later(&state.store(), &ids, on)
+}
+
+#[tauri::command]
+pub fn read_later(state: State<'_, AppState>) -> Res<Vec<MessageSummary>> {
+    later::later_list(&state.store())
+}
+
+#[tauri::command]
+pub fn snooze(app: AppHandle, state: State<'_, AppState>, ids: Vec<i64>, until: i64) -> Res<()> {
+    let accounts = later::snooze(&state.store(), &ids, until)?;
+    state.kick(&accounts);
+    update_badge(&app);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn unsnooze(app: AppHandle, state: State<'_, AppState>, ids: Vec<i64>) -> Res<()> {
+    let accounts = later::unsnooze(&state.store(), &ids)?;
+    state.kick(&accounts);
+    update_badge(&app);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn snoozed(state: State<'_, AppState>) -> Res<Vec<MessageSummary>> {
+    later::snoozed(&state.store())
+}
+
+/// „Erinnern, wenn keine Antwort“ on messages, due at `due` (Unix seconds).
+#[tauri::command]
+pub fn set_followup(state: State<'_, AppState>, ids: Vec<i64>, due: i64) -> Res<()> {
+    later::followup_messages(&state.store(), &ids, due)
+}
+
+#[tauri::command]
+pub fn dismiss_followups(state: State<'_, AppState>, ids: Vec<i64>) -> Res<()> {
+    later::dismiss_followups(&state.store(), &ids)
+}
+
+#[tauri::command]
+pub fn followups(state: State<'_, AppState>) -> Res<Vec<MessageSummary>> {
+    later::followups_due(&state.store())
+}
+
+#[tauri::command]
+pub fn time_counts(state: State<'_, AppState>) -> Res<later::Counts> {
+    later::counts(&state.store())
+}
+
+/// Lets the clock look at the time tools now (after the UI changed something due soon).
+#[tauri::command]
+pub fn tick(app: AppHandle) {
+    crate::tick_now(&app);
 }
 
 // ---------------------------------------------------------------------------- the queue

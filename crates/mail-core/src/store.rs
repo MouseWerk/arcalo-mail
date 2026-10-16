@@ -22,6 +22,7 @@ pub const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0001_init.sql"),
     include_str!("../migrations/0002_mail_actions.sql"),
     include_str!("../migrations/0003_sync_sources.sql"),
+    include_str!("../migrations/0004_inbox_tools.sql"),
 ];
 pub const SCHEMA_VERSION: u32 = MIGRATIONS.len() as u32;
 
@@ -56,7 +57,7 @@ pub struct SyncState {
 
 /// A row of the message list. In the conversation view it stands for its thread in the folder:
 /// the newest message, with the number of messages and whether any is unread.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MessageSummary {
     pub id: i64,
     pub mailbox_id: i64,
@@ -72,6 +73,19 @@ pub struct MessageSummary {
     pub has_attachments: bool,
     /// Messages of the thread in this folder (1 outside the conversation view).
     pub thread_count: u32,
+    #[serde(default)]
+    pub account_id: i64,
+    /// The inbox tab the message is in (`triage::Category`); set in the sorted inbox only.
+    #[serde(default)]
+    pub category: Option<String>,
+    #[serde(default)]
+    pub pinned: bool,
+    /// A bundle of the newsletters tab: how many messages of this sender it holds (0: a plain row).
+    #[serde(default)]
+    pub bundle: u32,
+    /// In the lists of the time tools: when it comes back, is due, or was put there (`later`).
+    #[serde(default)]
+    pub due: Option<i64>,
 }
 
 /// A message as the reading pane shows it (the HTML not yet sanitized).
@@ -92,6 +106,10 @@ pub struct MessageDetail {
     pub html: Option<String>,
     pub remote_allowed: bool,
     pub attachments: Vec<Attachment>,
+    pub list_id: Option<String>,
+    /// `List-Unsubscribe` as sent; [`crate::unsubscribe`] reads it.
+    pub unsubscribe: Option<String>,
+    pub one_click: bool,
 }
 
 /// An attachment as stored: from the kept message (`part_index`) or, for a large message, its
@@ -150,10 +168,10 @@ fn provider_of(s: &str) -> Provider {
     }
 }
 
-const SUMMARY_COLS: &str = "id, mailbox_id, uid, thread_id, subject, from_name, from_email, COALESCE(date, internal_date), \
-     snippet, seen, flagged, answered, has_attachments";
+pub(crate) const SUMMARY_COLS: &str = "id, mailbox_id, uid, thread_id, subject, from_name, from_email, COALESCE(date, internal_date), \
+     snippet, seen, flagged, answered, has_attachments, account_id";
 
-fn summary(r: &Row<'_>) -> rusqlite::Result<MessageSummary> {
+pub(crate) fn summary(r: &Row<'_>) -> rusqlite::Result<MessageSummary> {
     let email: Option<String> = r.get(6)?;
     Ok(MessageSummary {
         id: r.get(0)?,
@@ -169,6 +187,8 @@ fn summary(r: &Row<'_>) -> rusqlite::Result<MessageSummary> {
         answered: r.get(11)?,
         has_attachments: r.get(12)?,
         thread_count: 1,
+        account_id: r.get(13)?,
+        ..MessageSummary::default()
     })
 }
 
@@ -502,8 +522,9 @@ impl Store {
         self.conn.execute(
             "INSERT INTO messages (account_id, mailbox_id, uid, modseq, message_id, in_reply_to, refs, subject,
                from_name, from_email, to_json, cc_json, date, internal_date, size, seen, answered, flagged, draft,
-               keywords, has_attachments, snippet, reply_to_json, base_subject)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)",
+               keywords, has_attachments, snippet, reply_to_json, base_subject, category, list_id, unsubscribe, one_click)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24,
+               ?25, ?26, ?27, ?28)",
             params![
                 account_id,
                 mailbox_id,
@@ -529,10 +550,17 @@ impl Store {
                 p.snippet,
                 serde_json::to_string(&p.reply_to)?,
                 crate::thread::base_subject(&p.subject).0,
+                crate::triage::classify(p).as_str(),
+                p.list.list_id,
+                p.list.unsubscribe,
+                p.list.one_click,
             ],
         )?;
         let id = self.conn.last_insert_rowid();
         crate::thread::assign(self, account_id, id, p)?;
+        if role.as_deref() == Some("inbox") {
+            crate::later::arrived(self, account_id, id, p.message_id.as_deref())?;
+        }
         self.index_message(id, p)?;
         self.adopt_body(account_id, id, p.message_id.as_deref())?;
         // The address book: who wrote, and whom the user wrote to.
@@ -774,12 +802,12 @@ impl Store {
                  MAX(has_attachments) OVER (PARTITION BY thread_id) AS any_att
                FROM messages WHERE mailbox_id = ?1 AND hidden = 0)
              SELECT id, mailbox_id, uid, thread_id, subject, from_name, from_email, COALESCE(date, internal_date),
-               snippet, all_seen, any_flag, answered, any_att, n
+               snippet, all_seen, any_flag, answered, any_att, account_id, n
              FROM ranked WHERE rn = 1 ORDER BY COALESCE(date, internal_date) DESC, id DESC LIMIT ?2 OFFSET ?3";
         let mut st = self.conn.prepare(sql)?;
         let rows = st.query_map(params![mailbox_id, limit, offset], |r| {
             let mut s = summary(r)?;
-            s.thread_count = r.get(13)?;
+            s.thread_count = r.get(14)?;
             Ok(s)
         })?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -868,7 +896,7 @@ impl Store {
                (SELECT text FROM message_bodies WHERE message_id = messages.id),
                (SELECT html FROM message_bodies WHERE message_id = messages.id),
                COALESCE((SELECT remote_allowed FROM message_bodies WHERE message_id = messages.id), 0),
-               account_id, reply_to_json, in_reply_to, refs, size, draft
+               account_id, reply_to_json, in_reply_to, refs, size, draft, list_id, unsubscribe, one_click
              FROM messages WHERE id = ?1"
         );
         let row = self
@@ -876,15 +904,17 @@ impl Store {
             .query_row(&sql, [id], |r| {
                 Ok((
                     summary(r)?,
-                    (r.get::<_, String>(13)?, r.get::<_, String>(14)?, r.get(15)?, r.get(16)?),
-                    (r.get(17)?, r.get(18)?, r.get(19)?),
-                    (r.get(20)?, r.get::<_, String>(21)?, r.get(22)?, r.get::<_, String>(23)?, r.get(24)?, r.get(25)?),
+                    (r.get::<_, String>(14)?, r.get::<_, String>(15)?, r.get(16)?, r.get(17)?),
+                    (r.get(18)?, r.get(19)?, r.get(20)?),
+                    (r.get(21)?, r.get::<_, String>(22)?, r.get(23)?, r.get::<_, String>(24)?, r.get(25)?, r.get(26)?),
+                    (r.get(27)?, r.get(28)?, r.get(29)?),
                 ))
             })
             .optional()?
             .ok_or_else(|| Error::NotFound(trf!("Nachricht {id} fehlt.", "Message {id} is missing.")))?;
-        let (summary, (to, cc, message_id, has_body), (text, html, remote_allowed), rest) = row;
+        let (summary, (to, cc, message_id, has_body), (text, html, remote_allowed), rest, list) = row;
         let (account_id, reply_to, in_reply_to, refs, size, draft) = rest;
+        let (list_id, unsubscribe, one_click) = list;
         Ok(MessageDetail {
             summary,
             account_id,
@@ -901,6 +931,9 @@ impl Store {
             html,
             remote_allowed,
             attachments: self.attachments(id)?,
+            list_id,
+            unsubscribe,
+            one_click,
         })
     }
 

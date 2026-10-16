@@ -68,6 +68,16 @@ impl Default for Options {
     }
 }
 
+/// A request to the web side of a sender (`/unsubscribe…`, `/track…`, `/img…` on the control
+/// port): what a newsletter's unsubscribe address or tracking pixel would have received.
+#[derive(Debug, Clone, Serialize)]
+pub struct WebRequest {
+    pub method: String,
+    pub path: String,
+    pub content_type: Option<String>,
+    pub body: String,
+}
+
 /// A message the SMTP server took.
 #[derive(Debug, Clone, Serialize)]
 pub struct SentMail {
@@ -103,6 +113,8 @@ pub struct Shared {
     pub smtp_8bitmime: Mutex<bool>,
     /// The JMAP view of the same mailboxes (`jmap.rs`).
     pub jmap: Mutex<mail_core::jmap::fake::FakeJmapState>,
+    /// Requests to the senders' web addresses (`control.rs`).
+    pub web: Mutex<Vec<WebRequest>>,
 }
 
 impl Shared {
@@ -258,6 +270,7 @@ pub async fn start(opts: Options) -> io::Result<Running> {
         smtp_auth_disabled: Mutex::new(false),
         smtp_8bitmime: Mutex::new(true),
         jmap: Mutex::new(mail_core::jmap::fake::FakeJmapState::new(&opts.user, opts.jmap_push)),
+        web: Mutex::new(vec![]),
     });
     let (imap_l, imap) = listen(opts.imap_port).await?;
     let (smtp_l, smtp) = listen(opts.smtp_port).await?;

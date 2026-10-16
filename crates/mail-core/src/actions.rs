@@ -15,7 +15,9 @@ use crate::compose::{self, Draft, FileAttachment};
 use crate::error::{Error, Result};
 use crate::imap::Role;
 use crate::outbox::{self, Op};
-use crate::sanitize::{Sanitized, inline_cids, quote_start_html, quote_start_text, sanitize_html, text_to_html};
+use crate::sanitize::{
+    Sanitized, inline_cids, quote_start_html, quote_start_text, sanitize_html, sanitize_html_with, text_to_html_counted,
+};
 use crate::settings::RemoteContent;
 use crate::store::{Attachment, Mailbox, MessageDetail, Store, now};
 use crate::{tr, trf};
@@ -87,11 +89,11 @@ fn folder_for(store: &Store, account_id: i64, role: Role, name: &str, undo: &mut
 pub fn move_messages(store: &Store, ids: &[i64], target: i64) -> Result<Undo> {
     let to = store.mailbox(target)?;
     let mut undo = Undo::default();
-    move_into(store, ids, &to, &mut undo)?;
+    move_into(store, ids, &to, &mut undo, UNDO_SECS)?;
     Ok(undo)
 }
 
-fn move_into(store: &Store, ids: &[i64], to: &Mailbox, undo: &mut Undo) -> Result<()> {
+fn move_into(store: &Store, ids: &[i64], to: &Mailbox, undo: &mut Undo, delay: i64) -> Result<()> {
     for (mailbox_id, msgs) in by_mailbox(store, ids)? {
         let from = store.mailbox(mailbox_id)?;
         if from.account_id != to.account_id {
@@ -114,12 +116,51 @@ fn move_into(store: &Store, ids: &[i64], to: &Mailbox, undo: &mut Undo) -> Resul
             uids: msgs.iter().map(|(_, u)| *u).collect(),
             ids: local.clone(),
         };
-        undo.outbox.push(outbox::enqueue_at(store, to.account_id, &op, now() + UNDO_SECS)?);
+        undo.outbox.push(outbox::enqueue_at(store, to.account_id, &op, now() + delay)?);
         undo.hidden.extend(local);
         undo.accounts.push(to.account_id);
     }
     undo.accounts.dedup();
     Ok(())
+}
+
+/// Moves messages to a folder of the same account at once, without the undo window: what the
+/// app does by itself (a snoozed message coming back).
+pub fn move_now(store: &Store, ids: &[i64], target: i64) -> Result<Undo> {
+    let to = store.mailbox(target)?;
+    let mut undo = Undo::default();
+    move_into(store, ids, &to, &mut undo, 0)?;
+    Ok(undo)
+}
+
+/// Moves messages into the folder `name` of their accounts at once, creating it (here and,
+/// through the queue, on the server) where it is missing: the Screener's „Screened Out“, the
+/// snoozed messages' „Snoozed“.
+pub fn move_to_named(store: &Store, ids: &[i64], name: &str) -> Result<Undo> {
+    let mut undo = Undo::default();
+    let mut per_account: BTreeMap<i64, Vec<i64>> = BTreeMap::new();
+    for (mailbox_id, msgs) in by_mailbox(store, ids)? {
+        let account = store.mailbox(mailbox_id)?.account_id;
+        per_account.entry(account).or_default().extend(msgs.iter().map(|(id, _)| *id));
+    }
+    for (account, list) in per_account {
+        let target = named_folder(store, account, name, &mut undo)?;
+        move_into(store, &list, &target, &mut undo, 0)?;
+    }
+    Ok(undo)
+}
+
+/// The account's folder `name`, created here and queued for the server when it is missing.
+pub(crate) fn named_folder(store: &Store, account_id: i64, name: &str, undo: &mut Undo) -> Result<Mailbox> {
+    if let Some(m) = store.mailbox_by_name(account_id, name)? {
+        return Ok(m);
+    }
+    let id = store.upsert_mailbox(
+        account_id,
+        &crate::imap::MailboxEntry { name: name.into(), delimiter: Some('/'), attributes: vec![] },
+    )?;
+    undo.outbox.push(outbox::enqueue(store, account_id, &Op::CreateFolder { name: name.into() })?);
+    store.mailbox(id)
 }
 
 /// Moves messages to the archive of their account.
@@ -152,7 +193,7 @@ fn to_role(store: &Store, ids: &[i64], role: Role, name: &str) -> Result<Undo> {
             Some(all) => all,
             None => folder_for(store, account, role, name, &mut undo)?,
         };
-        move_into(store, &list, &target, &mut undo)?;
+        move_into(store, &list, &target, &mut undo, UNDO_SECS)?;
     }
     Ok(undo)
 }
@@ -166,7 +207,9 @@ pub fn delete(store: &Store, ids: &[i64]) -> Result<Undo> {
         let trash = store.mailbox_by_role(from.account_id, Role::Trash)?;
         let local: Vec<i64> = msgs.iter().map(|(id, _)| *id).collect();
         match trash {
-            Some(t) if !matches!(from.role, Some(Role::Trash | Role::Junk)) => move_into(store, &local, &t, &mut undo)?,
+            Some(t) if !matches!(from.role, Some(Role::Trash | Role::Junk)) => {
+                move_into(store, &local, &t, &mut undo, UNDO_SECS)?
+            }
             _ => {
                 store.set_hidden(&local, true)?;
                 let op =
@@ -273,17 +316,28 @@ pub fn delete_folder(store: &Store, mailbox_id: i64) -> Result<()> {
 /// The draft with its HTML cleaned like a received message (pasted content can carry
 /// anything).
 fn cleaned(d: &Draft) -> Draft {
-    Draft { html: d.html.as_deref().map(|h| sanitize_html(h, true).html), ..d.clone() }
+    Draft { html: d.html.as_deref().map(|h| sanitize_html_with(h, true, false).html), ..d.clone() }
 }
 
 /// Queues a message to send after `delay_secs` (the undo window); returns the queue entry and
 /// the message's Message-ID.
 pub fn queue_send(store: &Store, d: &Draft, files: &[FileAttachment], delay_secs: u32) -> Result<(i64, String)> {
+    let date = now();
+    let (op, mid) = prepare_send(store, d, files, date)?;
+    let id = outbox::enqueue_at(store, d.account_id, &op, now() + delay_secs as i64)?;
+    if let Some(r) = d.reply_to_id {
+        store.mark_answered(r)?;
+    }
+    Ok((id, mid))
+}
+
+/// The finished message of a draft as the outbox step that sends it, dated `date`, and its
+/// Message-ID; its recipients go to the address book.
+pub fn prepare_send(store: &Store, d: &Draft, files: &[FileAttachment], date: i64) -> Result<(Op, String)> {
     let d = &cleaned(d);
     let account = store.account(d.account_id)?;
     let rcpt = compose::recipients(d)?;
     let mid = d.message_id.clone().unwrap_or_else(|| compose::new_message_id(&account.email));
-    let date = now();
     let raw = compose::build(&account, d, files, &mid, date, false)?;
     let with_bcc = d.bcc.iter().any(|b| !b.trim().is_empty());
     let sent = if with_bcc { Some(b64(&compose::build(&account, d, files, &mid, date, true)?)) } else { None };
@@ -305,14 +359,10 @@ pub fn queue_send(store: &Store, d: &Draft, files: &[FileAttachment], delay_secs
         draft: d.message_id.clone(),
         answered,
     };
-    let id = outbox::enqueue_at(store, account.id, &op, now() + delay_secs as i64)?;
     for a in &rcpt {
-        store.touch_contact(a, true, date)?;
+        store.touch_contact(a, true, now())?;
     }
-    if let Some(r) = d.reply_to_id {
-        store.mark_answered(r)?;
-    }
-    Ok((id, mid))
+    Ok((op, mid))
 }
 
 /// Takes a queued message back (undo send); `false` when it went out already.
@@ -357,6 +407,8 @@ pub struct Body {
     /// The text part as HTML, for „Als Text anzeigen“ when the message has HTML.
     pub text_html: Option<String>,
     pub blocked_remote: usize,
+    /// Tracking pixels and link trackers removed („Tracker entfernt“).
+    pub trackers: usize,
     /// Made from plain text: drawn in the app's colors, not on the light paper of HTML mail.
     pub plain: bool,
 }
@@ -370,6 +422,8 @@ pub struct MessageView {
     pub sender_trusted: bool,
     /// Attachments the user sees (not the pictures the HTML shows).
     pub files: Vec<Attachment>,
+    /// Pinned, read later, snoozed, a reminder.
+    pub marks: crate::later::Marks,
 }
 
 /// The message with its body ready for the sandboxed frame.
@@ -382,7 +436,7 @@ pub fn message_view(store: &Store, id: i64, remote: RemoteContent) -> Result<Mes
         if detail.html.as_deref().is_some_and(|h| h.contains("cid:")) { store.inline_images(id)? } else { vec![] };
     let clean = |html: &str| -> Sanitized {
         let s = sanitize_html(html, allow);
-        Sanitized { html: inline_cids(&s.html, &images), blocked_remote: s.blocked_remote }
+        Sanitized { html: inline_cids(&s.html, &images), blocked_remote: s.blocked_remote, trackers: s.trackers }
     };
     let body = match (&detail.html, &detail.text) {
         (Some(html), text) => {
@@ -394,24 +448,29 @@ pub fn message_view(store: &Store, id: i64, remote: RemoteContent) -> Result<Mes
             Body {
                 html: main,
                 full_html,
-                text_html: text.as_deref().filter(|t| !t.trim().is_empty()).map(text_to_html),
+                text_html: text.as_deref().filter(|t| !t.trim().is_empty()).map(|t| text_to_html_counted(t).0),
                 blocked_remote: full.blocked_remote,
+                trackers: full.trackers,
                 plain: false,
             }
         }
-        (None, Some(text)) => match quote_start_text(text) {
-            Some(at) => Body {
-                html: text_to_html(text[..at].trim_end()),
-                full_html: Some(text_to_html(text)),
-                text_html: None,
-                blocked_remote: 0,
-                plain: true,
-            },
-            None => Body { html: text_to_html(text), full_html: None, text_html: None, blocked_remote: 0, plain: true },
-        },
+        (None, Some(text)) => {
+            let (full, trackers) = text_to_html_counted(text);
+            match quote_start_text(text) {
+                Some(at) => Body {
+                    html: text_to_html_counted(text[..at].trim_end()).0,
+                    full_html: Some(full),
+                    text_html: None,
+                    blocked_remote: 0,
+                    trackers,
+                    plain: true,
+                },
+                None => Body { html: full, full_html: None, text_html: None, blocked_remote: 0, trackers, plain: true },
+            }
+        }
         (None, None) => {
-            let html = text_to_html(&detail.summary.snippet);
-            Body { html, full_html: None, text_html: None, blocked_remote: 0, plain: true }
+            let html = text_to_html_counted(&detail.summary.snippet).0;
+            Body { html, full_html: None, text_html: None, blocked_remote: 0, trackers: 0, plain: true }
         }
     };
     let files = detail
@@ -424,7 +483,8 @@ pub fn message_view(store: &Store, id: i64, remote: RemoteContent) -> Result<Mes
     // The raw HTML stays in the backend.
     detail.html = None;
     detail.remote_allowed = allow;
-    Ok(MessageView { detail, body, sender_trusted, files })
+    let marks = crate::later::marks_of(store, id)?;
+    Ok(MessageView { detail, body, sender_trusted, files, marks })
 }
 
 #[cfg(test)]

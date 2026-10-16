@@ -4,7 +4,9 @@
 //! iOS when the system grants background app refresh (`mobile/ios.rs`). Each run checks every
 //! account once (`mail_core::engine::check_once`: the offline queue, the inbox, its first
 //! lines) within a time budget and answers what to tell the user: a notification per new
-//! message and the unread count for the badge. The platform code shows them.
+//! message and the unread count for the badge. The platform code shows them. Before that it does
+//! what the time tools have due (`mail_core::later::tick`): messages to send later go to the
+//! queue the check replays, snoozed messages come back, reminders become notifications.
 //!
 //! The texts are the desktop's notifications' ([`new_mail_text`]). Everything stays on the
 //! device: the check talks only to the user's mail servers.
@@ -69,6 +71,16 @@ pub fn new_mail_text(list: &[MessageSummary], account: Option<&Account>) -> Opti
     })
 }
 
+/// What a notification about a reminder without an answer says.
+pub fn reminder_text(r: &mail_core::later::Reminder) -> (String, String) {
+    let subject = if r.subject.trim().is_empty() {
+        mail_core::tr!("(Kein Betreff)", "(No subject)").to_string()
+    } else {
+        r.subject.clone()
+    };
+    (mail_core::tr!("Keine Antwort bisher", "No answer yet").to_string(), subject)
+}
+
 /// The notifications for the new messages of one account: one per message (newest first), or
 /// one summary when there are more than [`NOTES_PER_ACCOUNT`].
 pub fn notes_for(account: &Account, mut list: Vec<MessageSummary>) -> Vec<Note> {
@@ -111,6 +123,7 @@ pub fn run(data_dir: &Path, budget: Duration) -> Report {
     crate::secrets::init(data_dir);
     crate::apply_network(&settings.network);
     let accounts = store.accounts().unwrap_or_default();
+    let due = mail_core::later::tick(&store, mail_core::store::now()).unwrap_or_default();
 
     // One thread per account with a runtime of its own (the check is not `Send`).
     let (tx, rx) = mpsc::channel::<(i64, Vec<i64>)>();
@@ -168,9 +181,16 @@ pub fn run(data_dir: &Path, budget: Duration) -> Report {
     if settings.notifications {
         for (id, new) in found {
             let Some(account) = accounts.iter().find(|a| a.id == id) else { continue };
-            // Only what is still unread (read on another device in the meantime: no note).
+            // Only what is still unread (read on another device in the meantime: no note), and
+            // with Focus or the Screener only what they let through.
+            let new = mail_core::triage::worth_telling(&store, id, &new).unwrap_or(new);
             let list: Vec<_> = store.summaries(&new).unwrap_or_default().into_iter().filter(|m| !m.seen).collect();
             notes.extend(notes_for(account, list));
+        }
+        for (i, r) in due.reminders.iter().enumerate() {
+            let group = accounts.iter().find(|a| a.id == r.account_id).map(|a| a.email.clone()).unwrap_or_default();
+            let (title, body) = reminder_text(r);
+            notes.push(Note { key: format!("reminder-{}-{i}", r.account_id), group, title, body });
         }
     }
     Report { skipped: false, notes, unread: store.unread_in_inboxes().unwrap_or(0) }
@@ -210,6 +230,7 @@ mod tests {
             answered: false,
             has_attachments: false,
             thread_count: 1,
+            ..MessageSummary::default()
         }
     }
 
