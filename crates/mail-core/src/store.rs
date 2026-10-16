@@ -2,21 +2,24 @@
 //!
 //! Migrations are numbered files in `migrations/`, applied in order and tracked through
 //! `PRAGMA user_version`; a database newer than the binary is refused rather than modified.
+//! Several connections may use one file (the app's and one per account worker); WAL and the
+//! busy timeout keep them apart.
 
 use std::path::Path;
 
 use rusqlite::{Connection, OptionalExtension, Row, params};
 use serde::{Deserialize, Serialize};
 
-use crate::account::{Account, AccountDraft, Provider, validate};
+use crate::account::{Account, AccountDraft, Provider, Transport, validate};
 use crate::error::{Error, Result};
 use crate::imap::{FetchedHeader, Flags, MailboxEntry, Role};
-use crate::parse::{Address, ParsedMessage};
+use crate::parse::{Address, AttachmentInfo, ParsedMessage};
 use crate::search::fold;
 use crate::trf;
 
 /// The migrations in order; `MIGRATIONS[i]` brings the schema from version `i` to `i + 1`.
-pub const MIGRATIONS: &[&str] = &[include_str!("../migrations/0001_init.sql")];
+pub const MIGRATIONS: &[&str] =
+    &[include_str!("../migrations/0001_init.sql"), include_str!("../migrations/0002_mail_actions.sql")];
 pub const SCHEMA_VERSION: u32 = MIGRATIONS.len() as u32;
 
 pub struct Store {
@@ -45,7 +48,8 @@ pub struct SyncState {
     pub highest_modseq: Option<u64>,
 }
 
-/// A row of the message list.
+/// A row of the message list. In the conversation view it stands for its thread in the folder:
+/// the newest message, with the number of messages and whether any is unread.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MessageSummary {
     pub id: i64,
@@ -60,19 +64,62 @@ pub struct MessageSummary {
     pub flagged: bool,
     pub answered: bool,
     pub has_attachments: bool,
+    /// Messages of the thread in this folder (1 outside the conversation view).
+    pub thread_count: u32,
 }
 
 /// A message as the reading pane shows it (the HTML not yet sanitized).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MessageDetail {
     pub summary: MessageSummary,
+    pub account_id: i64,
     pub to: Vec<Address>,
     pub cc: Vec<Address>,
+    pub reply_to: Vec<Address>,
     pub message_id: Option<String>,
+    pub in_reply_to: Option<String>,
+    pub references: Vec<String>,
+    pub size: u32,
+    pub draft: bool,
     pub has_body: bool,
     pub text: Option<String>,
     pub html: Option<String>,
     pub remote_allowed: bool,
+    pub attachments: Vec<Attachment>,
+}
+
+/// An attachment as stored: from the kept message (`part_index`) or, for a large message, its
+/// IMAP part (`section`), fetched when opened.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Attachment {
+    pub id: i64,
+    pub message_id: i64,
+    pub part_index: u32,
+    pub filename: Option<String>,
+    pub mime_type: String,
+    pub size: u64,
+    pub content_id: Option<String>,
+    pub inline: bool,
+    pub section: Option<String>,
+}
+
+/// The body of a large message, fetched part by part.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PartialBody {
+    pub text: Option<String>,
+    pub html: Option<String>,
+    pub snippet: String,
+    /// Attachments with their sections.
+    pub attachments: Vec<(AttachmentInfo, String)>,
+    /// `cid:` pictures: Content-ID, type, bytes.
+    pub inline: Vec<(String, String, Vec<u8>)>,
+}
+
+/// An address the compose sheet suggests.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Contact {
+    pub email: String,
+    pub name: Option<String>,
 }
 
 pub(crate) fn now() -> i64 {
@@ -115,6 +162,23 @@ fn summary(r: &Row<'_>) -> rusqlite::Result<MessageSummary> {
         flagged: r.get(10)?,
         answered: r.get(11)?,
         has_attachments: r.get(12)?,
+        thread_count: 1,
+    })
+}
+
+const ATTACHMENT_COLS: &str = "id, message_id, part_index, filename, mime_type, size, content_id, inline, section";
+
+fn attachment(r: &Row<'_>) -> rusqlite::Result<Attachment> {
+    Ok(Attachment {
+        id: r.get(0)?,
+        message_id: r.get(1)?,
+        part_index: r.get(2)?,
+        filename: r.get(3)?,
+        mime_type: r.get(4)?,
+        size: r.get::<_, i64>(5)? as u64,
+        content_id: r.get(6)?,
+        inline: r.get(7)?,
+        section: r.get(8)?,
     })
 }
 
@@ -130,7 +194,7 @@ impl Store {
     fn init(conn: Connection) -> Result<Self> {
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
-        conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        conn.busy_timeout(std::time::Duration::from_secs(10))?;
         let mut store = Store { conn };
         store.migrate()?;
         Ok(store)
@@ -161,6 +225,21 @@ impl Store {
         &self.conn
     }
 
+    /// Runs `f` in one transaction (a header batch of a sync: one write instead of hundreds).
+    pub fn batch<T>(&self, f: impl FnOnce() -> Result<T>) -> Result<T> {
+        self.conn.execute_batch("BEGIN IMMEDIATE")?;
+        match f() {
+            Ok(v) => {
+                self.conn.execute_batch("COMMIT")?;
+                Ok(v)
+            }
+            Err(e) => {
+                let _ = self.conn.execute_batch("ROLLBACK");
+                Err(e)
+            }
+        }
+    }
+
     // ------------------------------------------------------------------ accounts
 
     pub fn add_account(&self, draft: &AccountDraft) -> Result<i64> {
@@ -181,15 +260,23 @@ impl Store {
     }
 
     pub fn accounts(&self) -> Result<Vec<Account>> {
-        let mut st = self
-            .conn
-            .prepare("SELECT id, provider, name, email, sender_name, transport FROM accounts ORDER BY sort, id")?;
+        let mut st = self.conn.prepare(
+            "SELECT id, provider, name, email, sender_name, transport, signature FROM accounts ORDER BY sort, id",
+        )?;
         let rows = st.query_map([], |r| {
-            Ok((r.get(0)?, r.get::<_, String>(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get::<_, String>(5)?))
+            Ok((
+                r.get(0)?,
+                r.get::<_, String>(1)?,
+                r.get(2)?,
+                r.get(3)?,
+                r.get(4)?,
+                r.get::<_, String>(5)?,
+                r.get::<_, String>(6)?,
+            ))
         })?;
         let mut out = vec![];
         for row in rows {
-            let (id, provider, name, email, sender_name, transport) = row?;
+            let (id, provider, name, email, sender_name, transport, signature) = row?;
             out.push(Account {
                 id,
                 provider: provider_of(&provider),
@@ -197,9 +284,43 @@ impl Store {
                 email,
                 sender_name,
                 transport: serde_json::from_str(&transport)?,
+                signature,
             });
         }
         Ok(out)
+    }
+
+    pub fn account(&self, id: i64) -> Result<Account> {
+        self.accounts()?
+            .into_iter()
+            .find(|a| a.id == id)
+            .ok_or_else(|| Error::NotFound(trf!("Konto {id} fehlt.", "Account {id} is missing.")))
+    }
+
+    /// Changes what the user sees of an account (its name, the sender name, the signature).
+    pub fn update_account(&self, id: i64, name: &str, sender_name: &str, signature: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE accounts SET name = ?2, sender_name = ?3, signature = ?4 WHERE id = ?1",
+            params![id, name.trim(), sender_name.trim(), signature.trim_end()],
+        )?;
+        Ok(())
+    }
+
+    /// New server settings for an account (checked as a new account would be).
+    pub fn update_transport(&self, id: i64, transport: &Transport) -> Result<()> {
+        let a = self.account(id)?;
+        validate(&AccountDraft {
+            provider: a.provider,
+            name: a.name,
+            email: a.email,
+            sender_name: a.sender_name,
+            transport: transport.clone(),
+        })?;
+        self.conn.execute(
+            "UPDATE accounts SET transport = ?2 WHERE id = ?1",
+            params![id, serde_json::to_string(transport)?],
+        )?;
+        Ok(())
     }
 
     /// Removes an account with its folders, messages and queue (the caller deletes its secrets).
@@ -231,8 +352,32 @@ impl Store {
     pub fn retain_mailboxes(&self, account_id: i64, names: &[String]) -> Result<()> {
         let existing = self.mailboxes(account_id)?;
         for m in existing.iter().filter(|m| !names.contains(&m.name)) {
-            self.clear_mailbox(m.id)?;
-            self.conn.execute("DELETE FROM mailboxes WHERE id = ?1", [m.id])?;
+            self.remove_mailbox(m.id)?;
+        }
+        Ok(())
+    }
+
+    /// Removes a folder and its messages here (deleted on the server, or by the user).
+    pub fn remove_mailbox(&self, id: i64) -> Result<()> {
+        self.clear_mailbox(id)?;
+        self.conn.execute("DELETE FROM mailboxes WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
+    /// Renames a folder here (and its subfolders); its messages stay until the next sync of the
+    /// new name.
+    pub fn rename_mailbox(&self, account_id: i64, from: &str, to: &str) -> Result<()> {
+        let boxes = self.mailboxes(account_id)?;
+        for m in boxes {
+            let delim = m.delimiter.clone().unwrap_or_else(|| "/".into());
+            let new = if m.name == from {
+                to.to_string()
+            } else if let Some(rest) = m.name.strip_prefix(&format!("{from}{delim}")) {
+                format!("{to}{delim}{rest}")
+            } else {
+                continue;
+            };
+            self.conn.execute("UPDATE mailboxes SET name = ?2 WHERE id = ?1", params![m.id, new])?;
         }
         Ok(())
     }
@@ -257,8 +402,8 @@ impl Store {
     }
 
     const MAILBOX_COLS: &str = "b.id, b.account_id, b.name, b.delimiter, b.role, b.selectable, b.uid_validity, b.uid_next, \
-         b.highest_modseq, (SELECT COUNT(*) FROM messages m WHERE m.mailbox_id = b.id AND m.seen = 0), \
-         (SELECT COUNT(*) FROM messages m WHERE m.mailbox_id = b.id)";
+         b.highest_modseq, (SELECT COUNT(*) FROM messages m WHERE m.mailbox_id = b.id AND m.seen = 0 AND m.hidden = 0), \
+         (SELECT COUNT(*) FROM messages m WHERE m.mailbox_id = b.id AND m.hidden = 0)";
 
     /// The folders of an account: the inbox and the other special folders first, then by name.
     pub fn mailboxes(&self, account_id: i64) -> Result<Vec<Mailbox>> {
@@ -279,6 +424,25 @@ impl Store {
             .query_row(&sql, [id], Self::mailbox_row)
             .optional()?
             .ok_or_else(|| Error::NotFound(trf!("Ordner {id} fehlt.", "Folder {id} is missing.")))
+    }
+
+    pub fn mailbox_by_name(&self, account_id: i64, name: &str) -> Result<Option<Mailbox>> {
+        Ok(self.mailboxes(account_id)?.into_iter().find(|m| m.name == name))
+    }
+
+    /// The folder of a role (the account's Sent, Trash, …), if the server has one.
+    pub fn mailbox_by_role(&self, account_id: i64, role: Role) -> Result<Option<Mailbox>> {
+        Ok(self.mailboxes(account_id)?.into_iter().find(|m| m.role == Some(role)))
+    }
+
+    /// Unread messages in the inboxes of all accounts (the badge of the app).
+    pub fn unread_in_inboxes(&self) -> Result<u32> {
+        Ok(self.conn.query_row(
+            "SELECT COUNT(*) FROM messages m JOIN mailboxes b ON b.id = m.mailbox_id
+             WHERE b.role = 'inbox' AND m.seen = 0 AND m.hidden = 0",
+            [],
+            |r| r.get(0),
+        )?)
     }
 
     pub fn set_sync_state(&self, mailbox_id: i64, s: SyncState) -> Result<()> {
@@ -302,10 +466,13 @@ impl Store {
     // ------------------------------------------------------------------ messages
 
     /// Stores a message from its header (the body follows on demand); returns its id. A UID
-    /// already stored keeps its row and gets the new flags.
+    /// already stored keeps its row and gets the new flags. A copy of a message already here
+    /// (moved to the archive, a reply in Sent) takes over its body.
     pub fn insert_message(&self, mailbox_id: i64, h: &FetchedHeader, p: &ParsedMessage) -> Result<i64> {
-        let account_id: i64 =
-            self.conn.query_row("SELECT account_id FROM mailboxes WHERE id = ?1", [mailbox_id], |r| r.get(0))?;
+        let (account_id, role): (i64, Option<String>) =
+            self.conn.query_row("SELECT account_id, role FROM mailboxes WHERE id = ?1", [mailbox_id], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })?;
         if let Some(id) = self
             .conn
             .query_row("SELECT id FROM messages WHERE mailbox_id = ?1 AND uid = ?2", params![mailbox_id, h.uid], |r| {
@@ -321,8 +488,8 @@ impl Store {
         self.conn.execute(
             "INSERT INTO messages (account_id, mailbox_id, uid, modseq, message_id, in_reply_to, refs, subject,
                from_name, from_email, to_json, cc_json, date, internal_date, size, seen, answered, flagged, draft,
-               keywords, has_attachments, snippet)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
+               keywords, has_attachments, snippet, reply_to_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)",
             params![
                 account_id,
                 mailbox_id,
@@ -346,12 +513,58 @@ impl Store {
                 serde_json::to_string(&h.flags.keywords)?,
                 has_attachments,
                 p.snippet,
+                serde_json::to_string(&p.reply_to)?,
             ],
         )?;
         let id = self.conn.last_insert_rowid();
         crate::thread::assign(self, account_id, id, p)?;
         self.index_message(id, p)?;
+        self.adopt_body(account_id, id, p.message_id.as_deref())?;
+        // The address book: who wrote, and whom the user wrote to.
+        let at = p.date.unwrap_or(h.internal_date);
+        if role.as_deref() == Some("sent") {
+            for a in p.to.iter().chain(&p.cc) {
+                self.touch_contact(a, true, at)?;
+            }
+        } else if role.as_deref() != Some("junk")
+            && let Some(f) = &p.from
+        {
+            self.touch_contact(f, false, at)?;
+        }
         Ok(id)
+    }
+
+    /// Copies the stored body of another copy of the same message (same Message-ID).
+    fn adopt_body(&self, account_id: i64, id: i64, message_id: Option<&str>) -> Result<()> {
+        let Some(mid) = message_id else { return Ok(()) };
+        let Some(source): Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT id FROM messages WHERE account_id = ?1 AND message_id = ?2 AND id <> ?3 AND has_body = 1 LIMIT 1",
+                params![account_id, mid, id],
+                |r| r.get(0),
+            )
+            .optional()?
+        else {
+            return Ok(());
+        };
+        self.conn.execute(
+            "INSERT OR REPLACE INTO message_bodies (message_id, text, html, remote_allowed, raw)
+             SELECT ?2, text, html, remote_allowed, raw FROM message_bodies WHERE message_id = ?1",
+            params![source, id],
+        )?;
+        self.conn.execute(
+            "INSERT INTO attachments (message_id, part_index, filename, mime_type, size, content_id, inline, section, data)
+             SELECT ?2, part_index, filename, mime_type, size, content_id, inline, section, data
+             FROM attachments WHERE message_id = ?1",
+            params![source, id],
+        )?;
+        self.conn.execute(
+            "UPDATE messages SET has_body = 1, snippet = (SELECT snippet FROM messages WHERE id = ?1),
+               has_attachments = (SELECT has_attachments FROM messages WHERE id = ?1) WHERE id = ?2",
+            params![source, id],
+        )?;
+        Ok(())
     }
 
     /// Writes the search entry of a message (again, after its body arrived).
@@ -373,12 +586,17 @@ impl Store {
         Ok(())
     }
 
-    /// Stores the body of a message (parsed from the whole message) and its attachments.
+    /// Stores the body of a message (parsed from the whole message) and its attachments; `raw`
+    /// keeps the whole message for attachments offline.
     pub fn set_body(&self, id: i64, p: &ParsedMessage) -> Result<()> {
+        self.set_body_raw(id, p, None)
+    }
+
+    pub fn set_body_raw(&self, id: i64, p: &ParsedMessage, raw: Option<&[u8]>) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO message_bodies (message_id, text, html) VALUES (?1, ?2, ?3)
-             ON CONFLICT (message_id) DO UPDATE SET text = excluded.text, html = excluded.html",
-            params![id, p.text, p.html],
+            "INSERT INTO message_bodies (message_id, text, html, raw) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT (message_id) DO UPDATE SET text = excluded.text, html = excluded.html, raw = excluded.raw",
+            params![id, p.text, p.html, raw],
         )?;
         self.conn.execute("DELETE FROM attachments WHERE message_id = ?1", [id])?;
         for a in &p.attachments {
@@ -390,9 +608,83 @@ impl Store {
         }
         self.conn.execute(
             "UPDATE messages SET has_body = 1, snippet = ?2, has_attachments = ?3 WHERE id = ?1",
-            params![id, p.snippet, p.attachments.iter().any(|a| !a.inline)],
+            params![id, p.snippet, p.attachments.iter().any(|a| !a.inline || a.content_id.is_none())],
         )?;
         self.index_message(id, p)
+    }
+
+    /// Stores the text of a large message, its attachments by section and the pictures its
+    /// HTML shows.
+    pub fn set_body_parts(&self, id: i64, header: &ParsedMessage, b: &PartialBody) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO message_bodies (message_id, text, html, raw) VALUES (?1, ?2, ?3, NULL)
+             ON CONFLICT (message_id) DO UPDATE SET text = excluded.text, html = excluded.html, raw = NULL",
+            params![id, b.text, b.html],
+        )?;
+        self.conn.execute("DELETE FROM attachments WHERE message_id = ?1", [id])?;
+        for (a, section) in &b.attachments {
+            self.conn.execute(
+                "INSERT INTO attachments (message_id, part_index, filename, mime_type, size, content_id, inline, section)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![id, a.index, a.filename, a.mime_type, a.size as i64, a.content_id, a.inline, section],
+            )?;
+        }
+        for (i, (cid, mime, data)) in b.inline.iter().enumerate() {
+            self.conn.execute(
+                "INSERT INTO attachments (message_id, part_index, mime_type, size, content_id, inline, data)
+                 VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6)",
+                params![id, 10_000 + i as i64, mime, data.len() as i64, cid, data],
+            )?;
+        }
+        self.conn.execute(
+            "UPDATE messages SET has_body = 1, snippet = ?2, has_attachments = ?3 WHERE id = ?1",
+            params![id, b.snippet, !b.attachments.is_empty()],
+        )?;
+        let p = ParsedMessage { text: b.text.clone(), snippet: b.snippet.clone(), ..header.clone() };
+        self.index_message(id, &p)
+    }
+
+    /// The whole message, when it was kept.
+    pub fn raw_message(&self, id: i64) -> Result<Option<Vec<u8>>> {
+        Ok(self
+            .conn
+            .query_row("SELECT raw FROM message_bodies WHERE message_id = ?1", [id], |r| r.get(0))
+            .optional()?
+            .flatten())
+    }
+
+    pub fn attachments(&self, message_id: i64) -> Result<Vec<Attachment>> {
+        let sql = format!("SELECT {ATTACHMENT_COLS} FROM attachments WHERE message_id = ?1 ORDER BY part_index");
+        let mut st = self.conn.prepare(&sql)?;
+        let rows = st.query_map([message_id], attachment)?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    pub fn attachment(&self, id: i64) -> Result<Attachment> {
+        let sql = format!("SELECT {ATTACHMENT_COLS} FROM attachments WHERE id = ?1");
+        self.conn
+            .query_row(&sql, [id], attachment)
+            .optional()?
+            .ok_or_else(|| Error::NotFound(trf!("Anhang {id} fehlt.", "Attachment {id} is missing.")))
+    }
+
+    /// The `cid:` pictures of a message: from the kept message, or fetched with a large one.
+    pub fn inline_images(&self, message_id: i64) -> Result<Vec<(String, String, Vec<u8>)>> {
+        if let Some(raw) = self.raw_message(message_id)? {
+            return Ok(crate::parse::inline_images(&raw));
+        }
+        let mut st = self.conn.prepare(
+            "SELECT content_id, mime_type, data FROM attachments WHERE message_id = ?1 AND data IS NOT NULL
+               AND content_id IS NOT NULL",
+        )?;
+        let rows = st.query_map([message_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Notes where an attachment was saved.
+    pub fn set_attachment_path(&self, id: i64, path: &str) -> Result<()> {
+        self.conn.execute("UPDATE attachments SET local_path = ?2 WHERE id = ?1", params![id, path])?;
+        Ok(())
     }
 
     pub fn set_flags(&self, mailbox_id: i64, uid: u32, f: &Flags, modseq: Option<u64>) -> Result<()> {
@@ -428,6 +720,15 @@ impl Store {
         Ok(n)
     }
 
+    /// Removes messages by id (moved away on the server, deleted for good).
+    pub fn remove_messages(&self, ids: &[i64]) -> Result<()> {
+        for id in ids {
+            self.conn.execute("DELETE FROM messages_fts WHERE rowid = ?1", [id])?;
+            self.conn.execute("DELETE FROM messages WHERE id = ?1", [id])?;
+        }
+        Ok(())
+    }
+
     /// The UIDs stored for a folder, ascending.
     pub fn uids(&self, mailbox_id: i64) -> Result<Vec<u32>> {
         let mut st = self.conn.prepare("SELECT uid FROM messages WHERE mailbox_id = ?1 ORDER BY uid")?;
@@ -438,7 +739,7 @@ impl Store {
     /// The message list of a folder, newest first.
     pub fn messages(&self, mailbox_id: i64, limit: u32, offset: u32) -> Result<Vec<MessageSummary>> {
         let sql = format!(
-            "SELECT {SUMMARY_COLS} FROM messages WHERE mailbox_id = ?1
+            "SELECT {SUMMARY_COLS} FROM messages WHERE mailbox_id = ?1 AND hidden = 0
              ORDER BY COALESCE(date, internal_date) DESC, id DESC LIMIT ?2 OFFSET ?3"
         );
         let mut st = self.conn.prepare(&sql)?;
@@ -446,18 +747,65 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
-    /// The messages of a thread across folders, oldest first.
-    pub fn thread(&self, thread_id: i64) -> Result<Vec<MessageSummary>> {
+    /// The conversation view of a folder: one row per thread (its newest message), newest
+    /// thread first; unread when any message of it is.
+    pub fn threads(&self, mailbox_id: i64, limit: u32, offset: u32) -> Result<Vec<MessageSummary>> {
         let sql = format!(
-            "SELECT {SUMMARY_COLS} FROM messages WHERE thread_id = ?1 ORDER BY COALESCE(date, internal_date), id"
+            "WITH ranked AS (
+               SELECT *, ROW_NUMBER() OVER (PARTITION BY thread_id ORDER BY COALESCE(date, internal_date) DESC, id DESC) AS rn,
+                 COUNT(*) OVER (PARTITION BY thread_id) AS n,
+                 MIN(seen) OVER (PARTITION BY thread_id) AS all_seen,
+                 MAX(flagged) OVER (PARTITION BY thread_id) AS any_flag,
+                 MAX(has_attachments) OVER (PARTITION BY thread_id) AS any_att
+               FROM messages WHERE mailbox_id = ?1 AND hidden = 0)
+             SELECT id, mailbox_id, uid, thread_id, subject, from_name, from_email, COALESCE(date, internal_date),
+               snippet, all_seen, any_flag, answered, any_att, n
+             FROM ranked WHERE rn = 1 ORDER BY COALESCE(date, internal_date) DESC, id DESC LIMIT ?2 OFFSET ?3"
         );
         let mut st = self.conn.prepare(&sql)?;
-        let rows = st.query_map([thread_id], summary)?;
+        let rows = st.query_map(params![mailbox_id, limit, offset], |r| {
+            let mut s = summary(r)?;
+            s.thread_count = r.get(13)?;
+            Ok(s)
+        })?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
+    /// How many rows the list of a folder has (threads in the conversation view).
+    pub fn list_len(&self, mailbox_id: i64, threads: bool) -> Result<u32> {
+        let sql = if threads {
+            "SELECT COUNT(DISTINCT thread_id) FROM messages WHERE mailbox_id = ?1 AND hidden = 0"
+        } else {
+            "SELECT COUNT(*) FROM messages WHERE mailbox_id = ?1 AND hidden = 0"
+        };
+        Ok(self.conn.query_row(sql, [mailbox_id], |r| r.get(0))?)
+    }
+
+    /// The messages of a thread across folders, oldest first (not the ones in the trash or spam,
+    /// unless the thread lives there).
+    pub fn thread(&self, thread_id: i64) -> Result<Vec<MessageSummary>> {
+        let sql = format!(
+            "SELECT {SUMMARY_COLS} FROM messages WHERE thread_id = ?1 AND hidden = 0
+             ORDER BY COALESCE(date, internal_date), id"
+        );
+        let mut st = self.conn.prepare(&sql)?;
+        let rows = st.query_map([thread_id], summary)?;
+        let all: Vec<MessageSummary> = rows.collect::<rusqlite::Result<_>>()?;
+        // One copy per Message-ID (the same message in Inbox and Archive): the first.
+        let mut seen = std::collections::HashSet::new();
+        let mut out = vec![];
+        for m in all {
+            let key: Option<String> =
+                self.conn.query_row("SELECT message_id FROM messages WHERE id = ?1", [m.id], |r| r.get(0))?;
+            if key.is_none_or(|k| seen.insert(k)) {
+                out.push(m);
+            }
+        }
+        Ok(out)
+    }
+
     pub fn summaries(&self, ids: &[i64]) -> Result<Vec<MessageSummary>> {
-        let sql = format!("SELECT {SUMMARY_COLS} FROM messages WHERE id = ?1");
+        let sql = format!("SELECT {SUMMARY_COLS} FROM messages WHERE id = ?1 AND hidden = 0");
         let mut st = self.conn.prepare(&sql)?;
         let mut out = Vec::with_capacity(ids.len());
         for id in ids {
@@ -468,12 +816,25 @@ impl Store {
         Ok(out)
     }
 
+    /// Ids of the stored messages of a folder with these UIDs.
+    pub fn ids_for_uids(&self, mailbox_id: i64, uids: &[u32]) -> Result<Vec<i64>> {
+        let mut st = self.conn.prepare("SELECT id FROM messages WHERE mailbox_id = ?1 AND uid = ?2")?;
+        let mut out = vec![];
+        for uid in uids {
+            if let Some(id) = st.query_row(params![mailbox_id, uid], |r| r.get(0)).optional()? {
+                out.push(id);
+            }
+        }
+        Ok(out)
+    }
+
     pub fn message(&self, id: i64) -> Result<MessageDetail> {
         let sql = format!(
             "SELECT {SUMMARY_COLS}, to_json, cc_json, message_id, has_body,
                (SELECT text FROM message_bodies WHERE message_id = messages.id),
                (SELECT html FROM message_bodies WHERE message_id = messages.id),
-               COALESCE((SELECT remote_allowed FROM message_bodies WHERE message_id = messages.id), 0)
+               COALESCE((SELECT remote_allowed FROM message_bodies WHERE message_id = messages.id), 0),
+               account_id, reply_to_json, in_reply_to, refs, size, draft
              FROM messages WHERE id = ?1"
         );
         let row = self
@@ -481,27 +842,31 @@ impl Store {
             .query_row(&sql, [id], |r| {
                 Ok((
                     summary(r)?,
-                    r.get::<_, String>(13)?,
-                    r.get::<_, String>(14)?,
-                    r.get(15)?,
-                    r.get(16)?,
-                    r.get(17)?,
-                    r.get(18)?,
-                    r.get(19)?,
+                    (r.get::<_, String>(13)?, r.get::<_, String>(14)?, r.get(15)?, r.get(16)?),
+                    (r.get(17)?, r.get(18)?, r.get(19)?),
+                    (r.get(20)?, r.get::<_, String>(21)?, r.get(22)?, r.get::<_, String>(23)?, r.get(24)?, r.get(25)?),
                 ))
             })
             .optional()?
             .ok_or_else(|| Error::NotFound(trf!("Nachricht {id} fehlt.", "Message {id} is missing.")))?;
-        let (summary, to, cc, message_id, has_body, text, html, remote_allowed) = row;
+        let (summary, (to, cc, message_id, has_body), (text, html, remote_allowed), rest) = row;
+        let (account_id, reply_to, in_reply_to, refs, size, draft) = rest;
         Ok(MessageDetail {
             summary,
+            account_id,
             to: serde_json::from_str(&to)?,
             cc: serde_json::from_str(&cc)?,
+            reply_to: serde_json::from_str(&reply_to).unwrap_or_default(),
             message_id,
+            in_reply_to,
+            references: serde_json::from_str(&refs).unwrap_or_default(),
+            size,
+            draft,
             has_body,
             text,
             html,
             remote_allowed,
+            attachments: self.attachments(id)?,
         })
     }
 
@@ -511,10 +876,92 @@ impl Store {
         Ok(())
     }
 
+    pub fn mark_flagged(&self, id: i64, flagged: bool) -> Result<()> {
+        self.conn.execute("UPDATE messages SET flagged = ?2 WHERE id = ?1", params![id, flagged])?;
+        Ok(())
+    }
+
+    pub fn mark_answered(&self, id: i64) -> Result<()> {
+        self.conn.execute("UPDATE messages SET answered = 1 WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
+    /// Hides messages while their move or deletion waits for the server (or shows them again
+    /// on undo).
+    pub fn set_hidden(&self, ids: &[i64], hidden: bool) -> Result<()> {
+        for id in ids {
+            self.conn.execute("UPDATE messages SET hidden = ?2 WHERE id = ?1", params![id, hidden])?;
+        }
+        Ok(())
+    }
+
     /// Allows remote content for one message.
     pub fn allow_remote(&self, id: i64) -> Result<()> {
         self.conn.execute("UPDATE message_bodies SET remote_allowed = 1 WHERE message_id = ?1", [id])?;
         Ok(())
+    }
+
+    // ------------------------------------------------------------------ senders and contacts
+
+    /// Remote images of this sender always load.
+    pub fn allow_sender(&self, email: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO remote_senders (email, added_at) VALUES (?1, ?2) ON CONFLICT (email) DO NOTHING",
+            params![email.trim(), now()],
+        )?;
+        Ok(())
+    }
+
+    pub fn forbid_sender(&self, email: &str) -> Result<()> {
+        self.conn.execute("DELETE FROM remote_senders WHERE email = ?1", [email.trim()])?;
+        Ok(())
+    }
+
+    pub fn sender_allowed(&self, email: &str) -> Result<bool> {
+        Ok(self
+            .conn
+            .query_row("SELECT 1 FROM remote_senders WHERE email = ?1", [email.trim()], |_| Ok(()))
+            .optional()?
+            .is_some())
+    }
+
+    pub fn allowed_senders(&self) -> Result<Vec<String>> {
+        let mut st = self.conn.prepare("SELECT email FROM remote_senders ORDER BY email COLLATE NOCASE")?;
+        let rows = st.query_map([], |r| r.get(0))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Counts an address for the autocomplete (`sent`: the user wrote to it).
+    pub fn touch_contact(&self, a: &Address, sent: bool, at: i64) -> Result<()> {
+        if a.email.trim().is_empty() || !a.email.contains('@') {
+            return Ok(());
+        }
+        self.conn.execute(
+            "INSERT INTO contacts (email, name, received, sent, last_used) VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT (email) DO UPDATE SET name = COALESCE(excluded.name, contacts.name),
+               received = contacts.received + excluded.received, sent = contacts.sent + excluded.sent,
+               last_used = MAX(contacts.last_used, excluded.last_used)",
+            params![a.email.trim(), a.name, !sent as i64, sent as i64, at],
+        )?;
+        Ok(())
+    }
+
+    /// Addresses starting with `prefix` (in the address or in a word of the name), the ones
+    /// written to most and most recently first.
+    pub fn suggest_contacts(&self, prefix: &str, limit: u32) -> Result<Vec<Contact>> {
+        let p = prefix.trim().to_lowercase();
+        if p.is_empty() {
+            return Ok(vec![]);
+        }
+        let like = format!("{}%", p.replace(['%', '_'], ""));
+        let word = format!("% {}", like);
+        let mut st = self.conn.prepare(
+            "SELECT email, name FROM contacts
+             WHERE lower(email) LIKE ?1 OR lower(name) LIKE ?1 OR lower(name) LIKE ?2
+             ORDER BY sent * 4 + received DESC, last_used DESC LIMIT ?3",
+        )?;
+        let rows = st.query_map(params![like, word, limit], |r| Ok(Contact { email: r.get(0)?, name: r.get(1)? }))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
     // ------------------------------------------------------------------ settings
@@ -581,6 +1028,24 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn version_1_databases_are_migrated_with_their_mail() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(MIGRATIONS[0]).unwrap();
+        conn.pragma_update(None, "user_version", 1).unwrap();
+        conn.execute_batch(
+            "INSERT INTO accounts (provider, email, transport, created_at) VALUES ('imap', 'a@example.org', '{}', 0);
+             INSERT INTO mailboxes (account_id, name, role) VALUES (1, 'INBOX', 'inbox');
+             INSERT INTO messages (account_id, mailbox_id, uid, from_name, from_email, internal_date)
+               VALUES (1, 1, 1, 'Jonas', 'jonas@example.org', 5);",
+        )
+        .unwrap();
+        let s = Store::init(conn).unwrap();
+        assert_eq!(s.schema_version().unwrap(), 2);
+        assert_eq!(s.suggest_contacts("jon", 5).unwrap()[0].email, "jonas@example.org", "senders become contacts");
+        assert_eq!(s.mailbox(1).unwrap().total, 1);
+    }
+
+    #[test]
     fn accounts_round_trip() {
         let (s, id, _) = store_with_inbox();
         let a = s.accounts().unwrap();
@@ -588,6 +1053,9 @@ pub(crate) mod tests {
         assert_eq!(a[0].id, id);
         assert_eq!(a[0].name, "Arbeit");
         assert_eq!(a[0].transport, preset(Provider::Imap, "maria@example.org").unwrap());
+        s.update_account(id, "Büro", "Maria M.", "Viele Grüße\nMaria\n").unwrap();
+        let a = s.account(id).unwrap();
+        assert_eq!((a.name.as_str(), a.signature.as_str()), ("Büro", "Viele Grüße\nMaria"));
         s.remove_account(id).unwrap();
         assert!(s.accounts().unwrap().is_empty());
         assert!(s.mailboxes(id).unwrap().is_empty(), "folders go with the account");
@@ -612,19 +1080,100 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn body_and_detail() {
+    fn hidden_messages_leave_lists_and_counts() {
         let (s, _, inbox) = store_with_inbox();
+        let raw = sample("h@x", "Weg", None, "Text");
+        let id = s.insert_message(inbox, &header(1, &raw), &parse(&raw).unwrap()).unwrap();
+        s.set_hidden(&[id], true).unwrap();
+        assert!(s.messages(inbox, 10, 0).unwrap().is_empty());
+        assert_eq!((s.mailbox(inbox).unwrap().unread, s.unread_in_inboxes().unwrap()), (0, 0));
+        assert_eq!(s.list_len(inbox, false).unwrap(), 0);
+        s.set_hidden(&[id], false).unwrap();
+        assert_eq!(s.unread_in_inboxes().unwrap(), 1);
+    }
+
+    #[test]
+    fn threads_in_the_list() {
+        let (s, _, inbox) = store_with_inbox();
+        let add = |uid: u32, id: &str, reply: Option<&str>| {
+            let raw = sample(id, "Angebot", reply, "x");
+            let mut h = header(uid, &raw);
+            h.flags.seen = uid != 2;
+            s.insert_message(inbox, &h, &parse(&raw).unwrap()).unwrap()
+        };
+        add(1, "a@x", None);
+        add(2, "b@x", Some("a@x"));
+        add(3, "c@x", None);
+        let threads = s.threads(inbox, 10, 0).unwrap();
+        assert_eq!(threads.len(), 2);
+        let t = threads.iter().find(|t| t.thread_count == 2).unwrap();
+        assert!(!t.seen, "unread when one message is");
+        assert_eq!(s.list_len(inbox, true).unwrap(), 2);
+        assert_eq!(s.list_len(inbox, false).unwrap(), 3);
+    }
+
+    #[test]
+    fn body_and_detail() {
+        let (s, account, inbox) = store_with_inbox();
         let raw = sample("d@x", "Bericht", None, "Der ganze Text");
         let id = s.insert_message(inbox, &header(1, &raw), &parse(&raw).unwrap()).unwrap();
         assert!(!s.message(id).unwrap().has_body);
-        s.set_body(id, &parse(&raw).unwrap()).unwrap();
+        s.set_body_raw(id, &parse(&raw).unwrap(), Some(&raw)).unwrap();
         let d = s.message(id).unwrap();
         assert!(d.has_body);
+        assert_eq!(d.account_id, account);
         assert_eq!(d.text.as_deref().map(str::trim), Some("Der ganze Text"));
         assert_eq!(d.to.len(), 2);
         assert!(!d.remote_allowed);
+        assert_eq!(s.raw_message(id).unwrap().as_deref(), Some(&raw[..]));
         s.allow_remote(id).unwrap();
         assert!(s.message(id).unwrap().remote_allowed);
         assert!(matches!(s.message(999), Err(Error::NotFound(_))));
+
+        // A copy in another folder takes over the body.
+        let archive = s
+            .upsert_mailbox(account, &MailboxEntry { name: "Archiv".into(), delimiter: None, attributes: vec![] })
+            .unwrap();
+        let copy = s.insert_message(archive, &header(7, &raw), &parse(&raw).unwrap()).unwrap();
+        assert!(s.message(copy).unwrap().has_body);
+        assert_eq!(s.thread(s.message(copy).unwrap().summary.thread_id).unwrap().len(), 1, "one copy per message");
+    }
+
+    #[test]
+    fn contacts_and_senders() {
+        let (s, account, inbox) = store_with_inbox();
+        let raw = sample("c@x", "Hallo", None, "x");
+        s.insert_message(inbox, &header(1, &raw), &parse(&raw).unwrap()).unwrap();
+        let sent = s
+            .upsert_mailbox(
+                account,
+                &MailboxEntry { name: "Sent".into(), delimiter: None, attributes: vec!["\\Sent".into()] },
+            )
+            .unwrap();
+        s.insert_message(sent, &header(1, &raw), &parse(&raw).unwrap()).unwrap();
+        let hits = s.suggest_contacts("jo", 5).unwrap();
+        assert_eq!(hits[0].email, "jonas@example.org", "written to: first");
+        assert_eq!(s.suggest_contacts("must", 5).unwrap()[0].email, "maria@example.org", "a word of the name");
+        assert!(s.suggest_contacts("", 5).unwrap().is_empty());
+        assert!(!s.sender_allowed("news@example.org").unwrap());
+        s.allow_sender("News@Example.org").unwrap();
+        assert!(s.sender_allowed("news@example.org").unwrap());
+        s.forbid_sender("news@example.org").unwrap();
+        assert!(s.allowed_senders().unwrap().is_empty());
+    }
+
+    #[test]
+    fn folders_rename_with_their_children() {
+        let (s, account, _) = store_with_inbox();
+        for name in ["Projekte", "Projekte/Website", "Projektarchiv"] {
+            s.upsert_mailbox(account, &MailboxEntry { name: name.into(), delimiter: Some('/'), attributes: vec![] })
+                .unwrap();
+        }
+        s.rename_mailbox(account, "Projekte", "Kunden").unwrap();
+        let names: Vec<String> = s.mailboxes(account).unwrap().into_iter().map(|m| m.name).collect();
+        assert!(
+            names.contains(&"Kunden/Website".to_string()) && names.contains(&"Projektarchiv".to_string()),
+            "{names:?}"
+        );
     }
 }

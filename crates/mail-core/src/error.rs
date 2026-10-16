@@ -15,6 +15,9 @@ pub enum Error {
     /// A connection was refused before it was opened (`network`), or it failed.
     #[error("{0}")]
     Network(String),
+    /// Connecting or signing in failed in a way the user can act on.
+    #[error("{0}")]
+    Connection(crate::network::Problem),
     /// Input the user can fix (an address, a server, a port).
     #[error("{0}")]
     Invalid(String),

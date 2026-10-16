@@ -129,6 +129,78 @@ pub fn parse(raw: &[u8]) -> Result<ParsedMessage> {
     })
 }
 
+fn mime_of(part: &mail_parser::MessagePart<'_>) -> String {
+    part.content_type().map_or("text/plain".to_string(), |c| match c.subtype() {
+        Some(sub) => format!("{}/{}", c.ctype(), sub).to_ascii_lowercase(),
+        None => c.ctype().to_ascii_lowercase(),
+    })
+}
+
+/// The content of attachment `index` (the order of [`ParsedMessage::attachments`]), decoded.
+pub fn attachment_data(raw: &[u8], index: u32) -> Option<Vec<u8>> {
+    let m = MessageParser::default().parse(raw)?;
+    m.attachments().nth(index as usize).map(|p| p.contents().to_vec())
+}
+
+/// Pictures the HTML refers to by `cid:`: Content-ID, type and the decoded bytes.
+pub fn inline_images(raw: &[u8]) -> Vec<(String, String, Vec<u8>)> {
+    let Some(m) = MessageParser::default().parse(raw) else { return vec![] };
+    m.attachments()
+        .filter_map(|p| {
+            let cid = p.content_id()?.trim_matches(['<', '>']).to_string();
+            let mime = mime_of(p);
+            mime.starts_with("image/").then(|| (cid, mime, p.contents().to_vec()))
+        })
+        .collect()
+}
+
+/// The leaves of the MIME tree with their IMAP section numbers (what `BODYSTRUCTURE` says, for
+/// the fake server and for messages read from the store).
+pub fn structure(raw: &[u8]) -> Vec<crate::imap::BodyPart> {
+    let Some(m) = MessageParser::default().parse(raw) else { return vec![] };
+    let mut out = vec![];
+    walk_parts(&m, 0, "", &mut out);
+    out
+}
+
+fn walk_parts(m: &mail_parser::Message<'_>, id: u32, prefix: &str, out: &mut Vec<crate::imap::BodyPart>) {
+    let Some(part) = m.part(id) else { return };
+    if let mail_parser::PartType::Multipart(children) = &part.body {
+        for (i, child) in children.iter().enumerate() {
+            let section = if prefix.is_empty() { (i + 1).to_string() } else { format!("{prefix}.{}", i + 1) };
+            walk_parts(m, *child, &section, out);
+        }
+        return;
+    }
+    let mime_type = mime_of(part);
+    out.push(crate::imap::BodyPart {
+        section: if prefix.is_empty() { "1".into() } else { prefix.into() },
+        filename: part.attachment_name().map(str::to_string),
+        size: (part.offset_end.saturating_sub(part.offset_body)) as u64,
+        content_id: part.content_id().map(|c| c.trim_matches(['<', '>']).to_string()),
+        inline: !part.content_disposition().is_some_and(|d| d.ctype().eq_ignore_ascii_case("attachment")),
+        mime_type,
+    });
+}
+
+/// The raw bytes of one part with its MIME header (`BODY[1.2.MIME]` and `BODY[1.2]`), which
+/// parse as a message of their own.
+pub fn section(raw: &[u8], section: &str) -> Option<Vec<u8>> {
+    let m = MessageParser::default().parse(raw)?;
+    let mut id = 0u32;
+    let path: Vec<usize> = section.split('.').map(|s| s.parse::<usize>().ok()).collect::<Option<_>>()?;
+    for (depth, n) in path.iter().enumerate() {
+        match &m.part(id)?.body {
+            mail_parser::PartType::Multipart(children) => id = *children.get(n.checked_sub(1)?)?,
+            // A single-part message: its only part is 1.
+            _ if depth == 0 && *n == 1 => {}
+            _ => return None,
+        }
+    }
+    let p = m.part(id)?;
+    raw.get(p.offset_header as usize..p.offset_end as usize).map(<[u8]>::to_vec)
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -186,6 +258,20 @@ Content-Transfer-Encoding: base64\r\n\r\nJVBERi0xLjQK\r\n--X--\r\n";
         assert_eq!(p.attachments[0].mime_type, "application/pdf");
         assert!(!p.attachments[0].inline);
         assert!(p.snippet.contains("Hallo Welt"), "{}", p.snippet);
+        assert_eq!(attachment_data(raw.as_bytes(), 0).as_deref(), Some(&b"%PDF-1.4\n"[..]));
+
+        let parts = structure(raw.as_bytes());
+        assert_eq!(parts.iter().map(|p| p.section.as_str()).collect::<Vec<_>>(), ["1", "2"]);
+        assert_eq!(parts[1].filename.as_deref(), Some("bericht.pdf"));
+        assert!(parts[1].is_attachment() && !parts[0].is_attachment());
+        let pdf = section(raw.as_bytes(), "2").unwrap();
+        assert!(String::from_utf8_lossy(&pdf).starts_with("Content-Type: application/pdf"));
+        let again = parse(&pdf).unwrap();
+        assert_eq!(again.attachments.len(), 1, "a part with its header reads as a message");
+        assert!(section(raw.as_bytes(), "3").is_none());
+        let single = sample("s@x", "Kurz", None, "Text");
+        assert_eq!(structure(&single).len(), 1);
+        assert!(section(&single, "1").is_some());
     }
 
     #[test]

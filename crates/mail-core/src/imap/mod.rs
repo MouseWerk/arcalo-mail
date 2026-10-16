@@ -1,18 +1,22 @@
 //! The IMAP client as the sync engine sees it: a trait ([`ImapClient`]) with the few operations
 //! the engine needs, and plain data types for the answers.
 //!
-//! The engine ([`crate::sync`]) is written against the trait only. The real client (async-imap
-//! over a TLS stream from [`crate::network`], milestone 1) and the in-memory server for tests
-//! ([`fake::FakeImap`]) implement it. Every message is addressed by UID; sequence numbers never
-//! leave the client.
+//! The engine ([`crate::sync`]) is written against the trait only. The real client
+//! ([`client::ImapSession`]: our commands, imap-proto's parser, a stream from
+//! [`crate::network`]) and the in-memory server for tests ([`fake::FakeImap`]) implement it.
+//! Every message is addressed by UID; sequence numbers never leave the client. Folder names are
+//! UTF-8 here and in the store; the client encodes them for the wire ([`utf7`]).
 
+pub mod client;
 #[cfg(any(test, feature = "fake"))]
 pub mod fake;
+pub mod utf7;
 
 use std::future::Future;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
+use tokio::sync::Notify;
 
 use crate::error::Result;
 
@@ -214,6 +218,8 @@ pub enum IdleOutcome {
     Changed,
     /// The time ran out (IDLE is renewed before the server's 30 minutes, RFC 2177).
     Timeout,
+    /// The app woke the connection for work of its own (a queued change, a sync request).
+    Interrupted,
 }
 
 /// The IMAP operations the sync engine uses. One value is one authenticated connection.
@@ -237,8 +243,93 @@ pub trait ImapClient: Send {
     ) -> impl Future<Output = Result<Vec<FlagUpdate>>> + Send;
     /// The whole message (`BODY.PEEK[]`).
     fn fetch_message(&mut self, uid: u32) -> impl Future<Output = Result<Vec<u8>>> + Send;
-    fn idle(&mut self, timeout: Duration) -> impl Future<Output = Result<IdleOutcome>> + Send;
+    /// The parts of a message (`BODYSTRUCTURE`), leaves only, for large messages whose
+    /// attachments are fetched on demand.
+    fn fetch_structure(&mut self, uid: u32) -> impl Future<Output = Result<Vec<BodyPart>>> + Send;
+    /// One part with its MIME header (`BODY.PEEK[1.2.MIME]` and `BODY.PEEK[1.2]`), which
+    /// parses as a message of its own.
+    fn fetch_section(&mut self, uid: u32, section: &str) -> impl Future<Output = Result<Vec<u8>>> + Send;
+    /// Waits in IDLE on the selected folder until the server reports a change, `timeout` runs
+    /// out or `wake` is notified (the app has something to do on this connection). A server
+    /// without IDLE only waits.
+    fn idle(&mut self, timeout: Duration, wake: &Notify) -> impl Future<Output = Result<IdleOutcome>> + Send;
+    /// `UID STORE uids ±FLAGS.SILENT (flags)` in the selected folder.
+    fn store(&mut self, uids: &[u32], flags: &[&str], add: bool) -> impl Future<Output = Result<()>> + Send;
+    /// `UID COPY`; the new UIDs when the server says them (UIDPLUS `COPYUID`).
+    fn copy(&mut self, uids: &[u32], to: &str) -> impl Future<Output = Result<Vec<(u32, u32)>>> + Send;
+    /// `UID MOVE`, or COPY, `\Deleted` and EXPUNGE on servers without MOVE.
+    fn move_to(&mut self, uids: &[u32], to: &str) -> impl Future<Output = Result<Vec<(u32, u32)>>> + Send;
+    /// Removes messages for good: `\Deleted`, then `UID EXPUNGE` (or EXPUNGE without UIDPLUS).
+    fn expunge(&mut self, uids: &[u32]) -> impl Future<Output = Result<()>> + Send;
+    /// `APPEND`; the new UID when the server says it (UIDPLUS `APPENDUID`).
+    fn append(&mut self, mailbox: &str, flags: &[&str], raw: &[u8])
+    -> impl Future<Output = Result<Option<u32>>> + Send;
+    /// `UID SEARCH` in the selected folder.
+    fn search(&mut self, query: &Search) -> impl Future<Output = Result<Vec<u32>>> + Send;
+    fn create(&mut self, mailbox: &str) -> impl Future<Output = Result<()>> + Send;
+    fn delete(&mut self, mailbox: &str) -> impl Future<Output = Result<()>> + Send;
+    fn rename(&mut self, from: &str, to: &str) -> impl Future<Output = Result<()>> + Send;
+    fn logout(&mut self) -> impl Future<Output = Result<()>> + Send;
 }
+
+/// What `UID SEARCH` looks for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Search {
+    /// Words anywhere in the message (`TEXT`), the server's own matching.
+    Text(String),
+    /// A message by its `Message-ID` header (drafts replaced on save).
+    MessageId(String),
+}
+
+/// One leaf of a message's MIME tree, with the IMAP section that fetches it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BodyPart {
+    /// `1`, `2.1`, … (RFC 3501 part specifier).
+    pub section: String,
+    pub mime_type: String,
+    pub filename: Option<String>,
+    pub size: u64,
+    pub content_id: Option<String>,
+    /// `Content-Disposition: inline` (or none) as opposed to `attachment`.
+    pub inline: bool,
+}
+
+impl BodyPart {
+    /// A part shown as an attachment (not the text, not an image the HTML shows).
+    pub fn is_attachment(&self) -> bool {
+        let text = self.mime_type == "text/plain" || self.mime_type == "text/html";
+        !(text && self.filename.is_none() && self.inline) && !(self.inline && self.content_id.is_some())
+    }
+}
+
+/// `1:3,5,7:9` for a list of UIDs.
+pub fn uid_set(uids: &[u32]) -> String {
+    let mut sorted = uids.to_vec();
+    sorted.sort_unstable();
+    sorted.dedup();
+    let mut out: Vec<String> = vec![];
+    let mut i = 0;
+    while i < sorted.len() {
+        let start = sorted[i];
+        let mut end = start;
+        while i + 1 < sorted.len() && sorted[i + 1] == end + 1 {
+            i += 1;
+            end = sorted[i];
+        }
+        out.push(if start == end { start.to_string() } else { format!("{start}:{end}") });
+        i += 1;
+    }
+    out.join(",")
+}
+
+/// The IMAP name of a system flag the app sets.
+pub const SEEN: &str = "\\Seen";
+pub const FLAGGED: &str = "\\Flagged";
+pub const ANSWERED: &str = "\\Answered";
+pub const DELETED: &str = "\\Deleted";
+pub const DRAFT: &str = "\\Draft";
+/// The keyword spam filters and other clients read (RFC 5788 registry).
+pub const JUNK: &str = "$Junk";
 
 #[cfg(test)]
 mod tests {
