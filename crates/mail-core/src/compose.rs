@@ -30,6 +30,8 @@ pub struct Draft {
     pub message_id: Option<String>,
     /// The message replied to (marked answered once sent).
     pub reply_to_id: Option<i64>,
+    /// A forwarded message whose attachments go along (the shell fetches them).
+    pub forward_from: Option<i64>,
 }
 
 /// A file read for sending.

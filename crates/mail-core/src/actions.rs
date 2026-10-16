@@ -259,9 +259,16 @@ pub fn delete_folder(store: &Store, mailbox_id: i64) -> Result<()> {
 
 // ---------------------------------------------------------------------------- sending
 
+/// The draft with its HTML cleaned like a received message (pasted content can carry
+/// anything).
+fn cleaned(d: &Draft) -> Draft {
+    Draft { html: d.html.as_deref().map(|h| sanitize_html(h, true).html), ..d.clone() }
+}
+
 /// Queues a message to send after `delay_secs` (the undo window); returns the queue entry and
 /// the message's Message-ID.
 pub fn queue_send(store: &Store, d: &Draft, files: &[FileAttachment], delay_secs: u32) -> Result<(i64, String)> {
+    let d = &cleaned(d);
     let account = store.account(d.account_id)?;
     let rcpt = compose::recipients(d)?;
     let mid = d.message_id.clone().unwrap_or_else(|| compose::new_message_id(&account.email));
@@ -305,6 +312,7 @@ pub fn cancel_send(store: &Store, outbox_id: i64) -> Result<bool> {
 /// Saves a draft in the account's Drafts folder (replacing its earlier copy); returns its
 /// Message-ID, which the next save keeps.
 pub fn queue_draft(store: &Store, d: &Draft, files: &[FileAttachment]) -> Result<String> {
+    let d = &cleaned(d);
     let account = store.account(d.account_id)?;
     let mid = d.message_id.clone().unwrap_or_else(|| compose::new_message_id(&account.email));
     let raw = compose::build(&account, d, files, &mid, now(), true)?;

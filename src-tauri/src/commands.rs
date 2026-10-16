@@ -393,6 +393,19 @@ fn read_files(paths: &[String]) -> Res<Vec<FileAttachment>> {
         .collect()
 }
 
+/// The attachments of a forwarded message, fetched when they are not here.
+async fn forwarded(state: &AppState, message_id: Option<i64>) -> Res<Vec<FileAttachment>> {
+    let Some(id) = message_id else { return Ok(vec![]) };
+    let list = actions::message_view(&state.store(), id, mail_core::settings::RemoteContent::Ask)?.files;
+    let mut out = vec![];
+    for a in list {
+        let (a, data) = attachment_bytes(state, a.id).await?;
+        let name = a.filename.unwrap_or_else(|| "attachment".into());
+        out.push(FileAttachment { name, mime_type: a.mime_type, data });
+    }
+    Ok(out)
+}
+
 #[derive(Serialize)]
 pub struct Queued {
     outbox_id: i64,
@@ -402,8 +415,9 @@ pub struct Queued {
 }
 
 #[tauri::command]
-pub fn send_message(state: State<'_, AppState>, draft: Draft) -> Res<Queued> {
-    let files = read_files(&draft.attachments)?;
+pub async fn send_message(state: State<'_, AppState>, draft: Draft) -> Res<Queued> {
+    let mut files = read_files(&draft.attachments)?;
+    files.extend(forwarded(&state, draft.forward_from).await?);
     let store = state.store();
     let delay = mail_core::settings::load(&store)?.undo_send_secs.min(30);
     let (outbox_id, message_id) = actions::queue_send(&store, &draft, &files, delay)?;
@@ -419,8 +433,9 @@ pub fn cancel_send(state: State<'_, AppState>, outbox_id: i64) -> Res<bool> {
 
 /// Saves the draft in Drafts; returns its Message-ID for the next save.
 #[tauri::command]
-pub fn save_draft(state: State<'_, AppState>, draft: Draft) -> Res<String> {
-    let files = read_files(&draft.attachments)?;
+pub async fn save_draft(state: State<'_, AppState>, draft: Draft) -> Res<String> {
+    let mut files = read_files(&draft.attachments)?;
+    files.extend(forwarded(&state, draft.forward_from).await?);
     let mid = actions::queue_draft(&state.store(), &draft, &files)?;
     state.kick(&[draft.account_id]);
     Ok(mid)

@@ -174,10 +174,31 @@ pub enum Notice {
 
 pub type Sink = Arc<dyn Fn(Notice) + Send + Sync>;
 
-/// A running worker; dropping it stops the worker.
+/// A running worker; dropping it stops the worker. Its [`WorkerHandle`] (also through
+/// `Deref`) talks to it.
 pub struct Worker {
     pub account_id: i64,
+    handle: WorkerHandle,
+}
+
+/// Talks to a worker; cheap to clone, so a command can wait for an answer without holding a
+/// lock on the list of workers.
+#[derive(Debug, Clone)]
+pub struct WorkerHandle {
     tx: mpsc::UnboundedSender<Command>,
+}
+
+impl std::ops::Deref for Worker {
+    type Target = WorkerHandle;
+    fn deref(&self) -> &WorkerHandle {
+        &self.handle
+    }
+}
+
+impl Worker {
+    pub fn handle(&self) -> WorkerHandle {
+        self.handle.clone()
+    }
 }
 
 impl Worker {
@@ -199,9 +220,11 @@ impl Worker {
                 local.block_on(&rt, run(account_id, store, connector, rx, sink));
             })
             .map_err(|e| Error::Network(e.to_string()))?;
-        Ok(Worker { account_id, tx })
+        Ok(Worker { account_id, handle: WorkerHandle { tx } })
     }
+}
 
+impl WorkerHandle {
     pub fn send(&self, cmd: Command) {
         let _ = self.tx.send(cmd);
     }
@@ -231,7 +254,7 @@ impl Worker {
 
 impl Drop for Worker {
     fn drop(&mut self) {
-        let _ = self.tx.send(Command::Stop);
+        self.handle.send(Command::Stop);
     }
 }
 
@@ -636,7 +659,7 @@ async fn on_demand<C: Connector>(ctx: Rc<Ctx<C>>, mut rx: mpsc::UnboundedReceive
     while let Some(cmd) = rx.recv().await {
         match cmd {
             Command::FetchBody { message_id, reply } => {
-                let mut result = Err(Worker::gone());
+                let mut result = Err(WorkerHandle::gone());
                 for _ in 0..2 {
                     let c = match connected(&ctx, &mut conn).await {
                         Ok(c) => c,
@@ -654,7 +677,7 @@ async fn on_demand<C: Connector>(ctx: Rc<Ctx<C>>, mut rx: mpsc::UnboundedReceive
                 let _ = reply.send(result);
             }
             Command::FetchAttachment { attachment_id, reply } => {
-                let mut result = Err(Worker::gone());
+                let mut result = Err(WorkerHandle::gone());
                 for _ in 0..2 {
                     // A kept message needs no connection.
                     if let Ok(a) = ctx.store.attachment(attachment_id)
