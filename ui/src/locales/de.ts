@@ -209,7 +209,7 @@ export const de: Record<TKey, Msg> = {
   "setup.security": "Verschlüsselung",
   "setup.tls": "TLS",
   "setup.starttls": "STARTTLS",
-  "setup.plain": "Keine (nur dieser Computer)",
+  "setup.plain": "Keine (nur lokal)",
   "setup.fingerprint": "Fingerabdruck des Zertifikats",
   "setup.trust": "Diesem Server vertrauen",
   "setup.serverSaid": "Der Server meldet: {text}",

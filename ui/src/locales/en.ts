@@ -211,7 +211,7 @@ export const en = {
   "setup.security": "Encryption",
   "setup.tls": "TLS",
   "setup.starttls": "STARTTLS",
-  "setup.plain": "None (this computer only)",
+  "setup.plain": "None (local only)",
   "setup.fingerprint": "Fingerprint of the certificate",
   "setup.trust": "Trust this server",
   "setup.serverSaid": "The server said: {text}",

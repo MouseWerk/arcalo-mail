@@ -502,6 +502,12 @@
   overflow: auto;
   padding: var(--sp-5) var(--sp-6) var(--sp-10);
 }
+/* A readable line length on wide screens; HTML mail brings its own width. */
+.reading-scroll > .message-head,
+.reading-scroll > .conversation {
+  max-width: var(--read-max-w);
+  margin-inline: auto;
+}
 .message-head {
   display: grid;
   gap: var(--sp-1);
@@ -874,6 +880,14 @@
   background: transparent;
   color: var(--text);
   font-size: var(--fs-md);
+}
+/* The caret shows where typing goes; the row gets the same quiet tint as the subject. */
+.chip-input:focus-visible {
+  outline: none;
+}
+.chips:focus-within {
+  border-radius: var(--r-sm);
+  background-color: var(--bg-hover);
 }
 .suggestions {
   position: absolute;
@@ -1431,8 +1445,10 @@
   border-bottom: 0;
 }
 .keys td:first-child {
-  width: 40%;
+  width: var(--keys-w);
+  padding-right: var(--sp-4);
   color: var(--text-2);
+  white-space: nowrap;
 }
 
 @keyframes pulse {

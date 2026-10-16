@@ -239,7 +239,7 @@ export function Setup({ welcome, onDone, onCancel }: { welcome: boolean; onDone:
             >
               <label className="stack-field">
                 <span className="field-label">{t("setup.name")}</span>
-                <input className="input" value={name} placeholder={t("setup.namePlaceholder")} onChange={(e) => setName(e.target.value)} disabled={busy} autoComplete="name" />
+                <input className="input" value={name} placeholder={t("setup.namePlaceholder")} onChange={(e) => setName(e.target.value)} readOnly={busy} autoComplete="name" />
               </label>
               <label className="stack-field">
                 <span className="field-label">{t("setup.email")}</span>
@@ -250,14 +250,14 @@ export function Setup({ welcome, onDone, onCancel }: { welcome: boolean; onDone:
                   autoFocus
                   placeholder={t("setup.emailPlaceholder")}
                   onChange={(e) => setEmail(e.target.value)}
-                  disabled={busy}
+                  readOnly={busy}
                   autoComplete="email"
                   spellCheck={false}
                 />
               </label>
               <label className="stack-field">
                 <span className="field-label">{t("setup.password")}</span>
-                <input className="input" type="password" value={password} onChange={(e) => setPassword(e.target.value)} disabled={busy} autoComplete="current-password" />
+                <input className="input" type="password" value={password} onChange={(e) => setPassword(e.target.value)} readOnly={busy} autoComplete="current-password" />
               </label>
               <p className="setup-note muted">
                 <KeyRound size={13} strokeWidth={1.75} aria-hidden />
@@ -311,7 +311,7 @@ export function Setup({ welcome, onDone, onCancel }: { welcome: boolean; onDone:
               </label>
               <label className="stack-field">
                 <span className="field-label">{t("setup.password")}</span>
-                <input className="input" type="password" value={password} onChange={(e) => setPassword(e.target.value)} disabled={busy} />
+                <input className="input" type="password" value={password} onChange={(e) => setPassword(e.target.value)} readOnly={busy} />
               </label>
               <ServerFields kind="imap" server={transport.imap} onChange={(imap) => setTransport({ ...transport, imap })} />
               <ServerFields kind="smtp" server={transport.smtp} onChange={(smtp) => setTransport({ ...transport, smtp })} />

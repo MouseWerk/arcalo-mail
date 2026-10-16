@@ -101,7 +101,9 @@
      the suggestion list, inputs and account tabs in the settings. */
   --attachment-min: 220px;
   --port-w: 84px;
-  --security-w: 132px;
+  --security-w: 172px;
+  --keys-w: 180px;
+  --read-max-w: 980px;
   --chip-input-min: 120px;
   --suggest-w: 280px;
   --set-input-w: 240px;
