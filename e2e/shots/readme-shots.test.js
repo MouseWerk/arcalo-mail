@@ -22,8 +22,9 @@ const ENV = { ARCALO_MAIL_NOW: String(NOW), TZ: "Europe/London" };
 
 let work, personal, app, dataDir;
 
-/** The window as it is, after the UI settled. */
+/** The window as it is, after the UI settled; toasts of earlier steps are closed first. */
 async function shot(name) {
+  await app.browser.execute(() => document.querySelectorAll(".toast .icon-btn").forEach((b) => b.click()));
   await sleep(500);
   await app.shot(name, OUT);
 }
@@ -148,9 +149,7 @@ scene("contrast", async () => {
 
 scene("narrow", async () => {
   await app.browser.setWindowSize(900, 720);
-  await openMessage("Lunch on Friday?").catch(async () => {
-    await openFolder("Personal", "Inbox");
-    await openMessage("Lunch on Friday?");
-  });
+  await openFolder("Personal", "Inbox");
+  await openMessage("Lunch on Friday?");
   await shot("narrow");
 });

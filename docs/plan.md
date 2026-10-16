@@ -4,21 +4,32 @@ Arcalo Mail is the next-generation e-mail app for Windows, macOS, Linux, Android
 and system. This page is the roadmap: what each milestone delivers, what the owner has to do outside the code, and
 the decisions that are still open. Versions stay 0.x until milestone 1 is done (see open decisions).
 
-## Where we are (skeleton)
+## Where we are (milestone 1, desktop IMAP/SMTP)
 
-- Cargo workspace (`crates/mail-core`, `src-tauri`), toolchain 1.94.1, edition 2024, as Arcalo.
-- Core with tests: account model and presets, network policy with the „one network module“ check, IMAP trait and
-  in-memory fake server, store schema 0001 with FTS5, search, threads, parsing, HTML sanitizing, offline queue
-  storage, settings with migrations, and the sync engine (QRESYNC/CONDSTORE/plain/full) plus the connection state
-  machine, run against the fake.
-- Shell: Tauri 2 app with mobile entry point, CSP, commands for accounts, folders, messages, search, settings;
-  secrets in the OS credential store.
-- UI: three panes and compose sheet, light/dark/contrast, German and English with the translation check, design
-  rule tests; sample data in a plain browser.
-- CI: format, clippy, tests, UI checks; desktop builds for Windows, macOS and Linux; unsigned Android APK; iOS Rust
-  library (the app build runs once signing exists).
+- Cargo workspace (`crates/mail-core`, `crates/mail-testserver`, `src-tauri`), toolchain 1.94.1, edition 2024.
+- Real connections: TLS and STARTTLS through `network` with the platform verifier, a certificate trusted by its
+  fingerprint, classified errors (wrong password, app password needed, certificate, timeout, offline).
+- Account setup with presets (GMX, WEB.DE, T-Online, mailbox.org, Posteo, iCloud, IONOS, STRATO and more), the
+  provider's autoconfig file, the Thunderbird ISPDB, SRV and MX lookups, a connection check, manual settings;
+  passwords in the credential store (a 0600 file on Linux desktops without a keyring).
+- Own IMAP client on `imap-proto`: QRESYNC/CONDSTORE/plain sync, UIDVALIDITY, SPECIAL-USE, IDLE (renewed every 25
+  minutes), flags, MOVE (or COPY and EXPUNGE), APPEND, SEARCH, folders; one worker per account with reconnect
+  backoff and the offline queue replayed before each round. Bodies of the newest 60 messages per folder ahead,
+  larger ones and attachments on demand.
+- Sending with lettre over the same streams, the copy in Sent unless the provider files it, drafts in Drafts,
+  signatures, five seconds to undo a send; archive, delete, move and spam with a five second undo.
+- UI: three panes with a virtualized list, conversations, multi-select, keys (j/k, e, #, r, a, f, c, /, u, s);
+  reading pane with the sanitized HTML in a sandboxed frame, remote images per message or sender, folded quotes,
+  attachments to preview, open or save; compose with recipient suggestions, rich or plain text, dropped files;
+  local and server search; notifications and the unread badge; settings; first-run setup; de/en; light, dark,
+  contrast.
+- Tests: core unit tests against the fake server, protocol tests against the test server on loopback, UI tests,
+  e2e (setup, reading, writing, search, offline) in CI on Linux, README screenshots from `e2e/shots`.
 
-Not there yet: a real connection. Everything that needs one is milestone 1.
+Left for milestone 1: proxy profiles from Arcalo; reacting to network changes and sleep/wake (now: the backoff
+retries); a setting for how much mail is fetched ahead; subject-based threading for mail without headers; tray
+icon, command palette and the diagnostics package; the signed update feed; a conformance run against Dovecot and
+Greenmail in CI in addition to the own test server.
 
 ## Milestone 1 – desktop, one IMAP/SMTP account
 
