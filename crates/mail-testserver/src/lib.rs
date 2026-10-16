@@ -83,6 +83,10 @@ pub struct Shared {
     tls: Option<TlsAcceptor>,
     /// IMAP connections opened so far (the tests check the worker's pool).
     pub connections: Mutex<u32>,
+    /// The plain-text IMAP and SMTP ports (for the autoconfig file of the control port).
+    pub ports: Mutex<(u16, u16)>,
+    /// A slow server: new connections wait this long before the greeting (milliseconds).
+    pub delay_ms: Mutex<u64>,
 }
 
 impl Shared {
@@ -171,6 +175,10 @@ fn serve(listener: TcpListener, shared: Arc<Shared>, kind: Kind, implicit_tls: b
             let shared = shared.clone();
             tokio::spawn(async move {
                 let _ = tcp.set_nodelay(true);
+                let delay = *shared.delay_ms.lock().unwrap_or_else(|e| e.into_inner());
+                if delay > 0 {
+                    tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+                }
                 let io: Io = if implicit_tls {
                     let Some(acceptor) = shared.tls.clone() else { return };
                     match acceptor.accept(tcp).await {
@@ -214,10 +222,13 @@ pub async fn start(opts: Options) -> io::Result<Running> {
         offline: watch::channel(false).0,
         tls,
         connections: Mutex::new(0),
+        ports: Mutex::new((0, 0)),
+        delay_ms: Mutex::new(0),
     });
     let (imap_l, imap) = listen(opts.imap_port).await?;
     let (smtp_l, smtp) = listen(opts.smtp_port).await?;
     let (control_l, control) = listen(opts.control_port).await?;
+    *shared.ports.lock().unwrap_or_else(|e| e.into_inner()) = (imap, smtp);
     serve(imap_l, shared.clone(), Kind::Imap, false);
     serve(smtp_l, shared.clone(), Kind::Smtp, false);
     let (mut imaps, mut smtps) = (None, None);

@@ -9,6 +9,9 @@
 //! * `POST /fail?cmd=MOVE`: the next command of this kind fails with `NO`
 //! * `POST /password?value=…`: the account's password changes (a refused login)
 //! * `POST /folder?name=…`: a new folder
+//! * `POST /delay?ms=…`: new connections wait this long before the greeting (a slow server)
+//! * `GET /autoconfig?host=127.0.0.1`: an autoconfig file (config-v1.1) for this server, so the
+//!   app's setup finds it as it would a provider's
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -88,6 +91,27 @@ fn state(shared: &Shared) -> serde_json::Value {
     json!({ "mailboxes": boxes, "offline": shared.is_offline(), "connections": *shared.connections.lock().unwrap() })
 }
 
+fn autoconfig(host: &str, imap: u16, smtp: u16) -> String {
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<clientConfig version="1.1">
+  <emailProvider id="example.org">
+    <domain>example.org</domain>
+    <displayName>Example Mail</displayName>
+    <incomingServer type="imap">
+      <hostname>{host}</hostname><port>{imap}</port><socketType>plain</socketType>
+      <username>%EMAILADDRESS%</username><authentication>password-cleartext</authentication>
+    </incomingServer>
+    <outgoingServer type="smtp">
+      <hostname>{host}</hostname><port>{smtp}</port><socketType>plain</socketType>
+      <username>%EMAILADDRESS%</username><authentication>password-cleartext</authentication>
+    </outgoingServer>
+  </emailProvider>
+</clientConfig>
+"#
+    )
+}
+
 async fn handle(stream: TcpStream, shared: Arc<Shared>) -> std::io::Result<()> {
     let mut r = BufReader::new(stream);
     let mut first = String::new();
@@ -112,6 +136,15 @@ async fn handle(stream: TcpStream, shared: Arc<Shared>) -> std::io::Result<()> {
     let (path, q) = query(&target);
     let (status, ctype, out): (&str, &str, Vec<u8>) = match (method.as_str(), path.as_str()) {
         ("GET", "/state") => ("200 OK", "application/json", state(&shared).to_string().into_bytes()),
+        ("GET", "/autoconfig") => {
+            let (imap, smtp) = *shared.ports.lock().unwrap();
+            let host = q.get("host").map_or("127.0.0.1", String::as_str);
+            ("200 OK", "text/xml", autoconfig(host, imap, smtp).into_bytes())
+        }
+        ("POST", "/delay") => {
+            *shared.delay_ms.lock().unwrap() = q.get("ms").and_then(|v| v.parse().ok()).unwrap_or(0);
+            ("200 OK", "text/plain", b"ok".to_vec())
+        }
         ("GET", "/sent") => {
             let sent = shared.sent.lock().unwrap().clone();
             ("200 OK", "application/json", serde_json::to_vec(&sent).unwrap_or_default())
