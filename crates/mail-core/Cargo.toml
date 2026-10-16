@@ -1,25 +1,44 @@
 [package]
 name = "mail-core"
-description = "Local-first core of Arcalo Mail: accounts, the local store with full-text search, parsing, HTML sanitizing and the sync engine"
+description = "Local-first core of Arcalo Mail: accounts, the local store with full-text search, parsing, HTML sanitizing, the IMAP and SMTP clients and the sync engine"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
 [features]
-# The in-memory IMAP server (`imap::fake`) for tests of other crates (the shell, later e2e helpers).
+# The in-memory IMAP server (`imap::fake`) for tests of other crates (the wire test server in
+# `crates/mail-testserver`, the shell).
 fake = []
 
 [dependencies]
 # HTML mail: allow-list sanitizing; remote content is removed unless the user allows it.
 ammonia = "4.1.7"
+base64 = "0.22.1"
+# SRV (RFC 6186) and MX lookups for the account setup, with the system's resolver settings.
+hickory-resolver = { version = "0.26.3", default-features = false, features = ["tokio", "system-config"] }
+# The IMAP response parser; the client (`imap::client`) and its commands are our own.
+imap-proto = "0.17.0"
+# SMTP once the connection stands (`network` does TCP, TLS and STARTTLS itself).
+lettre = { version = "0.11.23", default-features = false, features = ["smtp-transport", "tokio1"] }
+mail-builder = "0.4.4"
 mail-parser = "0.11.9"
+# imap-proto's parser combinators: tells a half-received answer from a broken one.
+nom = "8.0.0"
+# HTTPS for the autoconfig lookups (`network::client_for`), rustls with the platform verifier.
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls"] }
+roxmltree = "0.20.0"
 # The local store: SQLite with FTS5 (part of the bundled build). Arcalo builds SQLCipher instead;
 # Arcalo Mail switches to `bundled-sqlcipher` when encryption at rest lands (docs/plan.md).
 rusqlite = { version = "0.40.2", features = ["bundled"] }
+rustls = { version = "0.23.43", default-features = false, features = ["std", "aws_lc_rs", "tls12"] }
+rustls-platform-verifier = "0.6.2"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
+sha2 = "0.10.9"
 thiserror = "2.0.20"
+tokio = { version = "1.53.1", features = ["rt", "net", "io-util", "time", "macros", "sync"] }
+tokio-rustls = { version = "0.26.5", default-features = false, features = ["aws_lc_rs", "tls12"] }
 
 [dev-dependencies]
-tokio = { version = "1.53.1", features = ["rt", "macros"] }
+tokio = { version = "1.53.1", features = ["rt", "rt-multi-thread", "macros"] }

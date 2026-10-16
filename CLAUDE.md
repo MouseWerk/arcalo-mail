@@ -27,7 +27,7 @@ something is done, do it the way Arcalo does.
 - Match the surrounding style and comment density. No emojis anywhere.
 - No inline `<style>`/`<script>` in `ui/index.html` (CSP; `ui/src/lib/html.test.ts` checks it).
 - Every connection goes through `mail_core::network`: IMAP and SMTP sockets and every HTTP client
-  (`client_for(Service)` once HTTP arrives). A test checks it (`no_connection_is_opened_outside_network`).
+  (`client_for(Service)`). A test checks it (`no_connection_is_opened_outside_network`).
 - Plain-text connections only to loopback hosts; TLS or STARTTLS everywhere else (`network::check_server`).
 - Passwords and OAuth tokens live in the OS credential store (`src-tauri/src/secrets.rs`, names from
   `account::secret_key`), never in the database, the settings or a log.
@@ -52,7 +52,7 @@ something is done, do it the way Arcalo does.
 ```
 cargo fmt --all --check
 CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 cargo clippy --workspace --all-targets -- -D warnings
-CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 cargo test -p mail-core -p arcalo-mail
+CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 cargo test -p mail-core -p mail-testserver -p arcalo-mail
 npm --prefix ui run typecheck && npm --prefix ui test
 ```
 
@@ -60,9 +60,22 @@ The shell embeds the UI at compile time: run `npm --prefix ui run build` before 
 `src-tauri`. On a machine without WebKitGTK/WebView2, `cargo clippy -p mail-core --all-targets -- -D warnings` and
 `cargo test -p mail-core` cover the core.
 
-e2e tests (WebdriverIO + tauri-driver, as Arcalo's `e2e/`) arrive with milestone 1 and run against a fake IMAP
-server. Pass the app only via an environment variable. Never kill processes by name or pattern (other runs may
-share the machine); kill only PIDs you started. Prefer root-cause fixes; never skip or weaken a test.
+e2e tests (WebdriverIO + tauri-driver, as Arcalo's `e2e/`) run the real app against the IMAP/SMTP test server
+(`crates/mail-testserver`, on loopback ports; never a real mail server). The app embeds the UI, so build first:
+
+```
+npm --prefix ui run build
+CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 cargo build -p arcalo-mail --features custom-protocol -p mail-testserver
+cd e2e && ARCALO_MAIL_APP="$PWD/../target/debug/arcalo-mail" node --test --test-concurrency=1 tests/<file>.test.js
+```
+
+`e2e/run.sh` does all of it. Pass the app only via `ARCALO_MAIL_APP`. The harness starts Xvfb on `DISPLAY` (default
+`:76`) when nothing runs there. Never kill processes by name or pattern (other runs may share the machine); kill
+only PIDs you started. Prefer root-cause fixes; never skip or weaken a test.
+
+README screenshots: `cd e2e && npm run shots` writes `docs/screenshots/` from English sample mailboxes
+(`e2e/shots/mailbox.js`) on a fixed clock. Every picture shows the whole window or one whole dialog; look at each
+one before committing it.
 
 ## Release
 

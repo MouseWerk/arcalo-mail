@@ -82,8 +82,36 @@
   --folders-w: 240px;
   --list-w: 380px;
   --list-min: 300px;
-  --row-h: 64px;
+  --row-h: 76px;
+  --row-h-compact: 54px;
   --toolbar-h: 48px;
+  /* The sender's circle in the reading pane, and the small one of collapsed messages. */
+  --avatar: 32px;
+  --avatar-sm: 22px;
+  /* Dialogs, the settings panel, the setup card. */
+  --dialog-w: 440px;
+  --dialog-w-wide: 640px;
+  --settings-w: 940px;
+  --settings-h: 680px;
+  --settings-nav-w: 220px;
+  --setup-w: 860px;
+  --menu-w: 220px;
+  --toast-w: 380px;
+  /* Attachment tiles, the port and encryption columns of the server fields, the address input,
+     the suggestion list, inputs and account tabs in the settings. */
+  --attachment-min: 220px;
+  --port-w: 84px;
+  --security-w: 172px;
+  --keys-w: 180px;
+  --read-max-w: 980px;
+  --chip-input-min: 120px;
+  --suggest-w: 280px;
+  --set-input-w: 240px;
+  --tab-max-w: 260px;
+  /* The switch control. */
+  --switch-w: 30px;
+  --switch-h: 18px;
+  --switch-knob: 14px;
   /* The compose sheet on a wide window. */
   --compose-w: 620px;
   --compose-h: 560px;
@@ -91,6 +119,10 @@
   --dot: 8px;
   --compose-label-w: 72px;
   --frame-min-h: 160px;
+  /* Scroll bars drawn by the page (the toolkit's own float above dialogs on Linux). */
+  --scrollbar: 10px;
+  --scrollbar-gap: 3px;
+  --chevron-size: 14px;
   --icon-sm: 16px;
   /* Phones and touch screens: the smallest touch target. */
   --touch-min: 44px;
@@ -146,6 +178,8 @@
   /* Keyboard focus and focused fields: neutral gray, 3:1 on every surface and on a current or
      selected row over it. */
   --border-focus: #8a8d96;
+  /* The arrow of drop-down fields, in the theme's secondary text color. */
+  --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23a7a9b1' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
   --focus-soft: rgb(255 255 255 / 0.07);
 
   --text: #ececef;
@@ -186,6 +220,7 @@
   --paper-text: #1b1b1f;
   --paper-link: #2f50c8;
   --paper-quote: #6b6b73;
+  --paper-rule: #d4d4d8;
   /* Unread marker in the list: a small solid dot (a marker, not a selection state). */
   --unread: var(--accent-fill);
   /* Scrims behind sheets and dialogs. */
@@ -210,6 +245,7 @@
   --border: rgb(15 15 20 / 0.09);
   --border-strong: rgb(15 15 20 / 0.14);
   --border-focus: #7a7a80;
+  --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2352525b' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
   --focus-soft: rgb(15 15 20 / 0.06);
 
   --text: #18181b;
@@ -246,6 +282,7 @@
   --paper-text: #1b1b1f;
   --paper-link: #2f50c8;
   --paper-quote: #6b6b73;
+  --paper-rule: #d4d4d8;
   --unread: var(--accent-fill);
   --scrim: rgb(0 0 0 / 0.28);
 }
@@ -270,6 +307,7 @@
   --border: rgb(255 255 255 / 0.45);
   --border-strong: rgb(255 255 255 / 0.7);
   --border-focus: #ffffff;
+  --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23ffffff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
   --focus-soft: rgb(255 255 255 / 0.2);
 
   --text: #ffffff;
@@ -306,6 +344,7 @@
   --paper-text: #000000;
   --paper-link: #1a3db8;
   --paper-quote: #3b3b40;
+  --paper-rule: #8a8a90;
   --unread: #ffffff;
   --scrim: rgb(0 0 0 / 0.7);
 }

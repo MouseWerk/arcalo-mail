@@ -1,0 +1,26 @@
+[package]
+name = "mail-testserver"
+description = "A small IMAP and SMTP server on this computer for Arcalo Mail's protocol tests, e2e tests and screenshots"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[[bin]]
+name = "arcalo-mail-testserver"
+path = "src/main.rs"
+
+[dependencies]
+base64 = "0.22.1"
+mail-core = { path = "../mail-core", features = ["fake"] }
+mail-parser = "0.11.9"
+rcgen = "0.14.10"
+rustls = { version = "0.23.43", default-features = false, features = ["std", "aws_lc_rs", "tls12"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "net", "io-util", "time", "macros", "sync", "signal"] }
+tokio-rustls = { version = "0.26.5", default-features = false, features = ["aws_lc_rs", "tls12"] }
+
+[dev-dependencies]
+base64 = "0.22.1"

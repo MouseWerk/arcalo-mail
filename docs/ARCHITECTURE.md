@@ -7,10 +7,13 @@
    three panes, compose sheet,                          │
    sandboxed mail frame                                 ▼
                                                crates/mail-core
-      ┌──────────┬──────────┬──────────┬───────────┬──────────┬───────────┬──────────┐
+      ┌──────────────────────────────── engine (one worker per account) ───────────────┐
+      │ actions (local first, undo) · compose · autoconfig                               │
+      ├──────────┬──────────┬──────────┬───────────┬──────────┬───────────┬──────────┤
       │ account  │ network  │ imap     │ sync      │ store    │ parse     │ outbox   │
-      │ (model,  │ (policy, │ (trait,  │ (strategy,│ (SQLite, │ sanitize  │ (offline │
+      │ (model,  │ (policy, │ (client, │ (strategy,│ (SQLite, │ sanitize  │ (offline │
       │ presets) │ connect) │ fake)    │ machine)  │ FTS5)    │ thread    │ queue)   │
+      │          │ smtp     │          │           │          │ search    │          │
       └──────────┴──────────┴──────────┴───────────┴──────────┴───────────┴──────────┘
              TLS sockets / HTTPS                         SQLite (WAL, FTS5)
 ```
@@ -25,19 +28,29 @@ Identifier: `de.mousewerk.arcalo.mail`.
 | Module | What it does | State |
 |---|---|---|
 | `account` | Providers (IMAP, Microsoft, Google, JMAP), transports (IMAP+SMTP, Graph, JMAP), servers, auth (password, OAuth 2.0), presets, validation, credential store names | done for M1 |
-| `network` | The only place that opens connections. Now: the policy (TLS or STARTTLS except to loopback, `https://` only) and the test that no other code opens sockets or HTTP clients. Next: `connect_imap`/`connect_smtp` (tokio-rustls, platform verifier), `client_for(Service)` (reqwest), proxy profiles from Arcalo | policy done, connectors M1/M2 |
-| `imap` | `ImapClient` trait (capabilities, LIST, SELECT with QRESYNC, UID SEARCH, header/flag/message FETCH with CHANGEDSINCE, IDLE), answer types, folder roles (SPECIAL-USE and common names), and `imap::fake::FakeImap`, an in-memory server with UIDVALIDITY, MODSEQ and vanished UIDs | trait and fake done, real client M1 |
-| `sync` | Per-folder strategy (QRESYNC, CONDSTORE, plain, full resync on UIDVALIDITY change), `sync_mailbox`, `sync_account`, bodies on demand, IDLE wait; `SyncMachine`, the I/O-free connection state machine (connect, sync, idle or poll, backoff, sign-in needed, offline) | engine tested against the fake, loop M1 |
+| `network` | The only place that opens connections: the policy (TLS or STARTTLS except to loopback, `https://` only), `connect_imap`/`connect_smtp` (tokio-rustls with the platform verifier, or a certificate pinned by its SHA-256 fingerprint after the user trusted it; STARTTLS), `client_for(Service)` (reqwest), SRV and MX lookups, and `Problem`, the classified connection error (DNS, refused, timeout, offline, TLS, certificate, sign-in, app password). A test checks that no other code opens sockets, resolvers or HTTP clients | done |
+| `imap` | `ImapClient` trait (capabilities, LIST, SELECT with QRESYNC, header/flag/message FETCH with CHANGEDSINCE, BODYSTRUCTURE and single parts, IDLE, STORE, COPY, MOVE, EXPUNGE, APPEND, SEARCH, CREATE/RENAME/DELETE), `imap::client` (the client on the wire: `imap-proto` parser, LITERAL+, AUTHENTICATE PLAIN or LOGIN, ENABLE QRESYNC), modified UTF-7 folder names, folder roles, and `imap::fake::FakeImap`, an in-memory server with UIDVALIDITY, MODSEQ and vanished UIDs | done |
+| `sync` | Per-folder strategy (QRESYNC, CONDSTORE, plain, full resync on UIDVALIDITY change), `sync_mailbox`, `sync_folders`, bodies on demand (whole up to 2 MB, else text, HTML and inline pictures part by part), bodies of the newest 60 messages per folder ahead of time, attachments on demand, server SEARCH, IDLE wait; `SyncMachine`, the I/O-free connection state machine (connect, sync, idle or poll, backoff, sign-in needed, offline) | done |
+| `engine` | One worker thread per account (a current-thread runtime with its own store connection): runs the `SyncMachine`, replays the outbox before each round, answers body, attachment and search requests from the UI, and reports `Notice`s (status, changed folders, new mail, outbox, sent) | done |
+| `actions` | What the UI does, local first: flags, move, archive, spam, delete, folders, send and drafts become outbox steps after a 5 second undo window; `undo` takes them back; `message_view` builds the reading pane's body (sanitized, quote folded, plain text marked) | done |
+| `smtp` | Sending with lettre over a `network` stream (submission with STARTTLS or implicit TLS, AUTH PLAIN/LOGIN) and the connection check | done |
+| `compose` | Messages built with mail-builder (text and HTML alternative, attachments, reply headers), the plain alternative from the editor's HTML, address parsing | done |
+| `autoconfig` | Finding the servers of an address: presets, the provider's autoconfig file, the Thunderbird ISPDB, SRV records, presets by MX, a guess | done |
 | `store` | SQLite (WAL, foreign keys), positional migrations through `PRAGMA user_version` (a newer database is refused), accounts, folders with sync state, messages, bodies, attachments, settings | done for M1 |
-| `search` | FTS5 query from plain input (prefix words, phrases, `from:`/`subject:`; FTS syntax never passed through), ranking with subject first | done |
+| `search` | FTS5 query from plain input (prefix words, phrases, `from:`/`subject:`; FTS syntax never passed through), newest first | done |
 | `thread` | Conversations from Message-ID, In-Reply-To and References; adopts early replies, merges threads | done (no subject grouping yet) |
 | `parse` | RFC 5322/MIME with mail-parser: addresses, dates, ids, text and HTML bodies, attachments, preview line | done |
 | `sanitize` | ammonia allow-list: no scripts, forms, frames, style sheets or `url()`; remote images removed and counted unless allowed; links get `noopener noreferrer` | done |
-| `outbox` | Offline queue: send, flags, move, delete; strict order per account, backoff, errors kept | storage done, replay M1 |
+| `outbox` | Offline queue: send (and the copy for Sent), flags, move, delete, drafts, folders; strict order per account, due times for the undo window, backoff, parked steps the server refused | done |
 | `settings`, `settings_migrate` | One JSON object with a `version`; ordered, idempotent steps on the raw JSON, unknown keys kept (Arcalo's scheme) | done |
 | `i18n` | `tr!`/`trf!` pairs for backend texts in German and English | done |
 
-## Data model (`crates/mail-core/migrations/0001_init.sql`)
+## Data model (`crates/mail-core/migrations`)
+
+`0001_init.sql` below; `0002_mail_actions.sql` adds `messages.hidden` (moved or deleted here, not yet on the
+server) and `reply_to_json`, `message_bodies.raw` (small messages kept whole, so their attachments open offline),
+`attachments.section` and `data`, `accounts.signature`, `contacts` (recipient suggestions) and `remote_senders`
+(senders whose images load).
 
 | Table | Purpose |
 |---|---|
@@ -59,7 +72,8 @@ Identifier: `de.mousewerk.arcalo.mail`.
    clears the folder and fetches it again. Otherwise changed flags and vanished UIDs (QRESYNC), or flags
    `CHANGEDSINCE` plus a UID list when the count says something was removed (CONDSTORE), or flags and UID list
    (plain). New mail: headers above the stored UIDNEXT, in batches of 500.
-4. Bodies when a message is opened; later also for recent mail ahead of time (offline reading).
+4. Bodies of the newest 60 messages per folder up to 256 KB right after the sync (first lines in the list, search
+   over their text, offline reading); others when a message is opened.
 5. The inbox connection waits in IDLE (renewed every 25 minutes); other folders are polled every 5 minutes or
    synced when IDLE ends. Failures back off from 5 s to 5 minutes; a refused login stops until the user signs in.
 6. The offline queue replays in order before each sync; the local change is shown at once.
@@ -70,13 +84,16 @@ per account on a worker and carries out its actions.
 ## Showing mail safely
 
 - The core sanitizes HTML with an allow-list (`sanitize.rs`) and removes remote images unless the user allowed
-  them for the message. The UI shows how many were blocked and offers „Externe Inhalte laden“.
+  them for the message or its sender. Style attributes keep layout and color properties only, nothing that loads
+  (a color given with the `background` shorthand is kept as `background-color`). The UI shows how many images were
+  blocked and offers „Bilder laden“ for the message and „Immer für …“ for the sender.
 - The reading pane renders the result in an `<iframe sandbox="allow-same-origin">` (no `allow-scripts`, so nothing
   in the mail runs; same origin only lets the app catch link clicks) with `srcdoc` and a meta CSP of its own:
   `default-src 'none'; img-src data: cid:` (plus `https:` once allowed), inline styles only. The app's CSP applies
   on top. Links open in the browser after a click, never inside the frame.
-- Milestone 1 replaces `srcdoc` by a custom URI scheme served by the shell, so `cid:` images resolve to stored
-  attachments and the CSP is sent as a header per message.
+- Inline pictures (`cid:`) are replaced by `data:` addresses of the stored parts in the core, so the frame needs no
+  custom scheme. HTML mail is drawn on light paper in every theme (senders design for white); plain text is drawn
+  in the app's own colors.
 
 ## App CSP (`src-tauri/tauri.conf.json`)
 
@@ -87,7 +104,9 @@ them otherwise). `ui/src/lib/html.test.ts` checks it.
 ## Secrets
 
 `src-tauri/src/secrets.rs`: the `keyring` crate on Windows (Credential Manager), macOS and iOS (Keychain) and Linux
-(Secret Service). Android gets a small Kotlin plugin for the Android Keystore in milestone 3, as Arcalo's companion
+(Secret Service). On a Linux desktop without a Secret Service (or with `ARCALO_MAIL_SECRET_STORE=file`, which the
+e2e tests use) passwords go to `secrets.json` in the data folder with mode 0600, and Settings → Privacy says so.
+Android gets a small Kotlin plugin for the Android Keystore in milestone 3, as Arcalo's companion
 app has; until then nothing is stored there. Entry names: service `de.mousewerk.arcalo.mail`, account
 `account-<id>-password` or `account-<id>-oauth-refresh-token`. OAuth access tokens are kept in memory only.
 
@@ -104,7 +123,7 @@ layout can be checked without the app.
 
 | Need | Crate | Why |
 |---|---|---|
-| IMAP | `async-imap` 0.12 (on `imap-proto`) over `tokio-rustls` | async, IDLE, extensions; raw commands for QRESYNC where its API ends |
+| IMAP | own client on the `imap-proto` 0.17 parser over `tokio-rustls` | QRESYNC, CONDSTORE, MOVE, LITERAL+ and cancel-safe IDLE without fighting a higher-level API |
 | SMTP | `lettre` 0.11 (tokio, rustls) | mature, XOAUTH2, STARTTLS |
 | TLS | `rustls` with `aws_lc_rs` and `rustls-platform-verifier` | as Arcalo; system trust store on every platform |
 | HTTP (OAuth, Graph, JMAP) | `reqwest` 0.13 with rustls | as Arcalo, through `network::client_for` |
@@ -113,5 +132,18 @@ layout can be checked without the app.
 | HTML sanitizing | `ammonia` 4 | allow-list on html5ever |
 | Store | `rusqlite` 0.40 bundled (FTS5) | as Arcalo; `bundled-sqlcipher` once encryption at rest comes |
 | Secrets | `keyring` 3 | as Arcalo |
+| DNS (SRV, MX) | `hickory-resolver` | system configuration, async |
+| Autoconfig files | `roxmltree` | small, read-only XML |
 
 All of them were checked on crates.io; only the ones in use are in `Cargo.toml` now.
+
+## Tests
+
+- `mail-core` unit tests run against `imap::fake::FakeImap` (every sync strategy, the engine with its worker and
+  outbox, actions and undo, autoconfig over HTTP on loopback).
+- `crates/mail-testserver` serves the fake over the wire: IMAP (with STARTTLS and implicit TLS on a self-signed
+  certificate) and SMTP on loopback ports, plus a control port for tests (deliver, flags, offline, fail the next
+  command, a slow server, an autoconfig file). `tests/protocol.rs` runs the real client and lettre against it.
+- `e2e/` starts the built app under tauri-driver (WebdriverIO, as Arcalo) against the test server program:
+  setup, reading, writing, search and offline. `e2e/shots` writes the README screenshots from English sample
+  mailboxes on a fixed clock (`ARCALO_MAIL_NOW`).

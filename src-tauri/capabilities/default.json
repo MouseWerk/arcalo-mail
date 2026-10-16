@@ -1,8 +1,8 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Permissions of the main window (desktop, Android, iOS): the app's commands and events, links opened in the browser",
+  "description": "Permissions of the main window (desktop, Android, iOS): the app's commands and events, links opened in the browser, the open and save dialogs for attachments, notifications",
   "platforms": ["linux", "macOS", "windows", "android", "iOS"],
   "windows": ["main"],
-  "permissions": ["core:default", "opener:default"]
+  "permissions": ["core:default", "opener:default", "dialog:default", "notification:default"]
 }

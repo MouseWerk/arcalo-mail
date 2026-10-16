@@ -44,11 +44,16 @@ pub struct Server {
     pub host: String,
     pub port: u16,
     pub security: Security,
+    /// The SHA-256 fingerprint of a certificate the user chose to trust for this server
+    /// („Diesem Server vertrauen“: self-signed or expired); `None`: the system's trust store
+    /// decides.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trusted_cert: Option<String>,
 }
 
 impl Server {
     pub fn new(host: &str, port: u16, security: Security) -> Self {
-        Server { host: host.to_string(), port, security }
+        Server { host: host.to_string(), port, security, trusted_cert: None }
     }
 }
 
@@ -91,6 +96,9 @@ pub struct Account {
     /// The sender name of new messages.
     pub sender_name: String,
     pub transport: Transport,
+    /// Plain text added below new messages and replies („-- “ and the text).
+    #[serde(default)]
+    pub signature: String,
 }
 
 /// A new account before it is stored.

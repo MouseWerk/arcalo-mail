@@ -1,0 +1,293 @@
+//! An IMAP and SMTP server on this computer, for Arcalo Mail's protocol tests, the e2e tests
+//! and the README screenshots. It serves the in-memory fake (`mail_core::imap::fake::FakeImap`)
+//! over the wire: RFC 3501 with LITERAL+, IDLE, ENABLE, CONDSTORE/QRESYNC, UIDPLUS, MOVE and
+//! SPECIAL-USE (each can be switched off), STARTTLS and implicit TLS with a self-signed
+//! certificate, and an SMTP server (AUTH PLAIN and LOGIN) that delivers mail to the account's
+//! inbox when it is one of the recipients.
+//!
+//! A small HTTP control port lets a test deliver mail, look at the server's state, read what
+//! was sent, make commands fail and take the server offline and back. It listens on loopback
+//! only and never talks to the internet.
+
+mod control;
+mod imap;
+mod smtp;
+
+use std::io;
+use std::net::SocketAddr;
+use std::sync::{Arc, Mutex};
+
+use mail_core::imap::Capabilities;
+use mail_core::imap::fake::FakeImap;
+use serde::Serialize;
+use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::net::TcpListener;
+use tokio::sync::watch;
+use tokio_rustls::TlsAcceptor;
+
+/// A connection, plain or TLS (after STARTTLS or from the first byte).
+pub(crate) trait Duplex: AsyncRead + AsyncWrite + Unpin + Send {}
+impl<T: AsyncRead + AsyncWrite + Unpin + Send> Duplex for T {}
+pub(crate) type Io = Box<dyn Duplex>;
+
+#[derive(Debug, Clone)]
+pub struct Options {
+    /// The account's address (and IMAP/SMTP user name).
+    pub user: String,
+    pub password: String,
+    pub caps: Capabilities,
+    /// Serve STARTTLS and implicit TLS with a self-signed certificate for `localhost`.
+    pub tls: bool,
+    /// File sent mail in Sent itself, as Gmail does.
+    pub files_sent: bool,
+    /// Fixed ports (0: any free one).
+    pub imap_port: u16,
+    pub smtp_port: u16,
+    pub control_port: u16,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Options {
+            user: "maria@example.org".into(),
+            password: "secret".into(),
+            caps: FakeImap::default().caps,
+            tls: false,
+            files_sent: false,
+            imap_port: 0,
+            smtp_port: 0,
+            control_port: 0,
+        }
+    }
+}
+
+/// A message the SMTP server took.
+#[derive(Debug, Clone, Serialize)]
+pub struct SentMail {
+    pub from: String,
+    pub to: Vec<String>,
+    pub subject: String,
+    #[serde(skip)]
+    pub raw: Vec<u8>,
+    pub size: usize,
+}
+
+pub struct Shared {
+    pub fake: Mutex<FakeImap>,
+    pub sent: Mutex<Vec<SentMail>>,
+    pub password: Mutex<String>,
+    pub user: String,
+    pub files_sent: bool,
+    changes: watch::Sender<u64>,
+    offline: watch::Sender<bool>,
+    tls: Option<TlsAcceptor>,
+    /// IMAP connections opened so far (the tests check the worker's pool).
+    pub connections: Mutex<u32>,
+    /// The plain-text IMAP and SMTP ports (for the autoconfig file of the control port).
+    pub ports: Mutex<(u16, u16)>,
+    /// A slow server: new connections wait this long before the greeting (milliseconds).
+    pub delay_ms: Mutex<u64>,
+}
+
+impl Shared {
+    /// Changes the mailbox as the test or another client would; IDLE connections notice.
+    pub fn with<R>(&self, f: impl FnOnce(&mut FakeImap) -> R) -> R {
+        let r = f(&mut self.fake.lock().unwrap_or_else(|e| e.into_inner()));
+        self.changed();
+        r
+    }
+
+    pub(crate) fn changed(&self) {
+        self.changes.send_modify(|v| *v += 1);
+    }
+
+    pub fn set_offline(&self, offline: bool) {
+        self.offline.send_replace(offline);
+    }
+
+    pub fn is_offline(&self) -> bool {
+        *self.offline.borrow()
+    }
+
+    pub(crate) fn check_login(&self, user: &str, password: &str) -> bool {
+        user.eq_ignore_ascii_case(&self.user) && password == *self.password.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Waits until the server is taken offline (a connection then ends).
+    pub(crate) async fn until_offline(&self) {
+        let mut rx = self.offline.subscribe();
+        let _ = rx.wait_for(|o| *o).await;
+    }
+
+    pub(crate) fn subscribe_changes(&self) -> watch::Receiver<u64> {
+        self.changes.subscribe()
+    }
+}
+
+/// A running server.
+pub struct Running {
+    pub imap: u16,
+    pub smtp: u16,
+    /// Implicit TLS ports (with `tls`).
+    pub imaps: Option<u16>,
+    pub smtps: Option<u16>,
+    pub control: u16,
+    /// The SHA-256 fingerprint of the certificate (with `tls`).
+    pub fingerprint: Option<String>,
+    pub shared: Arc<Shared>,
+}
+
+fn tls_acceptor() -> io::Result<(TlsAcceptor, String)> {
+    let ck = rcgen::generate_simple_self_signed(vec!["localhost".to_string(), "127.0.0.1".to_string()])
+        .map_err(io::Error::other)?;
+    let der = ck.cert.der().clone();
+    let key = rustls::pki_types::PrivateKeyDer::try_from(ck.signing_key.serialize_der()).map_err(io::Error::other)?;
+    let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+    let config = rustls::ServerConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .map_err(io::Error::other)?
+        .with_no_client_auth()
+        .with_single_cert(vec![der.clone()], key)
+        .map_err(io::Error::other)?;
+    Ok((TlsAcceptor::from(Arc::new(config)), mail_core::network::fingerprint(&der)))
+}
+
+async fn listen(port: u16) -> io::Result<(TcpListener, u16)> {
+    let l = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], port))).await?;
+    let p = l.local_addr()?.port();
+    Ok((l, p))
+}
+
+#[derive(Clone, Copy)]
+enum Kind {
+    Imap,
+    Smtp,
+}
+
+fn serve(listener: TcpListener, shared: Arc<Shared>, kind: Kind, implicit_tls: bool) {
+    tokio::spawn(async move {
+        loop {
+            let Ok((tcp, _)) = listener.accept().await else { return };
+            if shared.is_offline() {
+                drop(tcp);
+                continue;
+            }
+            let shared = shared.clone();
+            tokio::spawn(async move {
+                let _ = tcp.set_nodelay(true);
+                let delay = *shared.delay_ms.lock().unwrap_or_else(|e| e.into_inner());
+                if delay > 0 {
+                    tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+                }
+                let io: Io = if implicit_tls {
+                    let Some(acceptor) = shared.tls.clone() else { return };
+                    match acceptor.accept(tcp).await {
+                        Ok(s) => Box::new(s),
+                        Err(_) => return,
+                    }
+                } else {
+                    Box::new(tcp) as Io
+                };
+                let session = async {
+                    match kind {
+                        Kind::Imap => imap::session(io, shared.clone(), implicit_tls).await,
+                        Kind::Smtp => smtp::session(io, shared.clone(), implicit_tls).await,
+                    }
+                };
+                tokio::select! {
+                    _ = session => {}
+                    _ = shared.until_offline() => {}
+                }
+            });
+        }
+    });
+}
+
+/// Starts the server on loopback ports.
+pub async fn start(opts: Options) -> io::Result<Running> {
+    let (tls, fingerprint) = if opts.tls {
+        let (a, f) = tls_acceptor()?;
+        (Some(a), Some(f))
+    } else {
+        (None, None)
+    };
+    let fake = FakeImap::new(opts.caps).with_all_folders();
+    let shared = Arc::new(Shared {
+        fake: Mutex::new(fake),
+        sent: Mutex::default(),
+        password: Mutex::new(opts.password.clone()),
+        user: opts.user.clone(),
+        files_sent: opts.files_sent,
+        changes: watch::channel(0).0,
+        offline: watch::channel(false).0,
+        tls,
+        connections: Mutex::new(0),
+        ports: Mutex::new((0, 0)),
+        delay_ms: Mutex::new(0),
+    });
+    let (imap_l, imap) = listen(opts.imap_port).await?;
+    let (smtp_l, smtp) = listen(opts.smtp_port).await?;
+    let (control_l, control) = listen(opts.control_port).await?;
+    *shared.ports.lock().unwrap_or_else(|e| e.into_inner()) = (imap, smtp);
+    serve(imap_l, shared.clone(), Kind::Imap, false);
+    serve(smtp_l, shared.clone(), Kind::Smtp, false);
+    let (mut imaps, mut smtps) = (None, None);
+    if opts.tls {
+        let (l, p) = listen(0).await?;
+        serve(l, shared.clone(), Kind::Imap, true);
+        imaps = Some(p);
+        let (l, p) = listen(0).await?;
+        serve(l, shared.clone(), Kind::Smtp, true);
+        smtps = Some(p);
+    }
+    control::serve(control_l, shared.clone());
+    Ok(Running { imap, smtp, imaps, smtps, control, fingerprint, shared })
+}
+
+/// The TLS acceptor of a server, for STARTTLS.
+pub(crate) fn acceptor(shared: &Shared) -> Option<TlsAcceptor> {
+    shared.tls.clone()
+}
+
+/// Upgrades a plain connection (STARTTLS).
+pub(crate) async fn upgrade(io: Io, shared: &Shared) -> Option<Io> {
+    let acceptor = acceptor(shared)?;
+    acceptor.accept(io).await.ok().map(|s| Box::new(s) as Io)
+}
+
+/// `16-Oct-2026 09:30:00 +0000` for Unix seconds.
+pub(crate) fn internal_date(secs: i64) -> String {
+    let days = secs.div_euclid(86400);
+    let rem = secs.rem_euclid(86400);
+    // civil_from_days (Howard Hinnant).
+    let z = days + 719468;
+    let era = z.div_euclid(146097);
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    format!(
+        "{:02}-{}-{:04} {:02}:{:02}:{:02} +0000",
+        d,
+        MONTHS[(m - 1) as usize],
+        y,
+        rem / 3600,
+        rem % 3600 / 60,
+        rem % 60
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn internal_dates_round_trip() {
+        let s = super::internal_date(1_792_135_800);
+        assert_eq!(s, "16-Oct-2026 07:30:00 +0000");
+        assert_eq!(mail_core::imap::client::parse_internal_date(&s), Some(1_792_135_800));
+    }
+}

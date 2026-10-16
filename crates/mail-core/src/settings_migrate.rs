@@ -12,7 +12,7 @@
 use serde_json::{Map, Value};
 
 /// Version written by this release.
-pub const SETTINGS_VERSION: u32 = 1;
+pub const SETTINGS_VERSION: u32 = 2;
 
 /// One step `from → from + 1`: changes the settings object and says what it did (`None`:
 /// nothing to do for these settings).
@@ -23,12 +23,32 @@ pub struct Step {
 }
 
 /// The chain, in order. `STEPS[i].from == i`.
-pub const STEPS: [Step; SETTINGS_VERSION as usize] = [Step { from: 0, name: "versioned", run: versioned }];
+pub const STEPS: [Step; SETTINGS_VERSION as usize] =
+    [Step { from: 0, name: "versioned", run: versioned }, Step { from: 1, name: "mail_basics", run: mail_basics }];
 
 /// Version 0 is settings written before versions existed (development builds): nothing to
 /// change, the step only records the start of the chain.
 fn versioned(_: &mut Map<String, Value>) -> Option<String> {
     None
+}
+
+/// Version 2 (milestone 1): notifications, undo for sending, rich text and the preview line.
+/// Written with their defaults, so a later change of a default does not change them for people
+/// who had version 2.
+fn mail_basics(map: &mut Map<String, Value>) -> Option<String> {
+    let mut added = vec![];
+    for (key, value) in [
+        ("notifications", Value::Bool(true)),
+        ("undo_send_secs", Value::from(5)),
+        ("compose_rich_text", Value::Bool(true)),
+        ("show_snippets", Value::Bool(true)),
+    ] {
+        if !map.contains_key(key) {
+            map.insert(key.into(), value);
+            added.push(key);
+        }
+    }
+    (!added.is_empty()).then(|| format!("added {}", added.join(", ")))
 }
 
 /// Runs the steps the settings still need; returns what they did.
@@ -56,6 +76,16 @@ mod tests {
         for (i, s) in STEPS.iter().enumerate() {
             assert_eq!(s.from as usize, i, "{}", s.name);
         }
+    }
+
+    #[test]
+    fn mail_basics_keep_what_is_there() {
+        let mut m: Map<String, Value> = serde_json::from_str(r#"{"version":1,"undo_send_secs":10}"#).unwrap();
+        let done = migrate(&mut m);
+        assert_eq!(done.len(), 1, "{done:?}");
+        assert_eq!(m["undo_send_secs"], 10);
+        assert_eq!(m["notifications"], true);
+        assert!(migrate(&mut m).is_empty(), "idempotent");
     }
 
     #[test]

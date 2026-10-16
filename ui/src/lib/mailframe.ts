@@ -5,7 +5,10 @@
 // user chose to load them. `allow-same-origin` (without scripts nothing in the frame can use
 // it) lets the app catch link clicks and open them in the browser.
 
-export type FrameColors = { paper: string; text: string; link: string; quote: string; font: string };
+/** `pad`: the space around the message (none for plain text, which sits in the pane);
+ *  `scheme`: the frame's color scheme, the app's for plain text (else WebKit paints the frame
+ *  opaque white behind a transparent page). */
+export type FrameColors = { paper: string; text: string; link: string; quote: string; rule: string; font: string; pad: string; scheme: string };
 
 export const FRAME_SANDBOX = "allow-same-origin";
 
@@ -22,21 +25,24 @@ export function frameDocument(html: string, allowRemote: boolean, c: FrameColors
 <meta http-equiv="Content-Security-Policy" content="${escapeAttr(frameCsp(allowRemote))}">
 <meta name="referrer" content="no-referrer">
 <style>
-html{background:${c.paper};color:${c.text};font-family:${c.font};font-size:14px;line-height:1.5}
-body{margin:0;padding:20px 24px;overflow-wrap:anywhere}
+html{color-scheme:${c.scheme};background:${c.paper};color:${c.text};font-family:${c.font};font-size:14px;line-height:1.5}
+body{margin:0;padding:${c.pad};overflow-wrap:anywhere}
 a{color:${c.link}}
 img{max-width:100%;height:auto}
-blockquote{margin:0 0 0 4px;padding-left:12px;border-left:2px solid ${c.quote};color:${c.quote}}
+img:not([src]){display:none}
+blockquote{margin:0 0 0 2px;padding-left:12px;border-left:2px solid ${c.rule};color:${c.quote}}
 pre,.plain{white-space:pre-wrap}
 table{max-width:100%}
 </style></head><body>${html}</body></html>`;
 }
 
-/** The frame's colors from the current theme's tokens. */
-export function frameColors(root: HTMLElement = document.documentElement): FrameColors {
+/** The frame's colors from the current theme's tokens: HTML mail on its light paper, plain
+ *  text in the app's own colors (dark in the dark themes). */
+export function frameColors(plain: boolean, root: HTMLElement = document.documentElement): FrameColors {
   const css = getComputedStyle(root);
   const v = (name: string) => css.getPropertyValue(name).trim();
-  return { paper: v("--paper"), text: v("--paper-text"), link: v("--paper-link"), quote: v("--paper-quote"), font: v("--font-ui") };
+  if (plain) return { paper: "transparent", text: v("--text"), link: v("--accent-text"), quote: v("--text-3"), rule: v("--border-strong"), font: v("--font-ui"), pad: "2px 0", scheme: css.colorScheme || "light" };
+  return { paper: v("--paper"), text: v("--paper-text"), link: v("--paper-link"), quote: v("--paper-quote"), rule: v("--paper-rule"), font: v("--font-ui"), pad: "20px 24px", scheme: "light" };
 }
 
 /** Only web and mail links leave the frame (to the browser or the compose sheet). */
