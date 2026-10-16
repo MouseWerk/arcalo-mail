@@ -32,3 +32,14 @@ All four groups are part of 1.0.0:
 - **Power tools:** templates and snippets, rules, calendar invites (accept/decline), contacts, an
   attachment hub, PGP and S/MIME, sending a mail to Arcalo as a note or task, quick actions in
   notifications, mobile widgets.
+
+## Calendar (2026-10-17)
+
+Arcalo Mail gets a calendar with the same design as Arcalo's Kalender (day, work week, week, month and
+list; the same grid, event cards, detail panel, quiet states and tokens, taken over from Arcalo's
+`ui/src/views/Calendar*` and adapted). Sources in 1.0.0: Microsoft 365 / Outlook.com (Graph, needs the
+delegated permission Calendars.ReadWrite in the Entra app), CalDAV (iCloud, Fastmail, mailbox.org,
+Posteo, Nextcloud and others), JMAP Calendars where offered, ICS subscriptions, and invitations in mails
+(accept, tentative, decline with the reply to the organizer). Create, move and delete own appointments;
+meetings with attendees send updates only after confirmation, as in Arcalo 1.21. Google Calendar comes
+with the Google sign-in.
