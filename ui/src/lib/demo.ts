@@ -117,7 +117,7 @@ function counts(): Mailbox[] {
 }
 
 export const demo = {
-  appInfo: (): AppInfo => ({ version: "0.1.0", platform: "browser", schema: 2, locale: navigator.language, secret_store: { kind: "system" } }),
+  appInfo: (): AppInfo => ({ version: "0.1.0", platform: "browser", schema: 2, locale: navigator.language, secret_store: { kind: "system" }, clock: null }),
   settings: (): Settings => settings,
   saveSettings: (s: Settings) => {
     settings = s;
@@ -172,7 +172,7 @@ export const demo = {
       has_body: true,
       text: x.text,
       remote_allowed: allowed,
-      body: { html: x.html, full_html: null, text_html: x.html.includes("plain") ? null : plain(x.text), blocked_remote: allowed ? 0 : x.blocked },
+      body: { html: x.html, full_html: null, text_html: x.html.includes("plain") ? null : plain(x.text), blocked_remote: allowed ? 0 : x.blocked, plain: false },
       sender_trusted: senders.has(x.from?.email ?? ""),
       files: x.has_attachments ? [{ id: 1, message_id: x.id, part_index: 0, filename: "Angebot-Relaunch.pdf", mime_type: "application/pdf", size: 182_000, content_id: null, inline: false, section: null }] : [],
       load_error: null,

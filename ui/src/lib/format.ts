@@ -3,6 +3,18 @@
 import { t, type Lang } from "./i18n";
 import type { Address } from "./types";
 
+let clockOffset = 0;
+
+/** Fixes „now“ for the screenshot generator (Unix seconds); dates are formatted against it. */
+export function setClock(unixSecs: number | null | undefined): void {
+  clockOffset = unixSecs ? unixSecs * 1000 - Date.now() : 0;
+}
+
+/** The current time, or the fixed one of the screenshot generator. */
+export function now(): Date {
+  return new Date(Date.now() + clockOffset);
+}
+
 const locale = (lang: Lang) => (lang === "de" ? "de-DE" : "en-GB");
 
 function startOfDay(d: Date): number {

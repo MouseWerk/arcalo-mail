@@ -129,7 +129,7 @@ export type MessageView = {
   text: string | null;
   remote_allowed: boolean;
   /** Sanitized in the backend (mail_core::actions::message_view); shown in the sandboxed frame. */
-  body: { html: string; full_html: string | null; text_html: string | null; blocked_remote: number };
+  body: { html: string; full_html: string | null; text_html: string | null; blocked_remote: number; plain: boolean };
   sender_trusted: boolean;
   /** The attachments the user sees. */
   files: Attachment[];
@@ -153,7 +153,7 @@ export type ComposeDraft = {
   message_id: string | null;
   reply_to_id: number | null;
   /** The attachments of this message go along (forwarding). */
-  forward_from: number | null;
+  forwarded: number[];
 };
 
 export type Queued = { outbox_id: number; message_id: string; delay: number };
@@ -195,4 +195,6 @@ export type AppInfo = {
   schema: number;
   locale: string;
   secret_store: { kind: "system" } | { kind: "file"; reason: string } | { kind: "unavailable" };
+  /** A fixed „now“ in Unix seconds (screenshots only). */
+  clock?: number | null;
 };

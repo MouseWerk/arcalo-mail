@@ -156,8 +156,6 @@ export const en = {
   "compose.attachments": "Attachments",
   "compose.removeAttachment": "Remove {name}",
   "compose.removeRecipient": "Remove {name}",
-  "compose.forwardedFiles": "Attachments of the forwarded message",
-  "compose.removeForwarded": "Leave the forwarded attachments out",
   "compose.dropHint": "Drop files to attach them",
   "compose.invalidAddress": "Not a valid address",
   "compose.invalidNamed": "“{address}” is not a valid address.",
@@ -376,7 +374,7 @@ export const en = {
   "keys.enter": "Enter",
 
   // ---- appearance and language
-  "theme.label": "Appearance",
+  "theme.label": "Theme",
   "theme.system": "System",
   "theme.light": "Light",
   "theme.dark": "Dark",

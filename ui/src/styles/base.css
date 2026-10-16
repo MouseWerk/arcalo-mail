@@ -44,6 +44,25 @@ button {
   cursor: pointer;
 }
 
+/* Thin scroll bars that show on hover, part of the page so dialogs cover them. */
+::-webkit-scrollbar {
+  width: var(--scrollbar);
+  height: var(--scrollbar);
+}
+::-webkit-scrollbar-thumb {
+  border: var(--scrollbar-gap) solid transparent;
+  border-radius: var(--r-lg);
+  background: transparent;
+  background-clip: padding-box;
+}
+*:hover::-webkit-scrollbar-thumb {
+  background-color: var(--border-strong);
+}
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
 .muted {
   color: var(--text-3);
 }
@@ -213,11 +232,19 @@ kbd {
 .textarea::placeholder {
   color: var(--text-3);
 }
-.input:focus,
-.select:focus,
-.textarea:focus {
+.input:focus-visible,
+.select:focus-visible,
+.textarea:focus-visible {
   border-color: var(--border-focus);
   box-shadow: var(--focus-halo);
+}
+.select {
+  appearance: none;
+  padding-right: calc(var(--sp-2) * 2 + var(--chevron-size));
+  background-image: var(--select-chevron);
+  background-repeat: no-repeat;
+  background-position: right var(--sp-2) center;
+  background-size: var(--chevron-size);
 }
 .input:disabled {
   opacity: 0.6;
@@ -225,11 +252,13 @@ kbd {
 .input-bare,
 .select-bare {
   border-color: transparent;
-  background: transparent;
+  background-color: transparent;
   padding-left: 0;
 }
-.input-bare:focus,
-.select-bare:focus {
+.input-bare:focus-visible,
+.select-bare:focus-visible {
+  outline: none;
+  background-color: var(--bg-hover);
   border-color: transparent;
   box-shadow: none;
 }

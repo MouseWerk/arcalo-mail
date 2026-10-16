@@ -4,14 +4,14 @@ import { FRAME_SANDBOX, frameColors, frameDocument, openableLink } from "../lib/
 import { openExternal } from "../lib/api";
 import type { Theme } from "../lib/theme";
 
-type Props = { html: string; allowRemote: boolean; theme: Theme };
+type Props = { html: string; allowRemote: boolean; theme: Theme; plain: boolean };
 
 /** Opens `mailto:` links in the compose sheet (App listens for this event). */
 export const MAILTO_EVENT = "arcalo-mail:mailto";
 
 /** The message body in a sandboxed frame (lib/mailframe.ts); links open in the browser, mail
  *  links in the compose sheet. The frame grows with its content. */
-export function MailFrame({ html, allowRemote, theme }: Props) {
+export function MailFrame({ html, allowRemote, theme, plain }: Props) {
   const t = useT();
   const ref = useRef<HTMLIFrameElement>(null);
 
@@ -21,7 +21,8 @@ export function MailFrame({ html, allowRemote, theme }: Props) {
     let observer: ResizeObserver | null = null;
     const fit = () => {
       const doc = frame.contentDocument;
-      if (doc?.documentElement) frame.style.height = `${Math.ceil(doc.documentElement.scrollHeight)}px`;
+      // The frame's own border counts too (border-box), else a scroll bar shows.
+      if (doc?.documentElement) frame.style.height = `${Math.ceil(doc.documentElement.scrollHeight) + frame.offsetHeight - frame.clientHeight}px`;
     };
     const onLoad = () => {
       fit();
@@ -43,13 +44,13 @@ export function MailFrame({ html, allowRemote, theme }: Props) {
       }
     };
     frame.addEventListener("load", onLoad);
-    frame.srcdoc = frameDocument(html, allowRemote, frameColors());
+    frame.srcdoc = frameDocument(html, allowRemote, frameColors(plain));
     return () => {
       frame.removeEventListener("load", onLoad);
       observer?.disconnect();
     };
     // The theme changes the frame's colors.
-  }, [html, allowRemote, theme]);
+  }, [html, allowRemote, theme, plain]);
 
-  return <iframe ref={ref} className="mail-frame" title={t("read.frameTitle")} sandbox={FRAME_SANDBOX} referrerPolicy="no-referrer" />;
+  return <iframe ref={ref} className={`mail-frame${plain ? " mail-frame-plain" : ""}`} title={t("read.frameTitle")} sandbox={FRAME_SANDBOX} referrerPolicy="no-referrer" />;
 }

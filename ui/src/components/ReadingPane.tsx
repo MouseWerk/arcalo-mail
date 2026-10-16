@@ -22,7 +22,7 @@ import {
 } from "lucide-react";
 import { useState } from "react";
 import { currentLang, useT } from "../lib/i18n";
-import { addressLine, displayName, fileSize, fullDate, initials, shortDate } from "../lib/format";
+import { addressLine, displayName, fileSize, fullDate, initials, now, shortDate } from "../lib/format";
 import type { Theme } from "../lib/theme";
 import type { Attachment, MessageSummary, MessageView } from "../lib/types";
 import { MailFrame } from "./MailFrame";
@@ -133,7 +133,7 @@ function MessageCard({ view, theme, p, onCollapse }: { view: MessageView; theme:
           </div>
         </div>
         <time className="muted message-date" dateTime={new Date(m.date * 1000).toISOString()} title={fullDate(m.date, lang)}>
-          {shortDate(m.date, new Date(), lang)}
+          {shortDate(m.date, now(), lang)}
         </time>
         <div className="message-card-actions">
           <button type="button" className="icon-btn icon-btn-sm" onClick={() => p.onCompose("reply", view)} aria-label={t("read.reply")} title={t("read.reply")}>
@@ -177,7 +177,7 @@ function MessageCard({ view, theme, p, onCollapse }: { view: MessageView; theme:
           </span>
         </div>
       )}
-      <MailFrame html={html} allowRemote={view.remote_allowed} theme={theme} />
+      <MailFrame html={html} allowRemote={view.remote_allowed} theme={theme} plain={view.body.plain || asText} />
       {(view.body.full_html || view.body.text_html) && (
         <div className="message-body-tools">
           {view.body.full_html && !asText && (
@@ -279,7 +279,7 @@ export function ReadingPane(p: Props) {
                   </span>
                   <span className={`collapsed-from${m.seen ? "" : " unread"}`}>{displayName(m.from, lang)}</span>
                   <span className="collapsed-snippet">{m.snippet}</span>
-                  <span className="collapsed-date">{shortDate(m.date, new Date(), lang)}</span>
+                  <span className="collapsed-date">{shortDate(m.date, now(), lang)}</span>
                 </button>
               );
             if (!v || v === "loading")

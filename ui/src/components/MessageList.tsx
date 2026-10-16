@@ -1,7 +1,7 @@
 import { Archive, Flag, Mail, MailOpen, Menu as MenuIcon, Paperclip, Search, Server, ShieldAlert, Trash2, X, FolderInput, Reply } from "lucide-react";
 import { useEffect, useLayoutEffect, useState, type ReactNode } from "react";
 import { currentLang, useT } from "../lib/i18n";
-import { displayName, listDate } from "../lib/format";
+import { displayName, listDate, now } from "../lib/format";
 import { visibleRange } from "../lib/listing";
 import type { MessageSummary } from "../lib/types";
 import { Spinner } from "./ui";
@@ -44,7 +44,7 @@ function tokenPx(name: string, fallback: number): number {
 export function MessageList(p: Props) {
   const t = useT();
   const lang = currentLang();
-  const now = new Date();
+  const today = now();
   const scroller = p.listRef;
   const [range, setRange] = useState({ start: 0, end: 40 });
   const [rowH, setRowH] = useState(76);
@@ -123,7 +123,7 @@ export function MessageList(p: Props) {
             {m.has_attachments && <Paperclip size={12} strokeWidth={1.75} aria-label={t("list.attachment")} />}
             {m.flagged && <Flag size={12} strokeWidth={1.75} className="flag" aria-label={t("list.flagged")} />}
           </span>
-          <span className="row-date">{listDate(m.date, now, lang)}</span>
+          <span className="row-date">{listDate(m.date, today, lang)}</span>
         </span>
         <span className="row-subject">{m.subject || t("list.noSubject")}</span>
         {p.showSnippets && <span className="row-snippet">{m.snippet || " "}</span>}

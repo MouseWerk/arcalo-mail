@@ -633,11 +633,20 @@
 }
 .mail-frame {
   display: block;
+  color-scheme: light;
   width: 100%;
   min-height: var(--frame-min-h);
   border: 1px solid var(--border);
   border-radius: var(--r-md);
   background: var(--paper);
+}
+/* Plain text sits in the pane like the rest of the conversation. */
+.mail-frame-plain {
+  color-scheme: inherit;
+  min-height: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
 }
 .message-body-tools {
   display: flex;
@@ -745,6 +754,12 @@
 
 /* ---- compose sheet */
 
+/* While writing, toasts move to the left so they never cover the sheet's buttons. */
+.app[data-composing] .toasts {
+  left: var(--sp-6);
+  width: min(var(--toast-w), calc(100vw - var(--compose-w) - 3 * var(--sp-6)));
+  transform: none;
+}
 .compose {
   position: fixed;
   right: var(--sp-6);

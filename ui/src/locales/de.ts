@@ -154,8 +154,6 @@ export const de: Record<TKey, Msg> = {
   "compose.attachments": "Anhänge",
   "compose.removeAttachment": "{name} entfernen",
   "compose.removeRecipient": "{name} entfernen",
-  "compose.forwardedFiles": "Anhänge der weitergeleiteten Nachricht",
-  "compose.removeForwarded": "Die weitergeleiteten Anhänge weglassen",
   "compose.dropHint": "Dateien hier ablegen, um sie anzuhängen",
   "compose.invalidAddress": "Keine gültige Adresse",
   "compose.invalidNamed": "„{address}“ ist keine gültige Adresse.",
@@ -374,7 +372,7 @@ export const de: Record<TKey, Msg> = {
   "keys.enter": "Eingabe",
 
   // ---- appearance and language
-  "theme.label": "Darstellung",
+  "theme.label": "Farbthema",
   "theme.system": "Wie das System",
   "theme.light": "Hell",
   "theme.dark": "Dunkel",

@@ -378,17 +378,26 @@ export function ComposeSheet({ draft, accounts, error, sending, onChange, onSend
         ) : (
           <textarea ref={body} className="compose-body" aria-label={t("compose.body")} value={draft.text} onChange={(e) => set({ text: e.target.value })} />
         )}
-        {(draft.attachments.length > 0 || draft.forwardFrom) && (
+        {(draft.attachments.length > 0 || draft.forwarded.length > 0) && (
           <ul className="compose-attachments" aria-label={t("compose.attachments")}>
-            {draft.forwardFrom && (
-              <li className="chip chip-file">
-                <Paperclip size={13} strokeWidth={1.75} aria-hidden />
-                <span className="chip-text">{t("compose.forwardedFiles")}</span>
-                <button type="button" className="chip-remove" aria-label={t("compose.removeForwarded")} onClick={() => set({ forwardFrom: null })}>
-                  <X size={12} strokeWidth={2} aria-hidden />
-                </button>
-              </li>
-            )}
+            {draft.forwarded.map((a) => {
+              const name = a.filename ?? t("read.unnamed");
+              return (
+                <li key={`f${a.id}`} className="chip chip-file">
+                  <File size={13} strokeWidth={1.75} aria-hidden />
+                  <span className="chip-text">{name}</span>
+                  <span className="chip-meta">{fileSize(a.size, lang)}</span>
+                  <button
+                    type="button"
+                    className="chip-remove"
+                    aria-label={t("compose.removeAttachment", { name })}
+                    onClick={() => set({ forwarded: draft.forwarded.filter((x) => x.id !== a.id) })}
+                  >
+                    <X size={12} strokeWidth={2} aria-hidden />
+                  </button>
+                </li>
+              );
+            })}
             {draft.attachments.map((a) => (
               <li key={a.path} className="chip chip-file">
                 <File size={13} strokeWidth={1.75} aria-hidden />

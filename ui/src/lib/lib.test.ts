@@ -42,7 +42,7 @@ describe("dates in the list", () => {
 });
 
 describe("mail frame", () => {
-  const colors = { paper: "white", text: "black", link: "blue", quote: "gray", font: "sans-serif" };
+  const colors = { paper: "white", text: "black", link: "blue", quote: "gray", rule: "silver", font: "sans-serif", pad: "0", scheme: "light" };
   it("blocks remote images unless they are allowed", () => {
     expect(frameCsp(false)).toContain("img-src data: cid:;");
     expect(frameCsp(false)).not.toContain("https:");
@@ -79,7 +79,7 @@ describe("compose", () => {
     has_body: true,
     text: "Hallo\n> alt",
     remote_allowed: false,
-    body: { html: "", full_html: null, text_html: null, blocked_remote: 0 },
+    body: { html: "", full_html: null, text_html: null, blocked_remote: 0, plain: true },
     sender_trusted: false,
     files: [],
     load_error: null,

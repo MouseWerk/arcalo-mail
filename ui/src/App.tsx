@@ -6,6 +6,7 @@ import { currentLang, langFromLocale, setLang, useT } from "./lib/i18n";
 import { draftFromMessage, emptyDraft, isEmpty, isValidAddress, replyDraft, toDraft, type ComposeState } from "./lib/compose";
 import { clickSelect, isTyping, keyAction, pagesFor, type Selection } from "./lib/listing";
 import { closeToast, runUndo, setUndo, showToast } from "./lib/toasts";
+import { setClock } from "./lib/format";
 import type { AccountInfo, AppInfo, Attachment, Mailbox, MessageSummary, MessageView, Notice, OutboxEntry, Settings, Undo } from "./lib/types";
 import { Sidebar, folderIcon, folderLabel, type FolderAction } from "./components/Sidebar";
 import { MessageList, type BulkAction } from "./components/MessageList";
@@ -68,6 +69,7 @@ export function App() {
 
   useEffect(() => {
     void Promise.all([api.appInfo(), api.settings()]).then(([i, s]) => {
+      setClock(i.clock);
       setInfo(i);
       setSettings(s);
     });

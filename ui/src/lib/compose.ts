@@ -3,7 +3,7 @@
 
 import { t, type Lang } from "./i18n";
 import { addressLine, displayName, fullDate } from "./format";
-import type { Account, Address, ComposeDraft, FileInfo, MessageView } from "./types";
+import type { Account, Address, Attachment, ComposeDraft, FileInfo, MessageView } from "./types";
 
 export type ComposeMode = "new" | "reply" | "replyAll" | "forward" | "draft";
 
@@ -21,8 +21,8 @@ export type ComposeState = {
   html: string;
   text: string;
   attachments: FileInfo[];
-  /** The attachments of this message go along (forwarding). */
-  forwardFrom: number | null;
+  /** Stored attachments that go along: a forwarded message's, or the edited draft's. */
+  forwarded: Attachment[];
   inReplyTo: string | null;
   references: string[];
   /** The draft's Message-ID once it was saved, kept for the next save and for sending. */
@@ -42,6 +42,9 @@ export const textToEditorHtml = (s: string) =>
     .map((l) => (l.trim() ? `<p>${escapeHtml(l)}</p>` : "<p><br></p>"))
     .join("");
 
+/** The signature in the editor, with an empty line below it. */
+const sigBlock = (sig: string) => (sig ? `${textToEditorHtml(sig)}<p><br></p>` : "");
+
 const signatureText = (a: Account | null) => (a?.signature.trim() ? `-- \n${a.signature.trim()}` : "");
 
 function base(account: Account | null, rich: boolean): ComposeState {
@@ -58,7 +61,7 @@ function base(account: Account | null, rich: boolean): ComposeState {
     html: "",
     text: "",
     attachments: [],
-    forwardFrom: null,
+    forwarded: [],
     inReplyTo: null,
     references: [],
     messageId: null,
@@ -104,7 +107,7 @@ export function replyDraft(m: MessageView, mode: "reply" | "replyAll" | "forward
   const sig = signatureText(account);
   if (mode === "forward") {
     d.subject = prefixed("Fwd", m.summary.subject);
-    d.forwardFrom = m.files.length ? m.summary.id : null;
+    d.forwarded = m.files;
     const head = [
       `-------- ${t("compose.forwardHeader", undefined, lang)} --------`,
       `${t("read.from", undefined, lang)}: ${from ? line(from) : ""}`,
@@ -112,7 +115,7 @@ export function replyDraft(m: MessageView, mode: "reply" | "replyAll" | "forward
       `${t("read.to", undefined, lang)}: ${addressLine(m.to)}`,
       `${t("compose.subject", undefined, lang)}: ${m.summary.subject}`,
     ];
-    if (rich) d.html = `<p><br></p>${sig ? textToEditorHtml(sig) : ""}<p><br></p>${textToEditorHtml(head.join("\n"))}<p><br></p>${textToEditorHtml(original)}`;
+    if (rich) d.html = `<p><br></p><p><br></p>${sigBlock(sig)}${textToEditorHtml(head.join("\n"))}<p><br></p>${textToEditorHtml(original)}`;
     else d.text = `\n\n${sig ? `${sig}\n\n` : ""}${head.join("\n")}\n\n${original}`;
     return d;
   }
@@ -132,7 +135,7 @@ export function replyDraft(m: MessageView, mode: "reply" | "replyAll" | "forward
   d.replyToId = m.summary.id;
   const intro = t("compose.quoteHeader", { date: fullDate(m.summary.date, lang), name: displayName(from, lang) }, lang);
   if (rich) {
-    d.html = `<p><br></p>${sig ? textToEditorHtml(sig) : ""}<p>${escapeHtml(intro)}</p><blockquote type="cite">${textToEditorHtml(original)}</blockquote>`;
+    d.html = `<p><br></p><p><br></p>${sigBlock(sig)}<p>${escapeHtml(intro)}</p><blockquote type="cite">${textToEditorHtml(original)}</blockquote>`;
   } else {
     d.text = `\n\n${sig ? `${sig}\n\n` : ""}${intro}\n${quoteText(original)}`;
   }
@@ -150,6 +153,7 @@ export function draftFromMessage(m: MessageView, account: Account | null, rich: 
   d.messageId = m.message_id;
   d.inReplyTo = m.in_reply_to;
   d.references = m.references;
+  d.forwarded = m.files;
   const text = m.text ?? "";
   if (rich) d.html = textToEditorHtml(text);
   else d.text = text;
@@ -169,7 +173,7 @@ export function editorHtmlToText(html: string): string {
 /** Whether the sheet holds nothing worth keeping. */
 export function isEmpty(s: ComposeState): boolean {
   const body = s.rich ? editorHtmlToText(s.html) : s.text;
-  return !s.to.length && !s.cc.length && !s.bcc.length && !s.subject.trim() && !body.replace(/^-- [\s\S]*$/m, "").trim() && !s.attachments.length;
+  return !s.to.length && !s.cc.length && !s.bcc.length && !s.subject.trim() && !body.replace(/^-- [\s\S]*$/m, "").trim() && !s.attachments.length && !s.forwarded.length;
 }
 
 /** What the backend sends or saves. */
@@ -187,7 +191,7 @@ export function toDraft(s: ComposeState): ComposeDraft {
     references: s.references,
     message_id: s.messageId,
     reply_to_id: s.replyToId,
-    forward_from: s.forwardFrom,
+    forwarded: s.forwarded.map((a) => a.id),
   };
 }
 
