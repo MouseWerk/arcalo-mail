@@ -6,6 +6,9 @@
 //! under the names [`account::secret_key`] gives.
 
 pub mod account;
+pub mod autoconfig;
+pub mod compose;
+pub mod engine;
 pub mod error;
 pub mod i18n;
 pub mod imap;
@@ -16,6 +19,7 @@ pub mod sanitize;
 pub mod search;
 pub mod settings;
 pub mod settings_migrate;
+pub mod smtp;
 pub mod store;
 pub mod sync;
 pub mod thread;

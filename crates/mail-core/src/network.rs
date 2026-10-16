@@ -273,7 +273,7 @@ fn platform_verifier() -> Result<Arc<rustls_platform_verifier::Verifier>> {
     static V: OnceLock<std::result::Result<Arc<rustls_platform_verifier::Verifier>, String>> = OnceLock::new();
     V.get_or_init(|| rustls_platform_verifier::Verifier::new(provider()).map(Arc::new).map_err(|e| e.to_string()))
         .clone()
-        .map_err(|e| Error::Network(e))
+        .map_err(Error::Network)
 }
 
 /// The platform verifier, except for the one certificate the user trusted for this server.
@@ -596,9 +596,12 @@ pub fn hello_name() -> &'static str {
 
 // ---------------------------------------------------------------------------- HTTP and DNS
 
+/// An HTTP client made by [`client_for`].
+pub type HttpClient = reqwest::Client;
+
 /// The HTTP client of a service: rustls with the platform verifier, a timeout, redirects only to
 /// `https://` (or this computer). Every request still checks its address ([`check_https_url`]).
-pub fn client_for(service: Service) -> Result<reqwest::Client> {
+pub fn client_for(service: Service) -> Result<HttpClient> {
     let timeout = match service {
         Service::Autoconfig => Duration::from_secs(8),
         _ => Duration::from_secs(30),

@@ -750,7 +750,7 @@ impl Store {
     /// The conversation view of a folder: one row per thread (its newest message), newest
     /// thread first; unread when any message of it is.
     pub fn threads(&self, mailbox_id: i64, limit: u32, offset: u32) -> Result<Vec<MessageSummary>> {
-        let sql = format!(
+        let sql =
             "WITH ranked AS (
                SELECT *, ROW_NUMBER() OVER (PARTITION BY thread_id ORDER BY COALESCE(date, internal_date) DESC, id DESC) AS rn,
                  COUNT(*) OVER (PARTITION BY thread_id) AS n,
@@ -760,9 +760,8 @@ impl Store {
                FROM messages WHERE mailbox_id = ?1 AND hidden = 0)
              SELECT id, mailbox_id, uid, thread_id, subject, from_name, from_email, COALESCE(date, internal_date),
                snippet, all_seen, any_flag, answered, any_att, n
-             FROM ranked WHERE rn = 1 ORDER BY COALESCE(date, internal_date) DESC, id DESC LIMIT ?2 OFFSET ?3"
-        );
-        let mut st = self.conn.prepare(&sql)?;
+             FROM ranked WHERE rn = 1 ORDER BY COALESCE(date, internal_date) DESC, id DESC LIMIT ?2 OFFSET ?3";
+        let mut st = self.conn.prepare(sql)?;
         let rows = st.query_map(params![mailbox_id, limit, offset], |r| {
             let mut s = summary(r)?;
             s.thread_count = r.get(13)?;

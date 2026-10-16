@@ -298,7 +298,9 @@ impl BodyPart {
     /// A part shown as an attachment (not the text, not an image the HTML shows).
     pub fn is_attachment(&self) -> bool {
         let text = self.mime_type == "text/plain" || self.mime_type == "text/html";
-        !(text && self.filename.is_none() && self.inline) && !(self.inline && self.content_id.is_some())
+        let body_text = text && self.filename.is_none() && self.inline;
+        let picture = self.inline && self.content_id.is_some();
+        !body_text && !picture
     }
 }
 

@@ -852,9 +852,9 @@ impl ImapClient for ImapSession {
         ];
         let done = check(self.command_with(parts).await?, "APPEND")?;
         Ok(match done.code {
-            Some(ResponseCode::AppendUid(_, set)) => set.first().and_then(|m| match m {
-                imap_proto::rfc4315::UidSetMember::Uid(u) => Some(*u),
-                imap_proto::rfc4315::UidSetMember::UidRange(r) => Some(*r.start()),
+            Some(ResponseCode::AppendUid(_, set)) => set.first().map(|m| match m {
+                imap_proto::rfc4315::UidSetMember::Uid(u) => *u,
+                imap_proto::rfc4315::UidSetMember::UidRange(r) => *r.start(),
             }),
             _ => None,
         })
