@@ -36,10 +36,13 @@ pub enum Theme {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RemoteContent {
+    /// Blocked; „Bilder laden“ per message, „Immer für diesen Absender“ per sender.
     #[default]
     Ask,
-    /// Load for senders the user allowed (milestone 1).
+    /// The same, named before senders could be trusted one by one (kept for old settings).
     TrustedSenders,
+    /// Always loaded (the sender sees when the message was read).
+    Always,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -53,6 +56,14 @@ pub struct Settings {
     pub threads: bool,
     /// Mark a message read after it was shown this many seconds (0: at once; `None`: never).
     pub mark_read_after_secs: Option<u32>,
+    /// A desktop notification for new mail in an inbox.
+    pub notifications: bool,
+    /// Seconds a sent message waits for „Rückgängig“ before it goes out (0: at once).
+    pub undo_send_secs: u32,
+    /// New messages start as rich text (bold, lists, links); off: plain text.
+    pub compose_rich_text: bool,
+    /// The preview line under the subject in the list.
+    pub show_snippets: bool,
 }
 
 impl Default for Settings {
@@ -64,6 +75,10 @@ impl Default for Settings {
             remote_content: RemoteContent::Ask,
             threads: true,
             mark_read_after_secs: Some(0),
+            notifications: true,
+            undo_send_secs: 5,
+            compose_rich_text: true,
+            show_snippets: true,
         }
     }
 }

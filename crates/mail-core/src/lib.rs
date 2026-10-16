@@ -6,6 +6,7 @@
 //! under the names [`account::secret_key`] gives.
 
 pub mod account;
+pub mod actions;
 pub mod autoconfig;
 pub mod compose;
 pub mod engine;

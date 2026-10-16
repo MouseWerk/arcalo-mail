@@ -101,11 +101,7 @@ pub fn sanitize_html(html: &str, allow_remote: bool) -> Sanitized {
     Sanitized { html, blocked_remote: blocked.load(Ordering::Relaxed) }
 }
 
-/// The text of a message as HTML for the same frame (escaped, line breaks kept, links not
-/// made clickable yet).
-pub fn text_to_html(text: &str) -> String {
-    let mut out = String::with_capacity(text.len() + 32);
-    out.push_str("<div class=\"plain\">");
+fn escape(text: &str, out: &mut String) {
     for c in text.chars() {
         match c {
             '<' => out.push_str("&lt;"),
@@ -113,12 +109,130 @@ pub fn text_to_html(text: &str) -> String {
             '&' => out.push_str("&amp;"),
             '"' => out.push_str("&quot;"),
             '\'' => out.push_str("&#39;"),
-            '\n' => out.push_str("<br>"),
             '\r' => {}
             c => out.push(c),
         }
     }
+}
+
+/// One line of text with its web addresses as links.
+fn linkify(line: &str, out: &mut String) {
+    let mut rest = line;
+    while let Some(i) = ["https://", "http://"].iter().filter_map(|p| rest.find(p)).min() {
+        escape(&rest[..i], out);
+        let url_len =
+            rest[i..].find(|c: char| c.is_whitespace() || matches!(c, '<' | '>' | '"')).unwrap_or(rest.len() - i);
+        let mut url = &rest[i..i + url_len];
+        // A sentence's full stop or closing bracket is not part of the address.
+        while url.ends_with(['.', ',', ';', ':', ')', '!', '?']) {
+            url = &url[..url.len() - 1];
+        }
+        out.push_str("<a href=\"");
+        escape(url, out);
+        out.push_str("\" rel=\"noopener noreferrer\">");
+        escape(url, out);
+        out.push_str("</a>");
+        rest = &rest[i + url.len()..];
+    }
+    escape(rest, out);
+}
+
+/// The text of a message as HTML for the same frame: escaped, line breaks kept, web addresses
+/// as links, quoted lines (`> `) as quotes.
+pub fn text_to_html(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() + 64);
+    out.push_str("<div class=\"plain\">");
+    let mut depth = 0usize;
+    for line in text.replace("\r\n", "\n").split('\n') {
+        let level = line.chars().take_while(|c| *c == '>' || *c == ' ').filter(|c| *c == '>').count();
+        while depth < level {
+            out.push_str("<blockquote>");
+            depth += 1;
+        }
+        while depth > level {
+            out.push_str("</blockquote>");
+            depth -= 1;
+        }
+        let mut content = line;
+        for _ in 0..level {
+            content = content.trim_start().strip_prefix('>').unwrap_or(content);
+        }
+        let content = if level > 0 { content.strip_prefix(' ').unwrap_or(content) } else { content };
+        linkify(content, &mut out);
+        out.push_str("<br>");
+    }
+    while depth > 0 {
+        out.push_str("</blockquote>");
+        depth -= 1;
+    }
     out.push_str("</div>");
+    out
+}
+
+/// Where the quoted part of an HTML reply starts (the earlier message below the answer), so
+/// the reading pane can fold it away. `None` when there is none, or nothing above it.
+pub fn quote_start_html(html: &str) -> Option<usize> {
+    let lower = html.to_lowercase();
+    if lower.len() != html.len() {
+        // Lower case changed the byte offsets (rare letters); no folding then.
+        return None;
+    }
+    let markers = [
+        "<blockquote type=\"cite\"",
+        "class=\"gmail_quote",
+        "id=\"divrplyfwdmsg\"",
+        "class=\"moz-cite-prefix\"",
+        "id=\"appendonsend\"",
+        "class=\"yahoo_quoted\"",
+        "-----original message-----",
+        "-------- ursprüngliche nachricht --------",
+        "-------- original message --------",
+    ];
+    let at = markers.iter().filter_map(|m| lower.find(m)).min()?;
+    // From the start of the tag that holds the marker.
+    let start = lower[..at].rfind('<').filter(|i| !lower[*i..at].contains('>')).unwrap_or(at);
+    let before = &html[..start];
+    let text = ammonia::Builder::empty().clean(before).to_string();
+    text.trim().chars().any(char::is_alphanumeric).then_some(start)
+}
+
+/// Where the quoted end of a text reply starts: the attribution line („Am … schrieb …:“,
+/// „On … wrote:“) or the first of the `>` lines that run to the end.
+pub fn quote_start_text(text: &str) -> Option<usize> {
+    let lines: Vec<&str> = text.split('\n').collect();
+    let mut i = lines.len();
+    let mut quoted = 0;
+    while i > 0 {
+        let l = lines[i - 1].trim();
+        if l.starts_with('>') {
+            quoted += 1;
+        } else if !l.is_empty() {
+            break;
+        }
+        i -= 1;
+    }
+    if quoted < 2 {
+        return None;
+    }
+    if i > 0 && lines[i - 1].trim_end().ends_with(':') {
+        i -= 1;
+    }
+    let before: usize = lines[..i].iter().map(|l| l.len() + 1).sum();
+    lines[..i].iter().any(|l| l.chars().any(char::is_alphanumeric)).then_some(before.min(text.len()))
+}
+
+/// Replaces `cid:` pictures by `data:` addresses of the stored parts, so the frame shows them
+/// without asking anything outside.
+pub fn inline_cids(html: &str, images: &[(String, String, Vec<u8>)]) -> String {
+    use base64::Engine;
+    if images.is_empty() || !html.contains("cid:") {
+        return html.to_string();
+    }
+    let mut out = html.to_string();
+    for (cid, mime, data) in images {
+        let uri = format!("data:{mime};base64,{}", base64::engine::general_purpose::STANDARD.encode(data));
+        out = out.replace(&format!("cid:{cid}"), &uri);
+    }
     out
 }
 
@@ -177,5 +291,33 @@ mod tests {
         let h = text_to_html("a < b\n<script>");
         assert!(!h.contains("<script>"));
         assert!(h.contains("&lt;"));
+    }
+
+    #[test]
+    fn plain_text_gets_links_and_quotes() {
+        let h = text_to_html("Siehe https://example.org/a?b=1&c=2.\n> alt\n>> älter\nneu");
+        assert!(h.contains("<a href=\"https://example.org/a?b=1&amp;c=2\""), "{h}");
+        assert!(h.contains(">https://example.org/a?b=1&amp;c=2</a>."), "the full stop stays outside: {h}");
+        assert!(h.contains("<blockquote>alt<br><blockquote>älter<br></blockquote></blockquote>neu"), "{h}");
+    }
+
+    #[test]
+    fn quotes_are_found_below_the_answer() {
+        let html = "<div>Passt, danke!</div><div class=\"gmail_quote\"><div>Am Fr. schrieb Jonas:</div><blockquote>alt</blockquote></div>";
+        let at = quote_start_html(html).unwrap();
+        assert_eq!(&html[..at], "<div>Passt, danke!</div>");
+        assert!(quote_start_html("<blockquote type=\"cite\">nur Zitat</blockquote>").is_none(), "nothing above it");
+        assert!(quote_start_html("<p>Kein Zitat</p>").is_none());
+        let text = "Passt!\n\nAm 16.10. schrieb Jonas:\n> Angebot\n> anbei\n";
+        assert_eq!(&text[..quote_start_text(text).unwrap()], "Passt!\n\n");
+        assert!(quote_start_text("> nur\n> Zitat").is_none());
+        assert!(quote_start_text("Hallo\n> eine Zeile").is_none());
+    }
+
+    #[test]
+    fn inline_pictures_become_data_addresses() {
+        let html = sanitize_html("<img src=\"cid:logo@x\">", false).html;
+        let out = inline_cids(&html, &[("logo@x".into(), "image/png".into(), vec![1, 2, 3])]);
+        assert!(out.contains("data:image/png;base64,AQID"), "{out}");
     }
 }
