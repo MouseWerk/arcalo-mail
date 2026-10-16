@@ -43,3 +43,21 @@ Posteo, Nextcloud and others), JMAP Calendars where offered, ICS subscriptions, 
 (accept, tentative, decline with the reply to the organizer). Create, move and delete own appointments;
 meetings with attendees send updates only after confirmation, as in Arcalo 1.21. Google Calendar comes
 with the Google sign-in.
+
+## Every kind of account, profile pictures, meetings, rules (2026-10-17)
+
+- **Accounts:** besides IMAP/SMTP, Microsoft 365/Outlook.com and JMAP also POP3 (with "leave on server"),
+  Exchange on premises through EWS (still common in companies; Exchange Online uses the Microsoft
+  sign-in), and iCloud, Yahoo, AOL, GMX, WEB.DE, T-Online with presets. Google sign-in follows its
+  verification.
+- **Profile pictures:** from the user's contacts and the account (Microsoft Graph photo, CardDAV), from
+  BIMI (the sender's verified brand logo, fetched once per domain and cached) and as initials otherwise.
+  Gravatar only when the user switches it on, because it tells Gravatar which addresses write to you.
+  All pictures are cached locally and never loaded from inside a mail.
+- **Meetings:** invitations show as cards with time, place, attendees and the calendar conflict; Teams,
+  Zoom, Webex, Google Meet and Jitsi links become a „Beitreten“ button in the mail and the calendar;
+  accept, tentative and decline answer the organizer; updates and cancellations change the appointment.
+- **Rules:** one rule editor for local rules (run in the app on new mail) and the server's own rules
+  where available (Sieve via ManageSieve, Microsoft inbox rules through Graph), with the most common
+  conditions and actions (from, to, subject, list, has attachment; move, label, mark read, flag, forward,
+  delete, skip the inbox), a preview of which mails a rule would catch, and an order the user sets.
