@@ -40,6 +40,9 @@ export function App() {
   const [list, setList] = useState<ListState>({ key: "", total: 0, pages: {}, loading: true });
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<MessageSummary[] | null>(null);
+  // Bumped when the store changed (new mail, fetched bodies): open search results follow.
+  const [searchRev, setSearchRev] = useState(0);
+  const serverHits = useRef(new Set<number>());
   const [server, setServer] = useState({ busy: false, done: false });
   const [sel, setSel] = useState<Selection>({ ids: [], anchor: null });
   const [current, setCurrent] = useState<number | null>(null);
@@ -155,6 +158,7 @@ export function App() {
   useEffect(() => {
     const q = query.trim();
     setServer({ busy: false, done: false });
+    serverHits.current = new Set();
     if (!q) {
       setResults(null);
       return;
@@ -163,12 +167,31 @@ export function App() {
     return () => clearTimeout(timer);
   }, [query]);
 
+  // The store changed under open results: search again, keeping what the server found.
+  useEffect(() => {
+    const q = query.trim();
+    if (!q || searchRev === 0) return;
+    const timer = setTimeout(
+      () =>
+        void api.search(q, null).then((local) =>
+          setResults((r) => {
+            if (!r) return r;
+            const known = new Set(local.map((m) => m.id));
+            return [...local, ...r.filter((m) => serverHits.current.has(m.id) && !known.has(m.id))];
+          }),
+        ),
+      300,
+    );
+    return () => clearTimeout(timer);
+  }, [searchRev]);
+
   const serverSearch = async () => {
     const accountId = mailbox?.account_id ?? accounts?.[0]?.id;
     if (accountId == null || !query.trim()) return;
     setServer({ busy: true, done: false });
     try {
       const more = await api.serverSearch(accountId, query.trim());
+      for (const m of more) serverHits.current.add(m.id);
       setResults((r) => {
         const known = new Set((r ?? []).map((m) => m.id));
         return [...(r ?? []), ...more.filter((m) => !known.has(m.id))];
@@ -498,6 +521,7 @@ export function App() {
             break;
           case "changed":
             void reloadMailboxes(n.account_id);
+            setSearchRev((v) => v + 1);
             if (!n.mailboxes.length || (mailboxId != null && n.mailboxes.includes(mailboxId))) refreshList();
             break;
           case "new_mail":
