@@ -77,6 +77,20 @@ fn test_authority() -> Option<String> {
     network::is_loopback(&host).then_some(a)
 }
 
+/// The e2e tests' IMAP and SMTP servers for a Microsoft account (`ARCALO_MAIL_MS_IMAP`,
+/// `ARCALO_MAIL_MS_SMTP` as `127.0.0.1:port`), only together with the test identity provider
+/// and only on this computer. `None` in normal use: Microsoft's own servers.
+pub fn test_servers() -> Option<(crate::account::Server, crate::account::Server)> {
+    test_authority()?;
+    let server = |var: &str| {
+        let v = std::env::var(var).ok()?;
+        let (host, port) = v.rsplit_once(':')?;
+        let port: u16 = port.parse().ok()?;
+        network::is_loopback(host).then(|| crate::account::Server::new(host, port, crate::account::Security::Plain))
+    };
+    Some((server("ARCALO_MAIL_MS_IMAP")?, server("ARCALO_MAIL_MS_SMTP")?))
+}
+
 /// Microsoft's configuration; `None` when this build has no client id.
 pub fn microsoft() -> Option<OAuthConfig> {
     let client_id = microsoft_client_id()?;

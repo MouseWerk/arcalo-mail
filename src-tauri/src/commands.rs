@@ -273,6 +273,17 @@ fn sign_in_failed(e: Error) -> MicrosoftSignIn {
     MicrosoftSignIn { session: None, email: None, check: None, problem, error }
 }
 
+/// The servers of a Microsoft account (the e2e tests' on this computer, `oauth::test_servers`).
+fn microsoft_transport(email: &str) -> Res<Transport> {
+    let mut transport = mail_core::account::preset(Provider::Microsoft, email)?;
+    if let (Some((test_imap, test_smtp)), Transport::Imap { imap, smtp, .. }) =
+        (mail_core::oauth::test_servers(), &mut transport)
+    {
+        (*imap, *smtp) = (test_imap, test_smtp);
+    }
+    Ok(transport)
+}
+
 /// Opens Microsoft's sign-in in the browser and waits for it.
 async fn browser_sign_in(app: &AppHandle, hint: &str) -> Res<mail_core::oauth::Tokens> {
     use tauri_plugin_opener::OpenerExt;
@@ -291,7 +302,7 @@ pub async fn microsoft_sign_in(app: AppHandle, state: State<'_, AppState>, email
         Err(e) => return Ok(sign_in_failed(e)),
     };
     let address = tokens.email.clone().filter(|e| e.contains('@')).unwrap_or_else(|| email.trim().to_string());
-    let transport = mail_core::account::preset(Provider::Microsoft, &address)?;
+    let transport = microsoft_transport(&address)?;
     let check =
         mail_core::engine::check_account_with(&transport, &Credential::XOAuth2(tokens.access_token.clone())).await;
     let session = format!(
@@ -326,7 +337,7 @@ pub fn add_microsoft_account(
         name: String::new(),
         email: email.clone(),
         sender_name: name.trim().to_string(),
-        transport: mail_core::account::preset(Provider::Microsoft, &email)?,
+        transport: microsoft_transport(&email)?,
     };
     let account = {
         let store = state.store();

@@ -47,6 +47,22 @@ export async function startServer({ user = USER, password = PASSWORD, args = [] 
     folder: (name) => post(`/folder?name=${encodeURIComponent(name)}`),
     delay: (ms) => post(`/delay?ms=${ms}`),
     setPassword: (value) => post(`/password?value=${encodeURIComponent(value)}`),
+    /** The identity provider refuses the next sign-in (`admin_consent`, `access_denied`). */
+    oauthFail: (mode) => post(`/oauth/fail?mode=${encodeURIComponent(mode)}`),
+    /** SMTP refuses XOAUTH2 with 535 5.7.139 (SMTP AUTH off for the mailbox). */
+    smtpAuth: (enabled) => post(`/smtp-auth?disabled=${enabled ? "0" : "1"}`),
+    /** What the app needs to sign in with Microsoft against this server. */
+    microsoftEnv: () => ({
+      ARCALO_MAIL_MS_AUTHORITY: `http://127.0.0.1:${ports.control}/oauth`,
+      ARCALO_MAIL_MS_CLIENT_ID: "e2e-test-client",
+      ARCALO_MAIL_MS_IMAP: `127.0.0.1:${ports.imap}`,
+      ARCALO_MAIL_MS_SMTP: `127.0.0.1:${ports.smtp}`,
+    }),
+    /** What the setup needs to find this server, JMAP included. */
+    discoveryEnv: () => ({
+      ARCALO_MAIL_AUTOCONFIG: `http://127.0.0.1:${ports.control}/autoconfig?emailaddress={email}`,
+      ARCALO_MAIL_JMAP_DISCOVERY: `http://127.0.0.1:${ports.control}/.well-known/jmap`,
+    }),
     /** The transport of an account on this server (plain text: loopback only). */
     transport: () => ({
       kind: "imap",
