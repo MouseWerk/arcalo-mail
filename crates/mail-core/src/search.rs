@@ -62,8 +62,13 @@ pub fn search(store: &Store, input: &str, account_id: Option<i64>, limit: u32) -
     let Some(q) = fts_query(input) else { return Ok(vec![]) };
     let conn = store.conn();
     let mut st = conn.prepare_cached(
-        "SELECT f.rowid FROM messages_fts f JOIN messages m ON m.id = f.rowid
+        "SELECT f.rowid FROM messages_fts f JOIN messages m ON m.id = f.rowid JOIN mailboxes b ON b.id = m.mailbox_id
          WHERE messages_fts MATCH ?1 AND (?2 IS NULL OR m.account_id = ?2)
+           -- A copy in Gmail's All Mail, Starred or Important only when there is no other.
+           AND NOT (COALESCE(b.role, '') IN ('all', 'flagged', 'important') AND m.message_id IS NOT NULL
+             AND EXISTS (SELECT 1 FROM messages o JOIN mailboxes ob ON ob.id = o.mailbox_id
+               WHERE o.account_id = m.account_id AND o.message_id = m.message_id AND o.id <> m.id AND o.hidden = 0
+                 AND COALESCE(ob.role, '') NOT IN ('all', 'flagged', 'important')))
          ORDER BY m.internal_date DESC, m.id DESC
          LIMIT ?3",
     )?;

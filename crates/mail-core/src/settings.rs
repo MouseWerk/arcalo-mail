@@ -45,6 +45,20 @@ pub enum RemoteContent {
     Always,
 }
 
+/// Which bodies are fetched ahead after a sync (for the list's first lines, search and reading
+/// offline); the others when a message is opened.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Prefetch {
+    /// Only what is opened.
+    None,
+    /// The newest 60 messages per folder up to 256 KB each.
+    #[default]
+    Recent,
+    /// Everything of the last 30 days up to 2 MB each.
+    Month,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -64,6 +78,11 @@ pub struct Settings {
     pub compose_rich_text: bool,
     /// The preview line under the subject in the list.
     pub show_snippets: bool,
+    pub prefetch: Prefetch,
+    /// Replies without reply headers join their conversation by subject (`thread.rs`).
+    pub subject_threads: bool,
+    /// Proxy profiles and which service uses which (`network::NetworkSettings`).
+    pub network: crate::network::NetworkSettings,
 }
 
 impl Default for Settings {
@@ -79,6 +98,9 @@ impl Default for Settings {
             undo_send_secs: 5,
             compose_rich_text: true,
             show_snippets: true,
+            prefetch: Prefetch::Recent,
+            subject_threads: true,
+            network: crate::network::NetworkSettings::default(),
         }
     }
 }

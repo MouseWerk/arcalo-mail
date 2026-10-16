@@ -87,7 +87,7 @@ pub enum Op {
 }
 
 impl Op {
-    fn kind(&self) -> &'static str {
+    pub fn kind(&self) -> &'static str {
         match self {
             Op::Send { .. } => "send",
             Op::AppendSent { .. } => "append_sent",

@@ -12,7 +12,7 @@
 use serde_json::{Map, Value};
 
 /// Version written by this release.
-pub const SETTINGS_VERSION: u32 = 2;
+pub const SETTINGS_VERSION: u32 = 3;
 
 /// One step `from → from + 1`: changes the settings object and says what it did (`None`:
 /// nothing to do for these settings).
@@ -23,8 +23,11 @@ pub struct Step {
 }
 
 /// The chain, in order. `STEPS[i].from == i`.
-pub const STEPS: [Step; SETTINGS_VERSION as usize] =
-    [Step { from: 0, name: "versioned", run: versioned }, Step { from: 1, name: "mail_basics", run: mail_basics }];
+pub const STEPS: [Step; SETTINGS_VERSION as usize] = [
+    Step { from: 0, name: "versioned", run: versioned },
+    Step { from: 1, name: "mail_basics", run: mail_basics },
+    Step { from: 2, name: "fetch_threads_network", run: fetch_threads_network },
+];
 
 /// Version 0 is settings written before versions existed (development builds): nothing to
 /// change, the step only records the start of the chain.
@@ -42,6 +45,24 @@ fn mail_basics(map: &mut Map<String, Value>) -> Option<String> {
         ("undo_send_secs", Value::from(5)),
         ("compose_rich_text", Value::Bool(true)),
         ("show_snippets", Value::Bool(true)),
+    ] {
+        if !map.contains_key(key) {
+            map.insert(key.into(), value);
+            added.push(key);
+        }
+    }
+    (!added.is_empty()).then(|| format!("added {}", added.join(", ")))
+}
+
+/// Version 3 (milestone 2): what is fetched ahead, conversations by subject and the network
+/// profiles, written with what version 2 did (the newest 60 messages per folder, no
+/// subject grouping until now: it is on for everyone, as the plan says; the system's proxy).
+fn fetch_threads_network(map: &mut Map<String, Value>) -> Option<String> {
+    let mut added = vec![];
+    for (key, value) in [
+        ("prefetch", Value::from("recent")),
+        ("subject_threads", Value::Bool(true)),
+        ("network", serde_json::to_value(crate::network::NetworkSettings::default()).unwrap_or(Value::Null)),
     ] {
         if !map.contains_key(key) {
             map.insert(key.into(), value);
@@ -82,9 +103,19 @@ mod tests {
     fn mail_basics_keep_what_is_there() {
         let mut m: Map<String, Value> = serde_json::from_str(r#"{"version":1,"undo_send_secs":10}"#).unwrap();
         let done = migrate(&mut m);
-        assert_eq!(done.len(), 1, "{done:?}");
+        assert_eq!(done.len(), 2, "{done:?}");
         assert_eq!(m["undo_send_secs"], 10);
         assert_eq!(m["notifications"], true);
+        assert!(migrate(&mut m).is_empty(), "idempotent");
+    }
+
+    #[test]
+    fn version_3_adds_fetching_threads_and_network_once() {
+        let mut m: Map<String, Value> = serde_json::from_str(r#"{"version":2,"prefetch":"none"}"#).unwrap();
+        let done = migrate(&mut m);
+        assert_eq!(done, ["fetch_threads_network: added subject_threads, network"]);
+        assert_eq!(m["prefetch"], "none", "kept");
+        assert_eq!(m["network"]["profiles"][0]["id"], "standard");
         assert!(migrate(&mut m).is_empty(), "idempotent");
     }
 

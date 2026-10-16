@@ -40,8 +40,11 @@ pub enum Hint {
     EnableImap,
     /// T-Online: the separate e-mail password, not the login password.
     MailPassword,
-    /// Microsoft accounts sign in with Microsoft (OAuth, coming in a later version).
+    /// Microsoft accounts sign in with Microsoft (OAuth).
     MicrosoftSignIn,
+    /// Gmail and Google Workspace: an app password (2-step verification needed) until Google
+    /// sign-in comes; the setup shows how to create one.
+    GoogleAppPassword,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -53,6 +56,10 @@ pub struct Discovered {
     /// The provider's name („GMX“, „Posteo“), when known.
     pub provider: Option<String>,
     pub hint: Option<Hint>,
+    /// The JMAP session resource, when the provider offers JMAP (Fastmail, or found at
+    /// `/.well-known/jmap`): the setup prefers it.
+    #[serde(default)]
+    pub jmap: Option<String>,
 }
 
 struct Preset {
@@ -166,9 +173,18 @@ const PRESETS: &[Preset] = &[
     Preset {
         name: "Gmail",
         domains: &["gmail.com", "googlemail.com"],
+        // Google Workspace domains: aspmx.l.google.com and its alternates.
         mx: &["google.com", "googlemail.com"],
         imap: ("imap.gmail.com", 993, Security::Tls),
         smtp: ("smtp.gmail.com", 465, Security::Tls),
+        hint: Some(Hint::GoogleAppPassword),
+    },
+    Preset {
+        name: "Fastmail",
+        domains: &["fastmail.com", "fastmail.fm", "fastmail.cn", "fastmail.to", "sent.com"],
+        mx: &["messagingengine.com"],
+        imap: ("imap.fastmail.com", 993, Security::Tls),
+        smtp: ("smtp.fastmail.com", 465, Security::Tls),
         hint: Some(Hint::AppPassword),
     },
     Preset {
@@ -205,6 +221,7 @@ fn from_preset(p: &Preset, email: &str, source: Source) -> Discovered {
         source,
         provider: Some(p.name.to_string()),
         hint: p.hint,
+        jmap: crate::jmap::PRESETS.iter().find(|(name, _, _)| *name == p.name).map(|(_, _, url)| url.to_string()),
     }
 }
 
@@ -265,6 +282,7 @@ pub fn parse_config(xml: &str, email: &str, source: Source) -> Option<Discovered
         source,
         provider: text(provider, "displayShortName").or_else(|| text(provider, "displayName")),
         hint: None,
+        jmap: None,
     })
 }
 
@@ -276,6 +294,10 @@ pub struct Lookup {
     pub ispdb: String,
     /// Whether DNS (SRV, MX) is asked.
     pub dns: bool,
+    /// Where JMAP is looked for (`{domain}`); empty: `https://<domain>/.well-known/jmap`.
+    pub jmap: Vec<String>,
+    /// Whether JMAP is looked for at all.
+    pub jmap_lookup: bool,
 }
 
 impl Default for Lookup {
@@ -287,6 +309,8 @@ impl Default for Lookup {
             ],
             ispdb: "https://autoconfig.thunderbird.net/v1.1/{domain}".into(),
             dns: true,
+            jmap: vec![],
+            jmap_lookup: true,
         }
     }
 }
@@ -332,6 +356,15 @@ pub async fn discover(email: &str, lookup: &Lookup) -> Result<Discovered> {
     if let Some(p) = preset_for(email) {
         return Ok(p);
     }
+    let mut found = discover_servers(email, &domain, lookup).await?;
+    if found.jmap.is_none() && lookup.jmap_lookup {
+        found.jmap = crate::jmap::discover(email, &lookup.jmap).await;
+    }
+    Ok(found)
+}
+
+async fn discover_servers(email: &str, domain: &str, lookup: &Lookup) -> Result<Discovered> {
+    let domain = domain.to_string();
     let client = network::client_for(Service::Autoconfig)?;
     let url = |t: &str| t.replace("{domain}", &domain).replace("{email}", email.trim());
     // The lookups run side by side; the first source in the order above wins.
@@ -359,6 +392,7 @@ pub async fn discover(email: &str, lookup: &Lookup) -> Result<Discovered> {
             source: Source::Srv,
             provider: None,
             hint: None,
+            jmap: None,
         });
     }
     if let Some(d) = preset_for_mx(email, &mx) {
@@ -371,6 +405,7 @@ pub async fn discover(email: &str, lookup: &Lookup) -> Result<Discovered> {
         source: Source::Guess,
         provider: None,
         hint: None,
+        jmap: None,
     })
 }
 
@@ -437,6 +472,17 @@ mod tests {
         assert_eq!(preset_for("a@mailbox.org").unwrap().smtp, Server::new("smtp.mailbox.org", 465, Security::Tls));
         assert_eq!(preset_for("a@me.com").unwrap().hint, Some(Hint::AppPassword));
         assert!(preset_for("a@example.org").is_none());
+        let gmail = preset_for("a@googlemail.com").unwrap();
+        assert_eq!((gmail.imap.host.as_str(), gmail.hint), ("imap.gmail.com", Some(Hint::GoogleAppPassword)));
+        let workspace = preset_for_mx("info@firma.example", &["aspmx.l.google.com".into()]).unwrap();
+        assert_eq!((workspace.provider.as_deref(), workspace.hint), (Some("Gmail"), Some(Hint::GoogleAppPassword)));
+        let fm = preset_for("a@fastmail.com").unwrap();
+        assert_eq!(fm.jmap.as_deref(), Some("https://api.fastmail.com/jmap/session"));
+        assert_eq!(
+            preset_for_mx("a@eigene.example", &["in1-smtp.messagingengine.com".into()]).unwrap().provider.as_deref(),
+            Some("Fastmail")
+        );
+        assert_eq!(preset_for("a@outlook.de").unwrap().hint, Some(Hint::MicrosoftSignIn));
         let ionos = preset_for_mx("info@baeckerei-example.de", &["mx00.ionos.de".into()]).unwrap();
         assert_eq!((ionos.imap.host.as_str(), ionos.source), ("imap.ionos.de", Source::Mx));
         assert_eq!(preset_for_mx("a@b.de", &["smtpin.rzone.de".into()]).unwrap().provider.as_deref(), Some("STRATO"));
@@ -471,6 +517,8 @@ mod tests {
             autoconfig: vec![format!("http://127.0.0.1:{port}/auto/{{domain}}")],
             ispdb: format!("http://127.0.0.1:{port}/ispdb/{{domain}}"),
             dns: false,
+            jmap: vec![format!("http://127.0.0.1:{port}/jmap-missing/{{domain}}")],
+            jmap_lookup: true,
         };
         let d = discover("maria@example.net", &lookup).await.unwrap();
         assert_eq!((d.source, d.imap.host.as_str()), (Source::Ispdb, "imap.example.net"));

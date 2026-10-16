@@ -156,6 +156,8 @@ pub enum Command {
     Kick,
     NetworkUp,
     NetworkDown,
+    /// The computer woke up or changed networks: drop the connection and connect now.
+    Reconnect,
     /// A new password after „Anmeldung erforderlich“.
     SignedIn(String),
     FetchBody {
@@ -331,6 +333,13 @@ impl<C: Connector> Ctx<C> {
     }
 
     fn status(&self, status: Status, error: Option<&Error>) {
+        crate::diag::log(
+            &format!("account-{}", self.account_id),
+            &match error {
+                Some(e) => format!("{status:?}: {e}"),
+                None => format!("{status:?}"),
+            },
+        );
         let problem = match error {
             Some(Error::Connection(p)) => Some(p.clone()),
             _ => None,
@@ -467,10 +476,15 @@ async fn replay<C: Connector>(ctx: &Ctx<C>, conn: &mut C::Imap) -> Result<Vec<St
                 None
             }
             Err(e) if is_transient(&e) => {
+                crate::diag::log(
+                    &format!("account-{}", ctx.account_id),
+                    &format!("{} failed, retried later: {e}", q.op.kind()),
+                );
                 outbox::failed(&ctx.store, q.id, &e.to_string(), now())?;
                 Some(e)
             }
             Err(e) => {
+                crate::diag::log(&format!("account-{}", ctx.account_id), &format!("{} refused: {e}", q.op.kind()));
                 outbox::park(&ctx.store, q.id, &e.to_string())?;
                 None
             }
@@ -490,12 +504,21 @@ async fn replay<C: Connector>(ctx: &Ctx<C>, conn: &mut C::Imap) -> Result<Vec<St
 /// One round: the queue, then the folders (all of them, or the inbox and what the queue
 /// touched).
 async fn sync_round<C: Connector>(ctx: &Ctx<C>, conn: &mut C::Imap, caps: Capabilities, full: bool) -> Result<()> {
+    // The settings may have changed since the last round.
+    let settings = crate::settings::load(&ctx.store).unwrap_or_default();
+    ctx.store.set_subject_threads(settings.subject_threads);
     let touched = replay(ctx, conn).await?;
     let mut ids: Vec<i64> = vec![];
+    let mut virtual_folders: Vec<i64> = vec![];
     if full {
         sync_folders(conn, &ctx.store, ctx.account_id).await?;
         ctx.notice(Notice::Changed { account_id: ctx.account_id, mailboxes: vec![] });
-        ids = ctx.store.mailboxes(ctx.account_id)?.into_iter().filter(|m| m.selectable).map(|m| m.id).collect();
+        // Folders that show other folders' mail again (Gmail's All Mail) come last: their
+        // messages find the bodies of the copies synced before them.
+        let mut list: Vec<_> = ctx.store.mailboxes(ctx.account_id)?.into_iter().filter(|m| m.selectable).collect();
+        list.sort_by_key(|m| m.role.is_some_and(Role::is_virtual));
+        virtual_folders = list.iter().filter(|m| m.role.is_some_and(Role::is_virtual)).map(|m| m.id).collect();
+        ids = list.into_iter().map(|m| m.id).collect();
     } else {
         ids.extend(ctx.inbox().map(|m| m.id));
         ids.extend(touched.iter().filter_map(|n| ctx.mailbox_named(n)));
@@ -514,9 +537,9 @@ async fn sync_round<C: Connector>(ctx: &Ctx<C>, conn: &mut C::Imap, caps: Capabi
     // The first lines for the list, the text for search, reading offline: the inbox first,
     // then the other folders of a full round.
     let mut ahead: Vec<i64> = inbox.into_iter().collect();
-    ahead.extend(ids.iter().copied().filter(|id| Some(*id) != inbox));
+    ahead.extend(ids.iter().copied().filter(|id| Some(*id) != inbox && !virtual_folders.contains(id)));
     for id in ahead {
-        if crate::sync::prefetch_bodies(conn, &ctx.store, id).await? > 0 {
+        if crate::sync::prefetch_bodies(conn, &ctx.store, id, settings.prefetch).await? > 0 {
             ctx.notice(Notice::Changed { account_id: ctx.account_id, mailboxes: vec![id] });
         }
     }
@@ -543,6 +566,10 @@ fn take_events<C: Connector>(
             }
             Command::Kick => {}
             Command::NetworkUp => out.push(Event::NetworkUp),
+            Command::Reconnect => {
+                force_full.set(true);
+                out.push(Event::Reconnect)
+            }
             Command::NetworkDown => out.push(Event::NetworkDown),
             Command::SignedIn(pw) => {
                 ctx.connector.set_password(pw);
@@ -677,7 +704,8 @@ async fn main_loop<C: Connector>(ctx: &Ctx<C>, wake: &Notify, queue: &RefCell<Ve
                 match r {
                     Ok(outcome) => {
                         let events = take_events(ctx, queue, m.state, &force_full);
-                        let stopping = events.iter().any(|e| matches!(e, Event::Stop | Event::NetworkDown));
+                        let stopping =
+                            events.iter().any(|e| matches!(e, Event::Stop | Event::NetworkDown | Event::Reconnect));
                         if !stopping {
                             actions.extend(m.on(Event::Idle(outcome)));
                         }
@@ -1162,6 +1190,22 @@ mod tests {
         s.until("replayed", |s| outbox::pending(&s.store, s.account).unwrap() == 0).await;
         assert!(s.server.with(|f| f.mailboxes.contains_key("Kunden") && !f.mailboxes.contains_key("Projekte")));
         s.until("folder synced", |s| s.store.mailbox_by_name(s.account, "Kunden").unwrap().is_some()).await;
+    }
+
+    /// A reconnect request (sleep, network change) ends a long backoff at once.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn reconnects_at_once_after_a_network_change() {
+        let s = setup("reconnect");
+        *s.mail.refuse.lock().unwrap() = Some(Problem::Refused { host: "imap".into(), port: 993 });
+        let w = s.start();
+        s.until("backoff", |s| matches!(s.status(), Some(Status::Retrying { .. }))).await;
+        outbox::enqueue(&s.store, s.account, &Op::CreateFolder { name: "Projekte".into() }).unwrap();
+        *s.mail.refuse.lock().unwrap() = None;
+        let start = Instant::now();
+        w.send(Command::Reconnect);
+        s.until("replayed", |s| outbox::pending(&s.store, s.account).unwrap() == 0).await;
+        assert!(start.elapsed() < Duration::from_secs(4), "not after the backoff");
+        s.until("ready", |s| s.status() == Some(Status::Ready)).await;
     }
 
     #[tokio::test(flavor = "multi_thread")]

@@ -258,10 +258,25 @@ pub const PREFETCH_COUNT: u32 = 60;
 /// Larger messages wait until they are opened.
 pub const PREFETCH_SIZE: u32 = 256 * 1024;
 
-/// Fetches the bodies of the newest messages of a folder that have none yet (see
-/// [`PREFETCH_COUNT`]); returns how many were fetched.
-pub async fn prefetch_bodies<C: ImapClient>(client: &mut C, store: &Store, mailbox_id: i64) -> Result<usize> {
-    let ids = store.without_body(mailbox_id, PREFETCH_COUNT, PREFETCH_SIZE)?;
+/// Fetches the bodies of the newest messages of a folder that have none yet, as the setting
+/// says (see [`PREFETCH_COUNT`]); returns how many were fetched.
+pub async fn prefetch_bodies<C: ImapClient>(
+    client: &mut C,
+    store: &Store,
+    mailbox_id: i64,
+    policy: crate::settings::Prefetch,
+) -> Result<usize> {
+    use crate::settings::Prefetch;
+    let ids = match policy {
+        Prefetch::None => vec![],
+        Prefetch::Recent => store.without_body(mailbox_id, PREFETCH_COUNT, PREFETCH_SIZE)?,
+        Prefetch::Month => store.without_body_since(
+            mailbox_id,
+            crate::store::now() - 30 * 86400,
+            PREFETCH_MONTH_COUNT,
+            FULL_FETCH_LIMIT,
+        )?,
+    };
     if ids.is_empty() {
         return Ok(0);
     }
@@ -272,6 +287,9 @@ pub async fn prefetch_bodies<C: ImapClient>(client: &mut C, store: &Store, mailb
     }
     Ok(ids.len())
 }
+
+/// The most a folder fetches ahead in one round with [`crate::settings::Prefetch::Month`].
+pub const PREFETCH_MONTH_COUNT: u32 = 500;
 
 async fn fetch_selected<C: ImapClient>(client: &mut C, store: &Store, message_id: i64) -> Result<()> {
     let m = store.message(message_id)?;
@@ -416,6 +434,8 @@ pub enum Event {
     Timer,
     /// The user signed in again, or asked for a sync now.
     Retry,
+    /// The computer woke up or changed networks: a connection may be dead without knowing it.
+    Reconnect,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -453,6 +473,11 @@ impl SyncMachine {
         use State as S;
         let (next, actions) = match (self.state, event) {
             (_, Event::Stop) => (S::Offline, vec![A::Disconnect]),
+            (S::NeedsSignIn, Event::Reconnect) => (S::NeedsSignIn, vec![]),
+            (_, Event::Reconnect) => {
+                self.online = true;
+                (S::Connecting { attempt: 1 }, vec![A::Disconnect, A::Connect])
+            }
             (_, Event::NetworkDown) => {
                 self.online = false;
                 (S::Offline, vec![A::Disconnect])
@@ -499,9 +524,10 @@ impl SyncMachine {
 mod tests {
     use super::*;
     use crate::account::{AccountDraft, Provider, preset};
-    use crate::imap::Flags;
     use crate::imap::fake::FakeImap;
+    use crate::imap::{Flags, Role};
     use crate::parse::tests::sample;
+    use crate::settings::Prefetch;
 
     fn setup(caps: Capabilities) -> (FakeImap, Store, i64) {
         let store = Store::open_in_memory().unwrap();
@@ -622,19 +648,65 @@ mod tests {
         assert_eq!(wait_for_change(&mut server, IDLE_RENEW, &wake).await.unwrap(), IdleOutcome::Changed);
     }
 
+    /// Gmail: labels are folders, All Mail holds every message again. Search shows one copy,
+    /// archiving goes to All Mail, the roles are found.
+    #[tokio::test]
+    async fn gmail_folders() {
+        use crate::imap::fake::FakeMailbox;
+        let (mut server, store, account) = setup(all_caps());
+        for (name, attr) in [
+            ("[Gmail]/All Mail", "\\All"),
+            ("[Gmail]/Sent Mail", "\\Sent"),
+            ("[Gmail]/Important", "\\Important"),
+            ("[Gmail]/Starred", "\\Flagged"),
+            ("[Gmail]/Trash", "\\Trash"),
+        ] {
+            server.mailboxes.insert(name.into(), FakeMailbox::new(&[attr]));
+        }
+        server.mailboxes.insert("[Gmail]".into(), FakeMailbox::new(&["\\Noselect"]));
+        for i in 1..=3 {
+            let raw = sample(&format!("m{i}@x"), &format!("Nachricht {i}"), None, "Text");
+            server.deliver("[Gmail]/All Mail", &raw, 1_760_000_000 + i);
+        }
+        sync_account(&mut server, &store, account).await.unwrap();
+        let role = |r: Role| store.mailbox_by_role(account, r).unwrap().map(|m| m.name);
+        assert_eq!(role(Role::Important).as_deref(), Some("[Gmail]/Important"));
+        assert_eq!(role(Role::All).as_deref(), Some("[Gmail]/All Mail"));
+        assert_eq!(crate::search::search(&store, "Nachricht 2", Some(account), 10).unwrap().len(), 1);
+        let hit = &crate::search::search(&store, "Nachricht 2", Some(account), 10).unwrap()[0];
+        assert_eq!(hit.mailbox_id, inbox(&store, account), "the inbox copy, not All Mail's");
+        let undo = crate::actions::archive(&store, &[hit.id]).unwrap();
+        assert_eq!(undo.outbox.len(), 1);
+        assert!(store.mailbox_by_name(account, "Archive").unwrap().is_none(), "no folder made up");
+        let raw: String =
+            store.conn().query_row("SELECT payload FROM outbox WHERE id = ?1", [undo.outbox[0]], |r| r.get(0)).unwrap();
+        assert!(raw.contains("[Gmail]/All Mail"), "{raw}");
+        assert!(Role::All.is_virtual() && !Role::Inbox.is_virtual());
+    }
+
     #[tokio::test]
     async fn newest_bodies_are_fetched_ahead() {
         let (mut server, store, account) = setup(all_caps());
         sync_account(&mut server, &store, account).await.unwrap();
         let ib = inbox(&store, account);
         let n = store.messages(ib, 100, 0).unwrap().len();
-        assert_eq!(prefetch_bodies(&mut server, &store, ib).await.unwrap(), n);
+        assert_eq!(prefetch_bodies(&mut server, &store, ib, Prefetch::None).await.unwrap(), 0, "switched off");
+        assert_eq!(prefetch_bodies(&mut server, &store, ib, Prefetch::Recent).await.unwrap(), n);
         assert!(store.messages(ib, 100, 0).unwrap().iter().all(|m| store.message(m.id).unwrap().has_body));
         assert!(!store.messages(ib, 100, 0).unwrap()[0].snippet.is_empty(), "the list shows the first lines");
-        assert_eq!(prefetch_bodies(&mut server, &store, ib).await.unwrap(), 0, "nothing twice");
+        assert_eq!(prefetch_bodies(&mut server, &store, ib, Prefetch::Recent).await.unwrap(), 0, "nothing twice");
         server.deliver("INBOX", &"x".repeat(PREFETCH_SIZE as usize + 10).into_bytes(), 0);
         sync_mailbox(&mut server, &store, all_caps(), ib).await.unwrap();
-        assert_eq!(prefetch_bodies(&mut server, &store, ib).await.unwrap(), 0, "large ones wait until opened");
+        assert_eq!(
+            prefetch_bodies(&mut server, &store, ib, Prefetch::Recent).await.unwrap(),
+            0,
+            "large ones wait until opened"
+        );
+        // A month ahead takes larger ones too, but only recent ones.
+        assert_eq!(prefetch_bodies(&mut server, &store, ib, Prefetch::Month).await.unwrap(), 0, "delivered in 1970");
+        server.deliver("INBOX", &"y".repeat(PREFETCH_SIZE as usize + 10).into_bytes(), crate::store::now());
+        sync_mailbox(&mut server, &store, all_caps(), ib).await.unwrap();
+        assert_eq!(prefetch_bodies(&mut server, &store, ib, Prefetch::Month).await.unwrap(), 1);
     }
 
     /// A message with an attachment larger than [`FULL_FETCH_LIMIT`]: text and pictures come
@@ -755,5 +827,29 @@ Content-Transfer-Encoding: base64\r\n\r\nJVBERi0xLjQK\r\n--X--\r\n";
         assert_eq!(m.on(Event::Start), vec![], "offline: nothing to do");
         assert_eq!(m.on(Event::NetworkUp), vec![Action::Connect]);
         assert_eq!(reconnect_delay(30), Duration::from_secs(300));
+    }
+
+    /// After sleep or a network change the connection is dropped and made again at once,
+    /// whether it was idling or waiting out a long backoff.
+    #[test]
+    fn machine_reconnects_promptly() {
+        let mut m = SyncMachine::default();
+        m.on(Event::Start);
+        m.on(Event::Connected { caps: all_caps() });
+        m.on(Event::SyncDone);
+        assert_eq!(m.state, State::Idling);
+        assert_eq!(m.on(Event::Reconnect), vec![Action::Disconnect, Action::Connect]);
+        for _ in 0..6 {
+            m.on(Event::ConnectFailed { auth: false });
+            m.on(Event::Timer);
+        }
+        m.on(Event::ConnectFailed { auth: false });
+        assert!(matches!(m.state, State::Backoff { attempt } if attempt > 5));
+        assert_eq!(m.on(Event::Reconnect), vec![Action::Disconnect, Action::Connect]);
+        assert_eq!(m.state, State::Connecting { attempt: 1 }, "the backoff starts over");
+        m.on(Event::NetworkDown);
+        assert_eq!(m.on(Event::Reconnect), vec![Action::Disconnect, Action::Connect], "a new network is up");
+        m.on(Event::ConnectFailed { auth: true });
+        assert_eq!(m.on(Event::Reconnect), vec![], "waits for the password");
     }
 }

@@ -140,7 +140,18 @@ fn to_role(store: &Store, ids: &[i64], role: Role, name: &str) -> Result<Undo> {
         per_account.entry(account).or_default().extend(msgs.iter().map(|(id, _)| *id));
     }
     for (account, list) in per_account {
-        let target = folder_for(store, account, role, name, &mut undo)?;
+        // Gmail has no archive folder: archiving takes the message out of the inbox, into
+        // All Mail.
+        let all = match role {
+            Role::Archive if store.mailbox_by_role(account, Role::Archive)?.is_none() => {
+                store.mailbox_by_role(account, Role::All)?
+            }
+            _ => None,
+        };
+        let target = match all {
+            Some(all) => all,
+            None => folder_for(store, account, role, name, &mut undo)?,
+        };
         move_into(store, &list, &target, &mut undo)?;
     }
     Ok(undo)
