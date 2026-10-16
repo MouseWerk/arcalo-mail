@@ -1,0 +1,179 @@
+/* Base: the page, type and the shared controls (buttons, fields, notices). Colors and sizes come
+   from tokens.css only. */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bg-app);
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: var(--fs-md);
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+
+h1,
+h2,
+h3 {
+  margin: 0;
+  font-weight: var(--fw-heading);
+  letter-spacing: var(--ls-heading);
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+.muted {
+  color: var(--text-3);
+}
+
+.eyebrow {
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--ls-eyebrow);
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+/* Keyboard focus: a neutral ring, only when the keyboard put it there. */
+:focus {
+  outline: none;
+}
+:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: 1px;
+}
+
+/* ---- buttons */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  height: var(--ctl-md);
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg-raised);
+  color: var(--text);
+  font-weight: var(--fw-medium);
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease-out);
+}
+.btn:hover {
+  background: var(--bg-hover);
+}
+.btn:active {
+  background: var(--bg-active);
+}
+.btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.btn-sm {
+  height: var(--ctl-sm);
+  padding: 0 var(--sp-2);
+  font-size: var(--fs-sm);
+}
+.btn-primary {
+  border-color: transparent;
+  background: var(--accent-fill);
+  color: var(--on-accent);
+}
+.btn-primary:hover {
+  background: var(--accent-fill);
+  opacity: 0.9;
+}
+
+.icon-btn {
+  display: inline-grid;
+  place-items: center;
+  width: var(--ctl-md);
+  height: var(--ctl-md);
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text-2);
+  cursor: pointer;
+}
+.icon-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+.icon-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* ---- fields */
+
+.input,
+.select {
+  height: var(--ctl-md);
+  min-width: 0;
+  padding: 0 var(--sp-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  background: var(--bg-input);
+}
+.input:focus,
+.select:focus,
+.compose-body:focus {
+  border-color: var(--border-focus);
+  box-shadow: var(--focus-halo);
+}
+
+/* ---- notices: a tinted background and an icon, never a colored bar at the side */
+
+.notice {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sp-2) var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--r-md);
+  background: var(--info-soft);
+  color: var(--text);
+  font-size: var(--fs-sm);
+}
+.notice > svg {
+  flex: none;
+  color: var(--info);
+}
+.notice > span {
+  flex: 1 1 240px;
+}
+.notice-danger {
+  background: var(--danger-soft);
+}
+.notice-danger strong {
+  color: var(--danger);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition: none !important;
+    animation: none !important;
+  }
+}

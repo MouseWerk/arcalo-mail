@@ -1,0 +1,21 @@
+{
+  "$comment": "Preferred terms for Arcalo Mail's concepts (German and English) and the variants that must not appear. Used by ui/src/lib/translations.test.ts for de.ts/en.ts and the tr!/trf! texts in Rust. A variant matches case-sensitively at the start of a word; a trailing * also matches longer words (compounds, plurals), otherwise the word must end there. Shared terms follow Arcalo's glossary. See docs/i18n.md.",
+  "terms": [
+    { "concept": "e-mail", "de": "E-Mail (in Komposita auch Mail: Mailkonto)", "en": "e-mail, mail", "forbiddenDe": ["Email*", "eMail*", "E-mail*", "EMail*", "e-Mail*"], "forbiddenEn": ["email*", "Email*"] },
+    { "concept": "message", "de": "Nachricht", "en": "message", "forbiddenDe": ["Mitteilung*"], "forbiddenEn": [] },
+    { "concept": "inbox", "de": "Posteingang", "en": "inbox", "forbiddenDe": ["Inbox*", "Eingang"], "forbiddenEn": [] },
+    { "concept": "account", "de": "Konto (die Konten)", "en": "account", "forbiddenDe": ["Account*", "Benutzerkonto*"], "forbiddenEn": [] },
+    { "concept": "folder", "de": "Ordner", "en": "folder", "forbiddenDe": ["Mailbox*", "Verzeichnis*"], "forbiddenEn": ["mailbox*", "Mailbox*"], "note": "IMAP calls folders mailboxes; the interface never does." },
+    { "concept": "draft", "de": "Entwurf", "en": "draft", "forbiddenDe": ["Draft*"], "forbiddenEn": [] },
+    { "concept": "conversation", "de": "Unterhaltung", "en": "conversation", "forbiddenDe": ["Konversation*", "Thread*"], "forbiddenEn": [], "note": "The code says thread; the interface says conversation." },
+    { "concept": "attachment", "de": "Anhang", "en": "attachment", "forbiddenDe": ["Attachment*", "Dateianhang*"], "forbiddenEn": [] },
+    { "concept": "trash", "de": "Papierkorb", "en": "trash", "forbiddenDe": ["Mülleimer*", "Abfalleimer*"], "forbiddenEn": ["bin"] },
+    { "concept": "remote content", "de": "externe Inhalte, externe Bilder", "en": "remote content, remote images", "forbiddenDe": ["Remote-Inhalt*", "Fremdinhalt*"], "forbiddenEn": ["external content*"] },
+    { "concept": "sign in", "de": "anmelden, Anmeldung", "en": "sign in", "forbiddenDe": ["einloggen*", "Login*", "Log-in*"], "forbiddenEn": ["login*", "log in*"] },
+    { "concept": "credential store", "de": "Schlüsselbund des Systems", "en": "credential store", "forbiddenDe": ["Passwortspeicher*", "Keychain*"], "forbiddenEn": [] },
+    { "concept": "settings", "de": "Einstellungen", "en": "Settings", "forbiddenDe": ["Präferenzen*"], "forbiddenEn": ["Preferences*"] },
+    { "concept": "sync", "de": "Synchronisierung (kurz: Sync)", "en": "sync", "forbiddenDe": ["Synchronisation*"], "forbiddenEn": ["synchronisation*", "Synchronisation*"] },
+    { "concept": "key names", "de": "Strg, Umschalt, Eingabe, Entf, Leertaste", "en": "Ctrl, Shift, Enter, Delete, Space", "forbiddenDe": ["Ctrl", "Shift", "Enter"], "forbiddenEn": [], "note": "Keys are named as German keyboards print them." },
+    { "concept": "übernehmen", "de": "übernehmen", "en": "import (e-mails, files), apply (settings, changes), keep (data)", "forbiddenDe": [], "forbiddenEn": ["taken over", "take over", "takes over"] }
+  ]
+}

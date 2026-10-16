@@ -1,0 +1,66 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Arcalo Mail",
+  "version": "0.1.0",
+  "identifier": "de.mousewerk.arcalo.mail",
+  "build": {
+    "frontendDist": "../ui/dist",
+    "devUrl": "http://localhost:1420",
+    "beforeDevCommand": "npm --prefix ui run dev",
+    "beforeBuildCommand": "npm --prefix ui run build"
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [
+      {
+        "label": "main",
+        "title": "Arcalo Mail",
+        "width": 1280,
+        "height": 820,
+        "minWidth": 900,
+        "minHeight": 560
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; frame-src 'self'; connect-src 'self' ipc: http://ipc.localhost; object-src 'none'; base-uri 'none'; form-action 'none'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "publisher": "MouseWerk",
+    "copyright": "MouseWerk, Maurice Kleindienst",
+    "license": "MIT",
+    "homepage": "https://github.com/MouseWerk/arcalo-mail",
+    "category": "Productivity",
+    "shortDescription": "Local-first e-mail",
+    "longDescription": "E-mail for IMAP/SMTP, Microsoft 365, Gmail and JMAP accounts. Your mail is stored and searched on your device; no telemetry.",
+    "targets": ["nsis", "deb", "appimage", "app", "dmg"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.png",
+      "icons/icon.ico",
+      "icons/icon.icns"
+    ],
+    "macOS": {
+      "minimumSystemVersion": "11.0",
+      "signingIdentity": "-"
+    },
+    "iOS": {
+      "minimumSystemVersion": "14.0"
+    },
+    "android": {
+      "minSdkVersion": 24
+    },
+    "windows": {
+      "webviewInstallMode": { "type": "embedBootstrapper", "silent": true },
+      "nsis": {
+        "installMode": "currentUser",
+        "startMenuFolder": "Arcalo Mail",
+        "languages": ["German", "English"],
+        "displayLanguageSelector": false
+      }
+    }
+  }
+}

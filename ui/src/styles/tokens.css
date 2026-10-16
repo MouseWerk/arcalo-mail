@@ -1,0 +1,311 @@
+/* Design tokens, taken from Arcalo (ui/src/styles/tokens.css there) and adapted for mail. Dark is
+   the default look; light and contrast follow the same scale. Other stylesheets use these tokens
+   for every color and size; lib/styles.test.ts fails on a literal color anywhere else.
+   Selection, the current item and focus are never shown with the accent: a neutral tint and the
+   text weight mark them, keyboard focus is a neutral ring on :focus-visible only. */
+
+:root {
+  --font-ui: "Inter Variable", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono Variable", "Cascadia Code", Consolas, ui-monospace, monospace;
+
+  --fs-2xs: 10px;
+  --fs-xs: 11px;
+  --fs-sm: 12px;
+  --fs-md: 13px;
+  --fs-lg: 15px;
+  --fs-xl: 20px;
+  --fs-title: 34px;
+  --fs-display: 26px;
+  /* Canvas cards and the reading size of embedded notes. */
+  --fs-base: 14px;
+  /* Detail titles inside a view (a meeting, a theme). */
+  --fs-subtitle: 17px;
+  /* Big numbers of stat tiles (Zeiterfassung, Briefing, Rückblick, Aktivität). */
+  --fs-stat: 22px;
+  /* The greeting of the start page, the running timer. */
+  --fs-hero: 30px;
+
+  --fw-normal: 400;
+  --fw-medium: 500;
+  --fw-semibold: 600;
+  /* Titles and big numbers: one weight for every heading of the app. */
+  --fw-heading: 650;
+  --ls-heading: -0.02em;
+  /* Uppercase section labels (Dateien, Zuletzt bearbeitet, Heute): one size, weight and tracking. */
+  --ls-eyebrow: 0.04em;
+
+  --r-2xs: 2px;
+  --r-xs: 4px;
+  --r-sm: 6px;
+  --r-md: 8px;
+  --r-lg: 12px;
+  --r-xl: 16px;
+  --r-pill: 999px;
+
+  /* Spacing on the 4 px grid. */
+  --sp-half: 2px;
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 20px;
+  --sp-6: 24px;
+  --sp-8: 32px;
+  --sp-10: 40px;
+
+  /* Control heights: chips and row actions, small buttons and segments, buttons/inputs/menus, large. */
+  --ctl-xs: 22px;
+  --ctl-sm: 26px;
+  --ctl-md: 30px;
+  --ctl-lg: 36px;
+  /* The header of tool views (Kalender, Graph): same height everywhere. */
+  --toolhead-h: 52px;
+
+  /* Lucide icons: one stroke for the whole interface (explicit bolder strokes stay). */
+  --icon-stroke: 1.75;
+  /* Status icons for CSS-only places (callouts, notes): used as a mask, colored by background.
+     A meaning is shown with an icon and a tint, never with a colored bar at the side. */
+  --icon-info: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='10'/%3E%3Cpath d='M12 16v-4M12 8h.01'/%3E%3C/svg%3E");
+  --icon-check: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='10'/%3E%3Cpath d='m9 12 2 2 4-4'/%3E%3C/svg%3E");
+  --icon-warning: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3'/%3E%3Cpath d='M12 9v4M12 17h.01'/%3E%3C/svg%3E");
+  --icon-error: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='10'/%3E%3Cpath d='m15 9-6 6M9 9l6 6'/%3E%3C/svg%3E");
+  --icon-question: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='10'/%3E%3Cpath d='M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3M12 17h.01'/%3E%3C/svg%3E");
+  --icon-list: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01'/%3E%3C/svg%3E");
+  --icon-quote: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M16 3a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2 1 1 0 0 1 1 1v1a2 2 0 0 1-2 2 1 1 0 0 0-1 1v2a1 1 0 0 0 1 1 6 6 0 0 0 6-6V5a2 2 0 0 0-2-2zM5 3a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2 1 1 0 0 1 1 1v1a2 2 0 0 1-2 2 1 1 0 0 0-1 1v2a1 1 0 0 0 1 1 6 6 0 0 0 6-6V5a2 2 0 0 0-2-2z'/%3E%3C/svg%3E");
+
+  /* Focus: the ring of every focusable control (only on :focus-visible), and the soft halo of
+     text fields. Both are neutral gray: the accent never marks focus, selection or the current item. */
+  --focus-ring: 2px solid var(--border-focus);
+  --focus-halo: 0 0 0 3px var(--focus-soft);
+
+  /* The three panes: folders, message list (the reading pane takes the rest). */
+  --folders-w: 240px;
+  --list-w: 380px;
+  --list-min: 300px;
+  --row-h: 64px;
+  --toolbar-h: 48px;
+  /* The compose sheet on a wide window. */
+  --compose-w: 620px;
+  --compose-h: 560px;
+  /* The unread dot, the label column of the compose fields, the smallest message frame, inline icons. */
+  --dot: 8px;
+  --compose-label-w: 72px;
+  --frame-min-h: 160px;
+  --icon-sm: 16px;
+  /* Phones and touch screens: the smallest touch target. */
+  --touch-min: 44px;
+
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --dur-fast: 120ms;
+  --dur: 200ms;
+  --dur-slow: 320ms;
+  /* Loops: spinners, and the pulse of loading placeholders. */
+  --dur-spin: 0.9s;
+  --dur-pulse: 1.4s;
+
+  /* Layers, bottom to top. */
+  --z-inline: 20;
+  --z-picker: 30;
+  --z-popover: 40;
+  --z-float: 45;
+  --z-overlay: 50;
+  --z-anchored: 60;
+  --z-hovercard: 65;
+  --z-menu: 70;
+  --z-panel: 75;
+  --z-viewer: 76;
+  --z-toast: 80;
+  --z-select: 90;
+  --z-fullscreen: 900;
+  --z-top: 1000;
+}
+
+:root,
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg-app: #0e0f11;
+  --bg-sidebar: #121316;
+  --bg-canvas: #16171a;
+  --bg-raised: #1c1d21;
+  --bg-overlay: #202126;
+  --bg-input: #1a1b1f;
+  --bg-hover: rgb(255 255 255 / 0.045);
+  --bg-active: rgb(255 255 255 / 0.075);
+  /* Selected items (multi-selection, the picked event): a neutral tint between hover and current. */
+  --bg-selected: rgb(255 255 255 / 0.085);
+  /* The current item of a list or menu (open page, section, panel): clearly above hover. */
+  --bg-current: rgb(255 255 255 / 0.11);
+  /* An extra edge on selected rows; only the contrast theme sets one. */
+  --selected-ring: 0 0 transparent;
+  /* The same for the current row (the open page): a stronger edge there, so the two differ. */
+  --current-ring: 0 0 transparent;
+
+  --border: rgb(255 255 255 / 0.07);
+  --border-strong: rgb(255 255 255 / 0.12);
+  /* Keyboard focus and focused fields: neutral gray, 3:1 on every surface and on a current or
+     selected row over it. */
+  --border-focus: #8a8d96;
+  --focus-soft: rgb(255 255 255 / 0.07);
+
+  --text: #ececef;
+  --text-2: #a7a9b1;
+  --text-3: #989ba4;
+  --star: #facc15;
+  --warning-fill: #fbbf24;
+  --text-inverse: #0e0f11;
+
+  --accent: #818cf8;
+  --accent-strong: #5d60ef;
+  /* Small solid markers with text (today's date, counters): 4.5:1 by construction. */
+  --accent-fill: #818cf8;
+  --on-accent: #0e0f11;
+  --accent-soft: rgb(129 140 248 / 0.14);
+  --accent-text: #a5b4fc;
+
+  --success: #4ade80;
+  --success-soft: rgb(74 222 128 / 0.12);
+  --warning: #fbbf24;
+  --warning-soft: rgb(251 191 36 / 0.12);
+  --danger: #f98282;
+  --danger-soft: rgb(248 113 113 / 0.12);
+  --info: #38bdf8;
+  --info-soft: rgb(56 189 248 / 0.12);
+  --violet: #a78bfa;
+
+  --mark: rgb(250 204 21 / 0.22);
+  --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.4);
+  --shadow-md: 0 8px 24px rgb(0 0 0 / 0.45), 0 0 0 1px rgb(255 255 255 / 0.06);
+  --shadow-lg: 0 24px 64px rgb(0 0 0 / 0.55), 0 0 0 1px rgb(255 255 255 / 0.07);
+  /* The edge of a sideways-scrolling area that hides more content (tables in narrow panes). */
+  --scroll-shadow: rgb(0 0 0 / 0.4);
+
+  /* The paper an HTML message is drawn on: senders design for white, so it stays light in the
+     dark themes (the frame's own text and link colors, lib/mailframe.ts). */
+  --paper: #ffffff;
+  --paper-text: #1b1b1f;
+  --paper-link: #2f50c8;
+  --paper-quote: #6b6b73;
+  /* Unread marker in the list: a small solid dot (a marker, not a selection state). */
+  --unread: var(--accent-fill);
+  /* Scrims behind sheets and dialogs. */
+  --scrim: rgb(0 0 0 / 0.5);
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg-app: #f4f4f5;
+  --bg-sidebar: #f5f5f6;
+  --bg-canvas: #ffffff;
+  --bg-raised: #ffffff;
+  --bg-overlay: #ffffff;
+  --bg-input: #ffffff;
+  --bg-hover: rgb(15 15 20 / 0.04);
+  --bg-active: rgb(15 15 20 / 0.07);
+  --bg-selected: rgb(15 15 20 / 0.075);
+  --bg-current: rgb(15 15 20 / 0.095);
+  --selected-ring: 0 0 transparent;
+  --current-ring: 0 0 transparent;
+
+  --border: rgb(15 15 20 / 0.09);
+  --border-strong: rgb(15 15 20 / 0.14);
+  --border-focus: #7a7a80;
+  --focus-soft: rgb(15 15 20 / 0.06);
+
+  --text: #18181b;
+  --text-2: #52525b;
+  --text-3: #67676f;
+  --star: #c98209;
+  --warning-fill: #c98209;
+  --text-inverse: #ffffff;
+
+  --accent: #6366f1;
+  --accent-strong: #4f46e5;
+  --accent-fill: #4f46e5;
+  --on-accent: #ffffff;
+  --accent-soft: rgb(99 102 241 / 0.1);
+  --accent-text: #4f46e5;
+
+  --success: #157034;
+  --success-soft: rgb(21 128 61 / 0.1);
+  --warning: #a14a08;
+  --warning-soft: rgb(217 119 6 / 0.12);
+  --danger: #b91c1c;
+  --danger-soft: rgb(220 38 38 / 0.09);
+  --info: #02679b;
+  --info-soft: rgb(2 132 199 / 0.1);
+  --violet: #7c3aed;
+
+  --mark: rgb(250 204 21 / 0.35);
+  --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.06);
+  --shadow-md: 0 8px 24px rgb(0 0 0 / 0.1), 0 0 0 1px rgb(0 0 0 / 0.06);
+  --shadow-lg: 0 24px 64px rgb(0 0 0 / 0.16), 0 0 0 1px rgb(0 0 0 / 0.07);
+  --scroll-shadow: rgb(0 0 0 / 0.12);
+
+  --paper: #ffffff;
+  --paper-text: #1b1b1f;
+  --paper-link: #2f50c8;
+  --paper-quote: #6b6b73;
+  --unread: var(--accent-fill);
+  --scrim: rgb(0 0 0 / 0.28);
+}
+
+/* High contrast (dark): stronger text and edges, and visible rings on selected and current rows,
+   since a tint alone is too weak here. Still neutral: no accent marks a state. */
+:root[data-theme="contrast"] {
+  color-scheme: dark;
+  --bg-app: #000000;
+  --bg-sidebar: #000000;
+  --bg-canvas: #0a0a0a;
+  --bg-raised: #121212;
+  --bg-overlay: #161616;
+  --bg-input: #000000;
+  --bg-hover: rgb(255 255 255 / 0.1);
+  --bg-active: rgb(255 255 255 / 0.16);
+  --bg-selected: rgb(255 255 255 / 0.16);
+  --bg-current: rgb(255 255 255 / 0.22);
+  --selected-ring: inset 0 0 0 1px #c8c8c8;
+  --current-ring: inset 0 0 0 2px #ffffff;
+
+  --border: rgb(255 255 255 / 0.45);
+  --border-strong: rgb(255 255 255 / 0.7);
+  --border-focus: #ffffff;
+  --focus-soft: rgb(255 255 255 / 0.2);
+
+  --text: #ffffff;
+  --text-2: #e6e6e6;
+  --text-3: #d0d0d0;
+  --star: #ffd84d;
+  --warning-fill: #ffd84d;
+  --text-inverse: #000000;
+
+  --accent: #a9b4ff;
+  --accent-strong: #8f9cff;
+  --accent-fill: #a9b4ff;
+  --on-accent: #000000;
+  --accent-soft: rgb(169 180 255 / 0.22);
+  --accent-text: #c3cbff;
+
+  --success: #7cf0a4;
+  --success-soft: rgb(124 240 164 / 0.18);
+  --warning: #ffd84d;
+  --warning-soft: rgb(255 216 77 / 0.18);
+  --danger: #ff9b9b;
+  --danger-soft: rgb(255 155 155 / 0.18);
+  --info: #7fd6ff;
+  --info-soft: rgb(127 214 255 / 0.18);
+  --violet: #c7b2ff;
+
+  --mark: rgb(255 216 77 / 0.4);
+  --shadow-sm: 0 0 0 1px rgb(255 255 255 / 0.5);
+  --shadow-md: 0 0 0 1px rgb(255 255 255 / 0.6);
+  --shadow-lg: 0 0 0 2px rgb(255 255 255 / 0.7);
+  --scroll-shadow: rgb(0 0 0 / 0.6);
+
+  --paper: #ffffff;
+  --paper-text: #000000;
+  --paper-link: #1a3db8;
+  --paper-quote: #3b3b40;
+  --unread: #ffffff;
+  --scrim: rgb(0 0 0 / 0.7);
+}

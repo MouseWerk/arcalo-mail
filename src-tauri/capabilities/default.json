@@ -1,0 +1,8 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Permissions of the main window (desktop, Android, iOS): the app's commands and events, links opened in the browser",
+  "platforms": ["linux", "macOS", "windows", "android", "iOS"],
+  "windows": ["main"],
+  "permissions": ["core:default", "opener:default"]
+}

@@ -1,0 +1,38 @@
+[package]
+name = "arcalo-mail"
+description = "Arcalo Mail app shell (Tauri v2): desktop, Android and iOS"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "arcalo_mail_lib"
+# staticlib: iOS; cdylib: Android; rlib: the desktop binary.
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+mail-core = { path = "../crates/mail-core" }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+sys-locale = "0.3.2"
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+
+# Secrets in the OS credential store: Windows Credential Manager, macOS and iOS Keychain.
+[target.'cfg(any(windows, target_os = "macos", target_os = "ios"))'.dependencies]
+keyring = { version = "3", features = ["windows-native", "apple-native"] }
+
+# Linux: the Secret Service (GNOME Keyring, KWallet) over D-Bus.
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }
+
+# Android: the Android Keystore through a small Kotlin plugin (milestone 3, docs/plan.md); until
+# then `secrets.rs` refuses to store anything there.
+
+[features]
+# Used by `cargo tauri build`/`dev`; debug builds without it load the Vite dev server.
+custom-protocol = ["tauri/custom-protocol"]
