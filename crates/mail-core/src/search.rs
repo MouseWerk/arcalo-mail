@@ -56,15 +56,15 @@ pub fn fts_query(input: &str) -> Option<String> {
     (!terms.is_empty()).then(|| terms.join(" AND "))
 }
 
-/// Messages matching `input`, best match first (subject hits weigh most), optionally in one
-/// account.
+/// Messages matching `input`, newest first as in a folder (every word must match, so the
+/// newest hits are the ones people look for), optionally in one account.
 pub fn search(store: &Store, input: &str, account_id: Option<i64>, limit: u32) -> Result<Vec<MessageSummary>> {
     let Some(q) = fts_query(input) else { return Ok(vec![]) };
     let conn = store.conn();
     let mut st = conn.prepare_cached(
         "SELECT f.rowid FROM messages_fts f JOIN messages m ON m.id = f.rowid
          WHERE messages_fts MATCH ?1 AND (?2 IS NULL OR m.account_id = ?2)
-         ORDER BY bm25(messages_fts, 4.0, 2.0, 1.0), COALESCE(m.date, m.internal_date) DESC
+         ORDER BY m.internal_date DESC, m.id DESC
          LIMIT ?3",
     )?;
     let ids =
