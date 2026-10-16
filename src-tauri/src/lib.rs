@@ -81,12 +81,25 @@ fn data_dir(app: &AppHandle) -> Result<PathBuf, Box<dyn std::error::Error>> {
 pub fn update_badge(app: &AppHandle) {
     let Some(state) = app.try_state::<AppState>() else { return };
     let unread = state.store().unread_in_inboxes().unwrap_or(0);
+    show_unread(app, unread);
+}
+
+/// The desktop: the badge on the dock or taskbar icon and the count in the window title.
+#[cfg(desktop)]
+fn show_unread(app: &AppHandle, unread: u32) {
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.set_badge_count(if unread == 0 { None } else { Some(unread as i64) });
         let title = if unread == 0 { "Arcalo Mail".to_string() } else { format!("Arcalo Mail ({unread})") };
         let _ = w.set_title(&title);
     }
 }
+
+/// Android and iOS have no window badge in Tauri: the launcher badge comes with the
+/// notifications of milestone 3 (Android: the count on the new-mail notification; iOS:
+/// `applicationIconBadgeNumber` through a small plugin, docs/plan.md). Until then nothing is
+/// shown.
+#[cfg(mobile)]
+fn show_unread(_app: &AppHandle, _unread: u32) {}
 
 /// A desktop notification for new mail, when the window is not in front.
 fn notify_new_mail(app: &AppHandle, account_id: i64, messages: &[i64]) {
@@ -164,17 +177,17 @@ pub fn stop_worker(app: &AppHandle, account_id: i64) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let mut builder = tauri::Builder::default();
+    let builder = tauri::Builder::default();
     #[cfg(desktop)]
-    {
-        builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+    let builder = {
+        builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(w) = app.get_webview_window("main") {
                 let _ = w.unminimize();
                 let _ = w.show();
                 let _ = w.set_focus();
             }
-        }));
-    }
+        }))
+    };
     builder
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
