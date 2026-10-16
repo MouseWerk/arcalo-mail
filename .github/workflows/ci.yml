@@ -151,4 +151,5 @@ jobs:
           cargo tauri ios build --ci
       - name: Signing not set up
         if: env.APPLE_DEVELOPMENT_TEAM == ''
-        run: echo "::notice::tauri ios build skipped: no APPLE_DEVELOPMENT_TEAM secret (iOS signing needs the paid Apple Developer Program, see docs/plan.md)."
+        run: |
+          echo "::notice::tauri ios build skipped: no APPLE_DEVELOPMENT_TEAM secret (iOS signing needs the paid Apple Developer Program, see docs/plan.md)."
