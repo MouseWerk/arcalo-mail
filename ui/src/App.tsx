@@ -1,20 +1,22 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { X } from "lucide-react";
-import { api, inApp, onNotice, pickSavePath } from "./lib/api";
+import { CircleUserRound, Download, Inbox, LogIn, Palette as PaletteIcon, PenSquare, RefreshCw, Search, Settings as SettingsIcon, Upload, X } from "lucide-react";
+import { api, inApp, onNotice, onTrayAction, pickSavePath } from "./lib/api";
 import { applyTheme, onSystemThemeChange, type Theme } from "./lib/theme";
 import { currentLang, langFromLocale, setLang, useT } from "./lib/i18n";
 import { draftFromMessage, emptyDraft, isEmpty, isValidAddress, replyDraft, toDraft, type ComposeState } from "./lib/compose";
 import { clickSelect, isTyping, keyAction, pagesFor, type Selection } from "./lib/listing";
 import { closeToast, runUndo, setUndo, showToast } from "./lib/toasts";
 import { setClock } from "./lib/format";
-import type { AccountInfo, AppInfo, Attachment, Mailbox, MessageSummary, MessageView, Notice, OutboxEntry, Settings, Undo } from "./lib/types";
+import type { AccountInfo, AppInfo, Attachment, Mailbox, MessageSummary, MessageView, MicrosoftSignIn, Notice, OutboxEntry, Settings, ThemeChoice, Undo } from "./lib/types";
 import { Sidebar, folderIcon, folderLabel, type FolderAction } from "./components/Sidebar";
 import { MessageList, type BulkAction } from "./components/MessageList";
 import { ReadingPane, type Loaded, type MessageAction } from "./components/ReadingPane";
 import { ComposeSheet } from "./components/ComposeSheet";
 import { MAILTO_EVENT } from "./components/MailFrame";
 import { Setup } from "./components/Setup";
-import { SettingsView, type SettingsSection } from "./components/Settings";
+import { SettingsView, exportDiagnostics, type SettingsSection } from "./components/Settings";
+import { CommandPalette, type Command } from "./components/CommandPalette";
+import { ProblemCard } from "./components/Setup";
 import { Toasts } from "./components/Toasts";
 import { Outbox } from "./components/Outbox";
 import { ConfirmDialog, Dialog, Menu, PromptDialog, type MenuItem } from "./components/ui";
@@ -58,6 +60,7 @@ export function App() {
   const [folderDialog, setFolderDialog] = useState<FolderDialog>(null);
   const [signIn, setSignIn] = useState<AccountInfo | null>(null);
   const [menu, setMenu] = useState<{ items: MenuItem[]; at: { x: number; y: number } } | null>(null);
+  const [palette, setPalette] = useState(false);
   const [preview, setPreview] = useState<{ name: string; url: string } | null>(null);
   const searchRef = useRef<HTMLInputElement | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
@@ -539,6 +542,9 @@ export function App() {
     [mailboxId, refreshList, reloadMailboxes],
   );
 
+  // The tray menu's „Neue Nachricht“.
+  useEffect(() => onTrayAction((a) => a === "compose" && newMessage()));
+
   // Back in front after a while: check for mail now.
   useEffect(() => {
     const onFocus = () => {
@@ -580,7 +586,7 @@ export function App() {
       const overlay = document.querySelector(".overlay, .menu");
       const inCompose = (e.target as HTMLElement | null)?.closest?.(".compose");
       const action = keyAction(e, isTyping(e.target) || !!inCompose);
-      if (!action || (overlay && action !== "settings")) return;
+      if (!action || (overlay && action !== "settings" && action !== "palette")) return;
       const index = current != null ? order.indexOf(current) : -1;
       const go = (i: number) => {
         const row = rowAt(i);
@@ -647,10 +653,80 @@ export function App() {
           e.preventDefault();
           setSettingsOpen((s) => (s ? null : "accounts"));
           break;
+        case "palette":
+          e.preventDefault();
+          setPalette((p) => !p && !document.querySelector(".overlay:not(.palette-overlay)"));
+          break;
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
+  });
+
+  // ---------------------------------------------------------------- the command palette
+
+  const paletteCommands = (): Command[] => {
+    const out: Command[] = [
+      { id: "compose", label: t("cmd.compose"), hint: "c", icon: PenSquare, run: () => newMessage() },
+      { id: "sync", label: t("cmd.sync"), icon: RefreshCw, run: () => void api.syncNow(null) },
+    ];
+    if (outbox.length) out.push({ id: "outbox", label: t("cmd.outbox"), icon: Upload, run: () => setShowOutbox(true) });
+    for (const a of accounts ?? []) {
+      for (const m of mailboxes[a.id] ?? []) {
+        if (!m.selectable) continue;
+        const name = folderLabel(m, t);
+        out.push({
+          id: `folder-${m.id}`,
+          label: t("cmd.goTo", { name }),
+          keywords: `${m.name} ${a.name} ${a.email}`,
+          hint: (accounts?.length ?? 0) > 1 ? a.name || a.email : undefined,
+          icon: m.role === "inbox" ? Inbox : folderIcon(m),
+          run: () => {
+            setQuery("");
+            setShowOutbox(false);
+            setMailboxId(m.id);
+            setView("list");
+          },
+        });
+      }
+    }
+    const sections: [SettingsSection, Parameters<typeof t>[0]][] = [
+      ["accounts", "settings.accounts"],
+      ["appearance", "settings.appearance"],
+      ["reading", "settings.reading"],
+      ["writing", "settings.writing"],
+      ["notifications", "settings.notifications"],
+      ["privacy", "settings.privacy"],
+      ["network", "settings.network"],
+      ["shortcuts", "settings.shortcuts"],
+      ["about", "settings.about"],
+    ];
+    out.push({ id: "add-account", label: t("cmd.addAccount"), icon: CircleUserRound, run: () => setSettingsOpen("accounts") });
+    for (const [id, key] of sections) {
+      out.push({ id: `settings-${id}`, label: t("cmd.settings", { name: t(key) }), keywords: id, icon: SettingsIcon, run: () => setSettingsOpen(id) });
+    }
+    const themes: [ThemeChoice, Parameters<typeof t>[0]][] = [
+      ["system", "theme.system"],
+      ["light", "theme.light"],
+      ["dark", "theme.dark"],
+      ["contrast", "theme.contrast"],
+    ];
+    for (const [theme, key] of themes) {
+      out.push({ id: `theme-${theme}`, label: t("cmd.theme", { name: t(key) }), keywords: theme, icon: PaletteIcon, run: () => updateSettings({ theme }) });
+    }
+    out.push({ id: "diagnostics", label: t("cmd.diagnostics"), icon: Download, run: () => void exportDiagnostics(t) });
+    return out;
+  };
+
+  const searchCommand = (q: string): Command => ({
+    id: "search",
+    label: t("cmd.search", { q }),
+    hint: "/",
+    icon: Search,
+    run: () => {
+      setShowOutbox(false);
+      setQuery(q);
+    },
   });
 
   // ---------------------------------------------------------------- render
@@ -839,7 +915,13 @@ export function App() {
           onClose={() => setFolderDialog(null)}
         />
       )}
-      {signIn && <SignInDialog account={signIn} onClose={() => setSignIn(null)} />}
+      {signIn &&
+        (signIn.transport.kind === "imap" && signIn.transport.auth.kind === "o_auth2" ? (
+          <MicrosoftSignInDialog account={signIn} onClose={() => setSignIn(null)} />
+        ) : (
+          <SignInDialog account={signIn} onClose={() => setSignIn(null)} />
+        ))}
+      {palette && <CommandPalette commands={paletteCommands()} search={searchCommand} onClose={() => setPalette(false)} />}
       {menu && <Menu items={menu.items} at={menu.at} onClose={() => setMenu(null)} label={t("read.move")} />}
       {preview && (
         <div className="overlay preview-overlay" onMouseDown={(e) => e.target === e.currentTarget && setPreview(null)} onKeyDown={(e) => e.key === "Escape" && setPreview(null)}>
@@ -856,6 +938,49 @@ export function App() {
       )}
       <Toasts />
     </div>
+  );
+}
+
+/** A Microsoft account whose sign-in ended: sign in again in the browser. */
+function MicrosoftSignInDialog({ account, onClose }: { account: AccountInfo; onClose: () => void }) {
+  const t = useT();
+  const [state, setState] = useState<{ busy: boolean; result: MicrosoftSignIn | null }>({ busy: false, result: null });
+  const problem = state.result?.problem ?? account.status?.problem ?? null;
+  const go = async () => {
+    setState({ busy: true, result: null });
+    try {
+      const result = await api.microsoftReauth(account.id);
+      if (!result.problem && !result.error) onClose();
+      else setState({ busy: false, result });
+    } catch (e) {
+      setState({ busy: false, result: { session: null, email: null, check: null, problem: null, error: String(e) } });
+    }
+  };
+  return (
+    <Dialog
+      title={t("signIn.title", { email: account.email })}
+      description={t("signIn.microsoftText")}
+      onClose={onClose}
+      footer={
+        <>
+          <button type="button" className="btn" onClick={onClose}>
+            {t("common.cancel")}
+          </button>
+          <button type="button" className="btn btn-primary" disabled={state.busy} onClick={() => void go()}>
+            <LogIn size={14} strokeWidth={1.75} aria-hidden />
+            <span>{t("signIn.browser")}</span>
+          </button>
+        </>
+      }
+    >
+      {state.busy && <p className="muted">{t("ms.waiting")}</p>}
+      {problem && <ProblemCard which="microsoft" p={problem} />}
+      {state.result?.error && (
+        <p className="field-error" role="alert">
+          {state.result.error}
+        </p>
+      )}
+    </Dialog>
   );
 }
 

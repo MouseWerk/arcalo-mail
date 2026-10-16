@@ -235,8 +235,8 @@ impl fmt::Display for Problem {
                 "Your organization's IT has to approve Arcalo Mail first ({detail})."
             ),
             Problem::SmtpAuthDisabled { detail } => trf!(
-                "Senden über SMTP ist für dieses Postfach abgeschaltet ({detail}).",
-                "Sending over SMTP is switched off for this mailbox ({detail})."
+                "Senden über SMTP ist für dieses Konto abgeschaltet ({detail}).",
+                "Sending over SMTP is switched off for this account ({detail})."
             ),
             Problem::Proxy { proxy, detail } => {
                 trf!(
@@ -1276,7 +1276,7 @@ impl RedirectListener {
 
     /// Waits for the browser's redirect and answers it with `page(query)` (HTML); returns the query
     /// string (`code=…&state=…` or `error=…`). Other requests (a favicon) get a 404.
-    pub async fn wait(self, timeout: Duration, page: &dyn Fn(&str) -> String) -> Result<String> {
+    pub async fn wait(self, timeout: Duration, page: &(dyn Fn(&str) -> String + Sync)) -> Result<String> {
         let accept = async {
             loop {
                 let (stream, _) = self.listener.accept().await.map_err(|e| Error::Network(e.to_string()))?;

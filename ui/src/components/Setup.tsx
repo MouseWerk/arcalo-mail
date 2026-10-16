@@ -1,17 +1,20 @@
-import { ArrowLeft, CircleCheck, CircleX, Info, KeyRound, Lock, Mail, ServerCog, ShieldCheck, Sparkles } from "lucide-react";
-import { useState } from "react";
+import { ArrowLeft, CircleCheck, CircleX, ExternalLink, Info, KeyRound, Lock, LogIn, Mail, ServerCog, ShieldCheck, Sparkles } from "lucide-react";
+import { useEffect, useState } from "react";
 import { useT, type TKey } from "../lib/i18n";
-import { api } from "../lib/api";
+import { api, openExternal } from "../lib/api";
 import { explain, hintKey } from "../lib/problems";
-import type { Account, CheckResult, Discovered, ImapTransport, Problem, Security, Server } from "../lib/types";
-import { Spinner } from "./ui";
+import type { Account, AccountDraft, CheckResult, Discovered, ImapTransport, MicrosoftSignIn, Problem, Security, Server } from "../lib/types";
+import { Segmented, Spinner, Switch } from "./ui";
 
 type Step =
   | { kind: "form" }
   | { kind: "discovering" }
-  | { kind: "checking"; found: Discovered | null }
-  | { kind: "failed"; result: CheckResult; found: Discovered | null }
+  | { kind: "checking"; found: Discovered | null; jmap: boolean }
+  | { kind: "failed"; result: CheckResult; found: Discovered | null; jmap: boolean }
+  | { kind: "microsoft"; waiting: boolean; result: MicrosoftSignIn | null; adding?: boolean }
   | { kind: "done"; account: Account };
+
+type JmapManual = { session_url: string; username: string; token: boolean };
 
 const SOURCE: Record<Discovered["source"], TKey> = {
   preset: "setup.sourcePreset",
@@ -21,6 +24,13 @@ const SOURCE: Record<Discovered["source"], TKey> = {
   mx: "setup.sourceMx",
   guess: "setup.sourceGuess",
 };
+
+/** Microsoft's own domains (business domains are found by their MX records). */
+const MICROSOFT_DOMAINS = ["outlook.com", "outlook.de", "outlook.at", "hotmail.com", "hotmail.de", "live.com", "live.de", "msn.com"];
+const GOOGLE_DOMAINS = ["gmail.com", "googlemail.com"];
+export const GOOGLE_APP_PASSWORDS = "https://myaccount.google.com/apppasswords";
+
+const domainOf = (email: string) => email.trim().toLowerCase().split("@")[1] ?? "";
 
 const defaultPort = (kind: "imap" | "smtp", s: Security) => (kind === "imap" ? (s === "tls" ? 993 : 143) : s === "tls" ? 465 : 587);
 
@@ -64,7 +74,11 @@ function ServerFields({ kind, server, onChange }: { kind: "imap" | "smtp"; serve
   );
 }
 
-function ProblemCard({ which, p, onTrust }: { which: "imap" | "smtp"; p: Problem; onTrust: () => void }) {
+type Which = "imap" | "smtp" | "jmap" | "microsoft";
+
+const WHICH: Record<Which, TKey> = { imap: "setup.imapLabel", smtp: "setup.smtpLabel", jmap: "setup.jmapLabel", microsoft: "setup.microsoftLabel" };
+
+export function ProblemCard({ which, p, onTrust }: { which: Which; p: Problem; onTrust?: () => void }) {
   const t = useT();
   const e = explain(p);
   return (
@@ -72,10 +86,10 @@ function ProblemCard({ which, p, onTrust }: { which: "imap" | "smtp"; p: Problem
       <CircleX size={18} strokeWidth={1.75} aria-hidden className="problem-icon" />
       <div className="problem-body">
         <p className="problem-title">
-          {which === "imap" ? t("setup.imapLabel") : t("setup.smtpLabel")}: {t(e.title, e.vars)}
+          {t(WHICH[which])}: {t(e.title, e.vars)}
         </p>
         <p className="problem-hint">{t(e.hint, e.vars)}</p>
-        {p.kind === "certificate" && (
+        {p.kind === "certificate" && onTrust && (
           <div className="fingerprint">
             <span className="field-label">{t("setup.fingerprint")}</span>
             <code>{p.fingerprint}</code>
@@ -91,9 +105,36 @@ function ProblemCard({ which, p, onTrust }: { which: "imap" | "smtp"; p: Problem
   );
 }
 
-/** Adding an account: the address and password, the servers found for it, the connection
- *  check with clear errors, and the servers by hand when nothing was found. `welcome`: the first
- *  start, with a short introduction. */
+/** How to create a Gmail app password (Google sign-in comes later, docs/decisions.md). */
+export function GmailGuide() {
+  const t = useT();
+  return (
+    <section className="guide" aria-labelledby="gmail-guide-title">
+      <div className="guide-head">
+        <KeyRound size={16} strokeWidth={1.75} aria-hidden />
+        <h3 id="gmail-guide-title">{t("gmail.title")}</h3>
+      </div>
+      <ol className="guide-steps">
+        <li>{t("gmail.step2fa")}</li>
+        <li>{t("gmail.stepOpen")}</li>
+        <li>{t("gmail.stepName")}</li>
+        <li>{t("gmail.stepPaste")}</li>
+      </ol>
+      <div className="guide-foot">
+        <button type="button" className="btn btn-sm" onClick={() => void openExternal(GOOGLE_APP_PASSWORDS)}>
+          <ExternalLink size={14} strokeWidth={1.75} aria-hidden />
+          <span>{t("gmail.open")}</span>
+        </button>
+        <span className="muted">{t("gmail.later")}</span>
+      </div>
+    </section>
+  );
+}
+
+/** Adding an account: the address and password, the servers found for it (JMAP first where
+ *  the provider offers it), the connection check with clear errors, the servers by hand when
+ *  nothing was found, and Microsoft's sign-in in the browser. `welcome`: the first start, with a
+ *  short introduction. */
 export function Setup({ welcome, onDone, onCancel }: { welcome: boolean; onDone: (a: Account) => void; onCancel?: () => void }) {
   const t = useT();
   const [name, setName] = useState("");
@@ -104,38 +145,112 @@ export function Setup({ welcome, onDone, onCancel }: { welcome: boolean; onDone:
   const [found, setFound] = useState<Discovered | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [manual, setManual] = useState(false);
+  const [protocol, setProtocol] = useState<"imap" | "jmap">("imap");
+  const [jmapManual, setJmapManual] = useState<JmapManual>({ session_url: "", username: "", token: false });
+  const [microsoftBuilt, setMicrosoftBuilt] = useState(true);
+
+  useEffect(() => {
+    void api.appInfo().then((i) => setMicrosoftBuilt(i.microsoft_sign_in ?? false));
+  }, []);
+
+  const domain = domainOf(email);
+  const microsoftDomain = MICROSOFT_DOMAINS.includes(domain);
+  const google = GOOGLE_DOMAINS.includes(domain) || found?.hint === "google_app_password";
+
+  const add = async (draft: AccountDraft) => {
+    const account = await api.addAccount(draft, password);
+    setStep({ kind: "done", account });
+  };
 
   const check = async (tr: ImapTransport, d: Discovered | null) => {
     setTransport(tr);
-    setStep({ kind: "checking", found: d });
+    setStep({ kind: "checking", found: d, jmap: false });
     setError(null);
     try {
       const result = await api.check(tr, password);
       if (result.imap || result.smtp || result.error) {
-        setStep({ kind: "failed", result, found: d });
+        setStep({ kind: "failed", result, found: d, jmap: false });
         return;
       }
-      const account = await api.addAccount({ provider: "imap", name: "", email: email.trim(), sender_name: name.trim(), transport: tr }, password);
-      setStep({ kind: "done", account });
+      await add({ provider: "imap", name: "", email: email.trim(), sender_name: name.trim(), transport: tr });
     } catch (e) {
       setError(String(e));
       setStep({ kind: "form" });
     }
   };
 
+  const checkJmap = async (sessionUrl: string, username: string, token: boolean, d: Discovered | null) => {
+    setStep({ kind: "checking", found: d, jmap: true });
+    setError(null);
+    try {
+      const result = await api.checkJmap(sessionUrl, username, password, token);
+      if (result.imap || result.error) {
+        setStep({ kind: "failed", result, found: d, jmap: true });
+        return;
+      }
+      await add({
+        provider: "jmap",
+        name: "",
+        email: email.trim(),
+        sender_name: name.trim(),
+        transport: { kind: "jmap", session_url: sessionUrl, username, auth: token ? { kind: "token" } : { kind: "password" } },
+      });
+    } catch (e) {
+      setError(String(e));
+      setStep({ kind: "form" });
+    }
+  };
+
+  const imapOf = (d: Discovered): ImapTransport => ({ kind: "imap", imap: d.imap, smtp: d.smtp, username: d.username, auth: { kind: "password" } });
+
+  const microsoft = async () => {
+    setError(null);
+    if (!microsoftBuilt) {
+      setStep({ kind: "microsoft", waiting: false, result: null });
+      return;
+    }
+    setStep({ kind: "microsoft", waiting: true, result: null });
+    try {
+      const r = await api.microsoftSignIn(email.trim());
+      if (r.session && r.check && !r.check.imap && !r.check.smtp && !r.check.error) {
+        await addMicrosoft(r);
+        return;
+      }
+      setStep({ kind: "microsoft", waiting: false, result: r });
+    } catch (e) {
+      setStep({ kind: "microsoft", waiting: false, result: { session: null, email: null, check: null, problem: null, error: String(e) } });
+    }
+  };
+
+  const addMicrosoft = async (r: MicrosoftSignIn) => {
+    if (!r.session) return;
+    setStep({ kind: "microsoft", waiting: false, result: r, adding: true });
+    try {
+      const account = await api.addMicrosoftAccount(r.session, name.trim());
+      setStep({ kind: "done", account });
+    } catch (e) {
+      setStep({ kind: "microsoft", waiting: false, result: { ...r, error: String(e) } });
+    }
+  };
+
   const start = async () => {
-    if (!email.trim() || !password) return;
+    if (!email.trim()) return;
+    if (microsoftDomain) {
+      void microsoft();
+      return;
+    }
+    if (!password) return;
     setError(null);
     setStep({ kind: "discovering" });
     try {
       const d = await api.discover(email.trim());
       setFound(d);
       if (d.hint === "microsoft_sign_in") {
-        setStep({ kind: "form" });
-        setError(t("setup.hintMicrosoft"));
+        void microsoft();
         return;
       }
-      await check({ kind: "imap", imap: d.imap, smtp: d.smtp, username: d.username, auth: { kind: "password" } }, d);
+      if (d.jmap) await checkJmap(d.jmap, email.trim(), false, d);
+      else await check(imapOf(d), d);
     } catch (e) {
       setError(String(e));
       setStep({ kind: "form" });
@@ -165,6 +280,111 @@ export function Setup({ welcome, onDone, onCancel }: { welcome: boolean; onDone:
       </div>
     );
 
+  const intro = welcome && (
+    <div className="setup-intro">
+      <span className="setup-logo" aria-hidden>
+        <Mail size={22} strokeWidth={1.75} />
+      </span>
+      <h1>{t("setup.welcome")}</h1>
+      <p className="muted">{t("setup.welcomeText")}</p>
+      <ul className="setup-points">
+        <li>
+          <Lock size={14} strokeWidth={1.75} aria-hidden />
+          <span>{t("setup.pointLocal")}</span>
+        </li>
+        <li>
+          <ShieldCheck size={14} strokeWidth={1.75} aria-hidden />
+          <span>{t("setup.pointPrivate")}</span>
+        </li>
+        <li>
+          <Sparkles size={14} strokeWidth={1.75} aria-hidden />
+          <span>{t("setup.pointAuto")}</span>
+        </li>
+      </ul>
+    </div>
+  );
+
+  if (step.kind === "microsoft") {
+    const r = step.result;
+    const smtpOnly = !!(r?.session && r.check && !r.check.imap && !r.check.error && r.check.smtp);
+    return (
+      <div className={`setup${welcome ? " setup-welcome" : ""}`}>
+        <div className="setup-card">
+          {intro}
+          <div className="setup-form setup-microsoft">
+            <h2 className="setup-title">{t("ms.title")}</h2>
+            {!microsoftBuilt ? (
+              <>
+                <div className="notice" role="note">
+                  <Info size={16} strokeWidth={1.75} aria-hidden />
+                  <span>{t("ms.notInBuild")}</span>
+                </div>
+                <p className="muted setup-text">{t("ms.appPasswordWay")}</p>
+              </>
+            ) : (
+              <>
+                <p className="setup-text">{t("ms.text")}</p>
+                <ul className="setup-points">
+                  <li>
+                    <Lock size={14} strokeWidth={1.75} aria-hidden />
+                    <span>{t("ms.pointPassword")}</span>
+                  </li>
+                  <li>
+                    <KeyRound size={14} strokeWidth={1.75} aria-hidden />
+                    <span>{t("ms.pointAccess")}</span>
+                  </li>
+                </ul>
+                {(step.waiting || step.adding) && (
+                  <div className="setup-progress" role="status">
+                    <Spinner />
+                    <span>{step.waiting ? t("ms.waiting") : t("setup.checking")}</span>
+                  </div>
+                )}
+                {r?.problem && (
+                  <div className="problems">
+                    <ProblemCard which="microsoft" p={r.problem} />
+                  </div>
+                )}
+                {r?.check && (
+                  <div className="problems">
+                    {r.check.imap && <ProblemCard which="imap" p={r.check.imap} />}
+                    {r.check.smtp && <ProblemCard which="smtp" p={r.check.smtp} />}
+                    {r.check.error && <p className="field-error">{r.check.error}</p>}
+                  </div>
+                )}
+                {r?.error && (
+                  <div className="notice notice-danger" role="alert">
+                    <span>{r.error}</span>
+                  </div>
+                )}
+                {smtpOnly && <p className="muted setup-text">{t("ms.addAnyway")}</p>}
+              </>
+            )}
+            <div className="setup-actions">
+              <button type="button" className="btn" onClick={() => setStep({ kind: "form" })}>
+                <ArrowLeft size={14} strokeWidth={1.75} aria-hidden />
+                <span>{microsoftBuilt ? t("common.back") : t("ms.useAppPassword")}</span>
+              </button>
+              <span className="toolbar-gap" />
+              {smtpOnly && r && (
+                <button type="button" className="btn" disabled={step.adding} onClick={() => void addMicrosoft(r)}>
+                  {t("ms.addAnywayButton")}
+                </button>
+              )}
+              {microsoftBuilt && (
+                <button type="button" className="btn btn-primary" disabled={step.waiting || step.adding} onClick={() => void microsoft()}>
+                  <LogIn size={14} strokeWidth={1.75} aria-hidden />
+                  <span>{r ? t("setup.tryAgain") : t("ms.openBrowser")}</span>
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  const viaJmap = (step.kind === "checking" || step.kind === "failed") && step.jmap;
   const status = (
     <>
       {hint && (
@@ -180,7 +400,9 @@ export function Setup({ welcome, onDone, onCancel }: { welcome: boolean; onDone:
       )}
       {step.kind === "failed" && (
         <div className="problems">
-          {step.result.imap && <ProblemCard which="imap" p={step.result.imap} onTrust={() => step.result.imap && trust("imap", step.result.imap)} />}
+          {step.result.imap && (
+            <ProblemCard which={step.jmap ? "jmap" : "imap"} p={step.result.imap} onTrust={step.jmap ? undefined : () => step.result.imap && trust("imap", step.result.imap)} />
+          )}
           {step.result.smtp && <ProblemCard which="smtp" p={step.result.smtp} onTrust={() => step.result.smtp && trust("smtp", step.result.smtp)} />}
           {step.result.error && <p className="field-error">{step.result.error}</p>}
         </div>
@@ -195,38 +417,21 @@ export function Setup({ welcome, onDone, onCancel }: { welcome: boolean; onDone:
         <p className="setup-found muted">
           <ServerCog size={13} strokeWidth={1.75} aria-hidden />
           <span>
-            {t("setup.found", { imap: found.imap.host, smtp: found.smtp.host })} {t(SOURCE[found.source], { provider: found.provider ?? "" })}
+            {viaJmap ? t("setup.foundJmap") : t("setup.found", { imap: found.imap.host, smtp: found.smtp.host })} {t(SOURCE[found.source], { provider: found.provider ?? "" })}
           </span>
         </p>
+      )}
+      {step.kind === "failed" && step.jmap && found && !manual && (
+        <button type="button" className="btn btn-quiet btn-sm setup-alt" onClick={() => void check(imapOf(found), found)}>
+          {t("setup.useImapInstead")}
+        </button>
       )}
     </>
   );
   return (
     <div className={`setup${welcome ? " setup-welcome" : ""}`}>
       <div className="setup-card">
-        {welcome && (
-          <div className="setup-intro">
-            <span className="setup-logo" aria-hidden>
-              <Mail size={22} strokeWidth={1.75} />
-            </span>
-            <h1>{t("setup.welcome")}</h1>
-            <p className="muted">{t("setup.welcomeText")}</p>
-            <ul className="setup-points">
-              <li>
-                <Lock size={14} strokeWidth={1.75} aria-hidden />
-                <span>{t("setup.pointLocal")}</span>
-              </li>
-              <li>
-                <ShieldCheck size={14} strokeWidth={1.75} aria-hidden />
-                <span>{t("setup.pointPrivate")}</span>
-              </li>
-              <li>
-                <Sparkles size={14} strokeWidth={1.75} aria-hidden />
-                <span>{t("setup.pointAuto")}</span>
-              </li>
-            </ul>
-          </div>
-        )}
+        {intro}
         <div className="setup-form">
           <h2 className="setup-title">{t("setup.title")}</h2>
           {!manual && (
@@ -255,14 +460,25 @@ export function Setup({ welcome, onDone, onCancel }: { welcome: boolean; onDone:
                   spellCheck={false}
                 />
               </label>
-              <label className="stack-field">
-                <span className="field-label">{t("setup.password")}</span>
-                <input className="input" type="password" value={password} onChange={(e) => setPassword(e.target.value)} readOnly={busy} autoComplete="current-password" />
-              </label>
-              <p className="setup-note muted">
-                <KeyRound size={13} strokeWidth={1.75} aria-hidden />
-                <span>{t("setup.passwordNote")}</span>
-              </p>
+              {!microsoftDomain && (
+                <>
+                  {google && <GmailGuide />}
+                  <label className="stack-field">
+                    <span className="field-label">{google ? t("gmail.passwordLabel") : t("setup.password")}</span>
+                    <input className="input" type="password" value={password} onChange={(e) => setPassword(e.target.value)} readOnly={busy} autoComplete="current-password" />
+                  </label>
+                  <p className="setup-note muted">
+                    <KeyRound size={13} strokeWidth={1.75} aria-hidden />
+                    <span>{t("setup.passwordNote")}</span>
+                  </p>
+                </>
+              )}
+              {microsoftDomain && (
+                <p className="setup-note muted">
+                  <Info size={13} strokeWidth={1.75} aria-hidden />
+                  <span>{t("ms.detected")}</span>
+                </p>
+              )}
               {status}
               <div className="setup-actions">
                 {onCancel && (
@@ -275,7 +491,6 @@ export function Setup({ welcome, onDone, onCancel }: { welcome: boolean; onDone:
                   className="btn btn-quiet"
                   disabled={busy}
                   onClick={() => {
-                    const domain = email.split("@")[1] ?? "";
                     setTransport(
                       transport ?? {
                         kind: "imap",
@@ -285,16 +500,26 @@ export function Setup({ welcome, onDone, onCancel }: { welcome: boolean; onDone:
                         auth: { kind: "password" },
                       },
                     );
+                    setJmapManual({ session_url: found?.jmap ?? (domain ? `https://${domain}/.well-known/jmap` : ""), username: email.trim(), token: false });
                     setManual(true);
                   }}
                 >
                   {t("setup.manual")}
                 </button>
                 <span className="toolbar-gap" />
-                <button type="submit" className="btn btn-primary" disabled={busy || !email.trim() || !password}>
-                  {step.kind === "failed" ? t("setup.tryAgain") : t("setup.continue")}
+                <button type="submit" className="btn btn-primary" disabled={busy || !email.trim() || (!microsoftDomain && !password)}>
+                  {microsoftDomain ? t("ms.button") : step.kind === "failed" ? t("setup.tryAgain") : t("setup.continue")}
                 </button>
               </div>
+              {!microsoftDomain && (
+                <div className="setup-other">
+                  <span className="setup-or">{t("setup.or")}</span>
+                  <button type="button" className="btn setup-ms" disabled={busy} onClick={() => void microsoft()}>
+                    <LogIn size={14} strokeWidth={1.75} aria-hidden />
+                    <span>{t("ms.button")}</span>
+                  </button>
+                </div>
+              )}
             </form>
           )}
           {manual && transport && (
@@ -302,19 +527,61 @@ export function Setup({ welcome, onDone, onCancel }: { welcome: boolean; onDone:
               className="setup-fields"
               onSubmit={(e) => {
                 e.preventDefault();
-                void check(transport, found);
+                if (protocol === "jmap") void checkJmap(jmapManual.session_url.trim(), jmapManual.username.trim(), jmapManual.token, found);
+                else void check(transport, found);
               }}
             >
-              <label className="stack-field">
-                <span className="field-label">{t("setup.username")}</span>
-                <input className="input" value={transport.username} spellCheck={false} onChange={(e) => setTransport({ ...transport, username: e.target.value })} />
-              </label>
-              <label className="stack-field">
-                <span className="field-label">{t("setup.password")}</span>
-                <input className="input" type="password" value={password} onChange={(e) => setPassword(e.target.value)} readOnly={busy} />
-              </label>
-              <ServerFields kind="imap" server={transport.imap} onChange={(imap) => setTransport({ ...transport, imap })} />
-              <ServerFields kind="smtp" server={transport.smtp} onChange={(smtp) => setTransport({ ...transport, smtp })} />
+              <Segmented<"imap" | "jmap">
+                label={t("setup.protocol")}
+                value={protocol}
+                onChange={setProtocol}
+                options={[
+                  ["imap", t("setup.protocolImap")],
+                  ["jmap", t("setup.protocolJmap")],
+                ]}
+              />
+              {protocol === "imap" ? (
+                <>
+                  <label className="stack-field">
+                    <span className="field-label">{t("setup.username")}</span>
+                    <input className="input" value={transport.username} spellCheck={false} onChange={(e) => setTransport({ ...transport, username: e.target.value })} />
+                  </label>
+                  <label className="stack-field">
+                    <span className="field-label">{t("setup.password")}</span>
+                    <input className="input" type="password" value={password} onChange={(e) => setPassword(e.target.value)} readOnly={busy} />
+                  </label>
+                  <ServerFields kind="imap" server={transport.imap} onChange={(imap) => setTransport({ ...transport, imap })} />
+                  <ServerFields kind="smtp" server={transport.smtp} onChange={(smtp) => setTransport({ ...transport, smtp })} />
+                </>
+              ) : (
+                <>
+                  <label className="stack-field">
+                    <span className="field-label">{t("setup.sessionUrl")}</span>
+                    <input
+                      id="setup-jmap-url"
+                      className="input"
+                      value={jmapManual.session_url}
+                      spellCheck={false}
+                      placeholder="https://jmap.example.org/.well-known/jmap"
+                      onChange={(e) => setJmapManual({ ...jmapManual, session_url: e.target.value })}
+                    />
+                  </label>
+                  <div className="setup-switch">
+                    <Switch label={t("setup.apiToken")} checked={jmapManual.token} onChange={(token) => setJmapManual({ ...jmapManual, token })} />
+                    <span>{t("setup.useApiToken")}</span>
+                  </div>
+                  {!jmapManual.token && (
+                    <label className="stack-field">
+                      <span className="field-label">{t("setup.username")}</span>
+                      <input className="input" value={jmapManual.username} spellCheck={false} onChange={(e) => setJmapManual({ ...jmapManual, username: e.target.value })} />
+                    </label>
+                  )}
+                  <label className="stack-field">
+                    <span className="field-label">{jmapManual.token ? t("setup.apiToken") : t("setup.password")}</span>
+                    <input className="input" type="password" value={password} onChange={(e) => setPassword(e.target.value)} readOnly={busy} />
+                  </label>
+                </>
+              )}
               {status}
               <div className="setup-actions">
                 <button type="button" className="btn" disabled={busy} onClick={() => setManual(false)}>
@@ -322,7 +589,11 @@ export function Setup({ welcome, onDone, onCancel }: { welcome: boolean; onDone:
                   <span>{t("common.back")}</span>
                 </button>
                 <span className="toolbar-gap" />
-                <button type="submit" className="btn btn-primary" disabled={busy || !transport.imap.host || !transport.smtp.host || !password}>
+                <button
+                  type="submit"
+                  className="btn btn-primary"
+                  disabled={busy || !password || (protocol === "imap" ? !transport.imap.host || !transport.smtp.host : !jmapManual.session_url.trim())}
+                >
                   {t("setup.check")}
                 </button>
               </div>

@@ -26,6 +26,12 @@ export function explain(p: Problem): Explained {
       return { title: "problem.appPassword", hint: "problem.appPasswordHint", vars: {}, detail: p.detail };
     case "protocol":
       return { title: "problem.protocol", hint: "problem.protocolHint", vars: {}, detail: p.detail };
+    case "admin_consent":
+      return { title: "problem.adminConsent", hint: "problem.adminConsentHint", vars: {}, detail: p.detail };
+    case "smtp_auth_disabled":
+      return { title: "problem.smtpAuthDisabled", hint: "problem.smtpAuthDisabledHint", vars: {}, detail: p.detail };
+    case "proxy":
+      return { title: "problem.proxy", hint: "problem.proxyHint", vars: { proxy: p.proxy }, detail: p.detail };
   }
 }
 
@@ -39,7 +45,9 @@ export function hintKey(h: Discovered["hint"]): TKey | null {
     case "mail_password":
       return "setup.hintMailPassword";
     case "microsoft_sign_in":
-      return "setup.hintMicrosoft";
+    case "google_app_password":
+      // Shown as the Microsoft step and the Gmail guide instead of a note.
+      return null;
     default:
       return null;
   }

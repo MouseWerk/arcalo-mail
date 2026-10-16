@@ -1,17 +1,19 @@
 // The shapes the commands return and take (src-tauri/src/commands.rs, mail_core's types).
 
 export type Provider = "imap" | "microsoft" | "google" | "jmap";
-export type Role = "inbox" | "sent" | "drafts" | "trash" | "junk" | "archive" | "all" | "flagged";
+export type Role = "inbox" | "sent" | "drafts" | "trash" | "junk" | "archive" | "all" | "flagged" | "important";
 export type Security = "tls" | "start_tls" | "plain";
 
 export type Address = { name: string | null; email: string };
 
 export type Server = { host: string; port: number; security: Security; trusted_cert?: string | null };
 
+export type Auth = { kind: "password" } | { kind: "o_auth2"; provider: "microsoft" | "google" } | { kind: "token" };
+
 export type Transport =
-  | { kind: "imap"; imap: Server; smtp: Server; username: string; auth: { kind: "password" } | { kind: "o_auth2"; provider: string } }
+  | { kind: "imap"; imap: Server; smtp: Server; username: string; auth: Auth }
   | { kind: "graph" }
-  | { kind: "jmap"; session_url: string; username: string; auth: { kind: "password" } };
+  | { kind: "jmap"; session_url: string; username: string; auth: Auth };
 
 export type ImapTransport = Extract<Transport, { kind: "imap" }>;
 
@@ -37,7 +39,10 @@ export type Problem =
   | { kind: "certificate"; host: string; fingerprint: string; detail: string }
   | { kind: "auth"; detail: string }
   | { kind: "app_password"; detail: string }
-  | { kind: "protocol"; detail: string };
+  | { kind: "protocol"; detail: string }
+  | { kind: "admin_consent"; detail: string }
+  | { kind: "smtp_auth_disabled"; detail: string }
+  | { kind: "proxy"; proxy: string; detail: string };
 
 export type AccountStatus =
   | { state: "connecting" }
@@ -66,7 +71,18 @@ export type Discovered = {
   username: string;
   source: "preset" | "autoconfig" | "ispdb" | "srv" | "mx" | "guess";
   provider: string | null;
-  hint: "app_password" | "enable_imap" | "mail_password" | "microsoft_sign_in" | null;
+  hint: "app_password" | "enable_imap" | "mail_password" | "microsoft_sign_in" | "google_app_password" | null;
+  /** The JMAP session resource, when the provider offers JMAP. */
+  jmap?: string | null;
+};
+
+/** The result of „Mit Microsoft anmelden“ (commands::MicrosoftSignIn). */
+export type MicrosoftSignIn = {
+  session: string | null;
+  email: string | null;
+  check: CheckResult | null;
+  problem: Problem | null;
+  error: string | null;
 };
 
 export type CheckResult = { imap: Problem | null; smtp: Problem | null; error: string | null; folders: number };
@@ -175,6 +191,25 @@ export type OutboxEntry = {
 export type ThemeChoice = "system" | "light" | "dark" | "contrast";
 export type LanguageChoice = "system" | "de" | "en";
 export type RemoteContent = "ask" | "trusted_senders" | "always";
+export type Prefetch = "none" | "recent" | "month";
+export type ProxyMode = "none" | "system" | "manual";
+
+/** A network profile (mail_core::network::ProxyProfile). */
+export type ProxyProfile = {
+  id: string;
+  name: string;
+  mode: ProxyMode;
+  http_proxy: string;
+  socks_proxy: string;
+  no_proxy: string;
+  proxy_user: string;
+};
+
+export type RouteGroup = "mail" | "sign_in" | "setup" | "updates";
+
+export type NetworkSettings = { profiles: ProxyProfile[]; routes: Partial<Record<RouteGroup, string>> };
+
+export type SystemProxy = { http: string | null; https: string | null; socks: string | null; bypass: string; source: string };
 
 export type Settings = {
   version: number;
@@ -187,6 +222,9 @@ export type Settings = {
   undo_send_secs: number;
   compose_rich_text: boolean;
   show_snippets: boolean;
+  prefetch: Prefetch;
+  subject_threads: boolean;
+  network: NetworkSettings;
 };
 
 export type AppInfo = {
@@ -197,4 +235,6 @@ export type AppInfo = {
   secret_store: { kind: "system" } | { kind: "file"; reason: string } | { kind: "unavailable" };
   /** A fixed „now“ in Unix seconds (screenshots only). */
   clock?: number | null;
+  /** This build can sign in with Microsoft (a client id was compiled in). */
+  microsoft_sign_in?: boolean;
 };

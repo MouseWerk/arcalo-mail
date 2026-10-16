@@ -56,7 +56,8 @@ export type KeyAction =
   | "markUnread"
   | "spam"
   | "escape"
-  | "settings";
+  | "settings"
+  | "palette";
 
 /** The shortcut a key press means, `null` for anything else. Typing in a field never counts
  *  (except Escape). */
@@ -64,6 +65,7 @@ export function keyAction(e: { key: string; ctrlKey: boolean; metaKey: boolean; 
   if (e.key === "Escape") return "escape";
   const mod = e.ctrlKey || e.metaKey;
   if (mod && e.key === ",") return "settings";
+  if (mod && e.key.toLowerCase() === "k") return "palette";
   if (mod && e.key.toLowerCase() === "n") return "compose";
   if (typing || mod || e.altKey) return null;
   switch (e.key) {

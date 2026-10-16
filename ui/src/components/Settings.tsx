@@ -1,14 +1,15 @@
-import { Bell, Info, Keyboard, Palette, PenLine, Shield, Trash2, UserRound, X, Plus } from "lucide-react";
+import { Bell, Info, Keyboard, LogIn, Network, Palette, PenLine, Shield, Trash2, UserRound, X, Plus } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 import { useT, type TKey } from "../lib/i18n";
-import { api } from "../lib/api";
-import type { AccountInfo, AppInfo, ImapTransport, LanguageChoice, Security, Server, Settings as SettingsT, ThemeChoice } from "../lib/types";
+import { api, pickSavePath } from "../lib/api";
+import { showToast } from "../lib/toasts";
+import type { AccountInfo, AppInfo, ImapTransport, LanguageChoice, MicrosoftSignIn, NetworkSettings, Prefetch, ProxyMode, ProxyProfile, RouteGroup, Security, Server, Settings as SettingsT, SystemProxy, ThemeChoice } from "../lib/types";
 import { explain } from "../lib/problems";
 import { ConfirmDialog, Segmented, Spinner, Switch, trapFocus } from "./ui";
-import { Setup } from "./Setup";
+import { ProblemCard, Setup } from "./Setup";
 import { useRef } from "react";
 
-export type SettingsSection = "accounts" | "appearance" | "reading" | "writing" | "notifications" | "privacy" | "shortcuts" | "about";
+export type SettingsSection = "accounts" | "appearance" | "reading" | "writing" | "notifications" | "privacy" | "network" | "shortcuts" | "about";
 
 const SECTIONS: [SettingsSection, TKey, typeof Bell][] = [
   ["accounts", "settings.accounts", UserRound],
@@ -17,6 +18,7 @@ const SECTIONS: [SettingsSection, TKey, typeof Bell][] = [
   ["writing", "settings.writing", PenLine],
   ["notifications", "settings.notifications", Bell],
   ["privacy", "settings.privacy", Shield],
+  ["network", "settings.network", Network],
   ["shortcuts", "settings.shortcuts", Keyboard],
   ["about", "settings.about", Info],
 ];
@@ -38,7 +40,21 @@ const SHORTCUTS: [string, TKey][] = [
   ["Shift+I / Shift+U", "keys.readUnread"],
   ["Ctrl+Enter", "keys.send"],
   ["Ctrl+,", "keys.settings"],
+  ["Ctrl+K", "keys.palette"],
 ];
+
+/** Asks where to save the diagnostics report and writes it. */
+export async function exportDiagnostics(t: ReturnType<typeof useT>): Promise<void> {
+  const name = `arcalo-mail-diagnose-${new Date().toISOString().slice(0, 10)}.txt`;
+  const path = await pickSavePath(name);
+  if (!path) return;
+  try {
+    await api.exportDiagnostics(path);
+    showToast({ title: t("toast.diagnosticsSaved", { name: path.split(/[\\/]/).pop() ?? name }), duration: 4000, tone: "success" });
+  } catch (e) {
+    showToast({ title: String(e), tone: "danger" });
+  }
+}
 
 function Row({ label, description, children }: { label: string; description?: string; children: ReactNode }) {
   return (
@@ -138,7 +154,9 @@ function AccountEditor({ a, onChanged, onRemoved }: { a: AccountInfo; onChanged:
           <textarea className="input textarea" rows={4} value={signature} onChange={(e) => setSignature(e.target.value)} onBlur={() => void saveProfile()} />
         </div>
       </div>
-      {transport && (
+      {a.transport.kind === "imap" && a.transport.auth.kind === "o_auth2" && <MicrosoftSignInRow a={a} />}
+      {a.transport.kind === "jmap" && <JmapRow a={a} />}
+      {transport && transport.auth.kind === "password" && (
         <div className="set-card">
           <div className="set-card-title">{t("settings.servers")}</div>
           <label className="stack-field">
@@ -182,6 +200,253 @@ function AccountEditor({ a, onChanged, onRemoved }: { a: AccountInfo; onChanged:
           onClose={() => setConfirm(false)}
         />
       )}
+    </div>
+  );
+}
+
+/** A Microsoft account: no servers to edit; signing in again in the browser. */
+function MicrosoftSignInRow({ a }: { a: AccountInfo }) {
+  const t = useT();
+  const [state, setState] = useState<{ busy: boolean; result: MicrosoftSignIn | null }>({ busy: false, result: null });
+  const r = state.result;
+  return (
+    <div className="set-card">
+      <Row label={t("settings.microsoftAccount")} description={t("settings.microsoftAccountHint")}>
+        <button
+          type="button"
+          className="btn"
+          disabled={state.busy}
+          onClick={() => {
+            setState({ busy: true, result: null });
+            void api.microsoftReauth(a.id).then(
+              (result) => setState({ busy: false, result }),
+              (e) => setState({ busy: false, result: { session: null, email: null, check: null, problem: null, error: String(e) } }),
+            );
+          }}
+        >
+          {state.busy ? <Spinner /> : <LogIn size={14} strokeWidth={1.75} aria-hidden />}
+          <span>{t("settings.signInAgain")}</span>
+        </button>
+      </Row>
+      {r?.problem && <ProblemCard which="microsoft" p={r.problem} />}
+      {r?.error && (
+        <p className="field-error" role="alert">
+          {r.error}
+        </p>
+      )}
+    </div>
+  );
+}
+
+/** A JMAP account: its address and a new password or token. */
+function JmapRow({ a }: { a: AccountInfo }) {
+  const t = useT();
+  const [password, setPassword] = useState("");
+  const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null);
+  if (a.transport.kind !== "jmap") return null;
+  const tr = a.transport;
+  const save = async () => {
+    const r = await api.checkJmap(tr.session_url, tr.username, password, tr.auth.kind === "token");
+    const p = r.imap;
+    if (p || r.error) {
+      const e = p ? explain(p) : null;
+      setMessage({ ok: false, text: e ? `${t(e.title, e.vars)} – ${t(e.hint, e.vars)}` : (r.error ?? "") });
+      return;
+    }
+    await api.signIn(a.id, password);
+    setPassword("");
+    setMessage({ ok: true, text: t("settings.serversSaved") });
+  };
+  return (
+    <div className="set-card">
+      <div className="set-card-title">{t("settings.servers")}</div>
+      <Row label={t("settings.jmapServer")}>
+        <code className="set-code">{tr.session_url}</code>
+      </Row>
+      <label className="stack-field">
+        <span className="field-label">{tr.auth.kind === "token" ? t("setup.apiToken") : t("settings.newPassword")}</span>
+        <input className="input" type="password" value={password} placeholder={t("settings.newPasswordHint")} onChange={(e) => setPassword(e.target.value)} />
+      </label>
+      {message && (
+        <p className={message.ok ? "field-ok" : "field-error"} role={message.ok ? "status" : "alert"}>
+          {message.text}
+        </p>
+      )}
+      <div className="set-actions">
+        <button type="button" className="btn btn-primary" disabled={!password} onClick={() => void save()}>
+          {t("settings.checkAndSave")}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+const ROUTES: [RouteGroup, TKey][] = [
+  ["mail", "net.routeMail"],
+  ["sign_in", "net.routeSignIn"],
+  ["setup", "net.routeSetup"],
+  ["updates", "net.routeUpdates"],
+];
+
+/** Settings → Netzwerk: proxy profiles as in Arcalo, and which connection uses which. */
+function NetworkSection({ net, onChange }: { net: NetworkSettings; onChange: (n: NetworkSettings) => void }) {
+  const t = useT();
+  const [system, setSystem] = useState<SystemProxy | null>(null);
+  const [draft, setDraft] = useState<NetworkSettings>(net);
+  const [passwords, setPasswords] = useState<Record<string, string>>({});
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => setDraft(net), [net]);
+  useEffect(() => {
+    void api.systemProxy().then(setSystem);
+  }, []);
+  const commit = (n: NetworkSettings) => {
+    const manualWithout = n.profiles.find((p) => p.mode === "manual" && !p.http_proxy.trim() && !p.socks_proxy.trim());
+    setDraft(n);
+    if (manualWithout) return;
+    setError(null);
+    onChange(n);
+  };
+  const setProfile = (i: number, patch: Partial<ProxyProfile>, save: boolean) => {
+    const next = { ...draft, profiles: draft.profiles.map((p, j) => (j === i ? { ...p, ...patch } : p)) };
+    if (save) commit(next);
+    else setDraft(next);
+  };
+  const add = () => {
+    let n = draft.profiles.length;
+    const ids = new Set(draft.profiles.map((p) => p.id));
+    while (ids.has(`profil-${n}`)) n++;
+    commit({
+      ...draft,
+      profiles: [...draft.profiles, { id: `profil-${n}`, name: t("net.newName", { n }), mode: "manual", http_proxy: "", socks_proxy: "", no_proxy: "localhost, 127.0.0.1, ::1", proxy_user: "" }],
+    });
+  };
+  const remove = (id: string) => {
+    const routes = Object.fromEntries(Object.entries(draft.routes).filter(([, v]) => v !== id));
+    commit({ profiles: draft.profiles.filter((p) => p.id !== id), routes });
+  };
+  const sys = system && (system.http || system.https || system.socks);
+  return (
+    <div className="set-section">
+      <p className="muted set-intro">{t("net.profilesHint")}</p>
+      {draft.profiles.map((p, i) => (
+        <div className="set-card" key={p.id}>
+          <div className="set-card-head">
+            <input
+              className="input set-card-name"
+              aria-label={t("net.name")}
+              value={p.name}
+              disabled={p.id === "standard"}
+              onChange={(e) => setProfile(i, { name: e.target.value }, false)}
+              onBlur={() => commit(draft)}
+            />
+            {p.id !== "standard" && (
+              <button type="button" className="btn btn-danger-quiet btn-sm" onClick={() => remove(p.id)}>
+                <Trash2 size={14} strokeWidth={1.75} aria-hidden />
+                <span>{t("net.remove")}</span>
+              </button>
+            )}
+          </div>
+          <Row label={t("net.mode")}>
+            <Segmented<ProxyMode>
+              label={t("net.mode")}
+              value={p.mode}
+              onChange={(mode) => setProfile(i, { mode }, true)}
+              options={[
+                ["none", t("net.modeNone")],
+                ["system", t("net.modeSystem")],
+                ["manual", t("net.modeManual")],
+              ]}
+            />
+          </Row>
+          {p.mode === "system" && (
+            <div className="set-row set-row-stack">
+              <div className="set-text">
+                <div className="set-label">{t("net.system")}</div>
+                <div className="set-desc">
+                  {sys ? `${[system?.https ?? system?.http, system?.socks].filter(Boolean).join(", ")} – ${t("net.systemFrom", { source: system?.source ?? "" })}` : t("net.systemNone")}
+                </div>
+                <div className="set-desc">{t("net.systemMail")}</div>
+              </div>
+            </div>
+          )}
+          {p.mode === "manual" && (
+            <div className="set-fields">
+              <label className="stack-field">
+                <span className="field-label">{t("net.httpProxy")}</span>
+                <input className="input" value={p.http_proxy} placeholder={t("net.proxyPlaceholder")} spellCheck={false} onChange={(e) => setProfile(i, { http_proxy: e.target.value }, false)} onBlur={() => commit(draft)} />
+              </label>
+              <label className="stack-field">
+                <span className="field-label">{t("net.socksProxy")}</span>
+                <input className="input" value={p.socks_proxy} placeholder={t("net.proxyPlaceholder")} spellCheck={false} onChange={(e) => setProfile(i, { socks_proxy: e.target.value }, false)} onBlur={() => commit(draft)} />
+              </label>
+              <label className="stack-field">
+                <span className="field-label">{t("net.noProxy")}</span>
+                <input className="input" value={p.no_proxy} spellCheck={false} onChange={(e) => setProfile(i, { no_proxy: e.target.value }, false)} onBlur={() => commit(draft)} />
+                <span className="field-hint">{t("net.noProxyHint")}</span>
+              </label>
+              <label className="stack-field">
+                <span className="field-label">{t("net.user")}</span>
+                <input className="input" value={p.proxy_user} spellCheck={false} onChange={(e) => setProfile(i, { proxy_user: e.target.value }, false)} onBlur={() => commit(draft)} />
+              </label>
+              {p.proxy_user.trim() && (
+                <label className="stack-field">
+                  <span className="field-label">{t("net.password")}</span>
+                  <input
+                    className="input"
+                    type="password"
+                    value={passwords[p.id] ?? ""}
+                    onChange={(e) => setPasswords({ ...passwords, [p.id]: e.target.value })}
+                    onBlur={() => {
+                      const pw = passwords[p.id];
+                      if (pw === undefined) return;
+                      void api.setProxyPassword(p.id, pw).then(
+                        () => showToast({ title: t("net.passwordSaved"), duration: 2500, tone: "success" }),
+                        (e) => setError(String(e)),
+                      );
+                    }}
+                  />
+                  <span className="field-hint">{t("net.passwordHint")}</span>
+                </label>
+              )}
+            </div>
+          )}
+        </div>
+      ))}
+      <div className="set-actions set-actions-left">
+        <button type="button" className="btn" onClick={add}>
+          <Plus size={14} strokeWidth={1.75} aria-hidden />
+          <span>{t("net.add")}</span>
+        </button>
+      </div>
+      {error && (
+        <p className="field-error" role="alert">
+          {error}
+        </p>
+      )}
+      <div className="set-card">
+        <div className="set-card-title">{t("net.routes")}</div>
+        {ROUTES.map(([group, label]) => (
+          <Row key={group} label={t(label)}>
+            <select
+              className="select"
+              aria-label={t(label)}
+              value={draft.routes[group] ?? "standard"}
+              onChange={(e) => {
+                const routes = { ...draft.routes };
+                if (e.target.value === "standard") delete routes[group];
+                else routes[group] = e.target.value;
+                commit({ ...draft, routes });
+              }}
+            >
+              {draft.profiles.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+          </Row>
+        ))}
+      </div>
     </div>
   );
 }
@@ -307,6 +572,9 @@ export function SettingsView({ settings, accounts, info, section, onSection, onC
                 <Row label={t("settings.threads")} description={t("settings.threadsHint")}>
                   <Switch label={t("settings.threads")} checked={settings.threads} onChange={(threads) => onChange({ threads })} />
                 </Row>
+                <Row label={t("settings.subjectThreads")} description={t("settings.subjectThreadsHint")}>
+                  <Switch label={t("settings.subjectThreads")} checked={settings.subject_threads} onChange={(subject_threads) => onChange({ subject_threads })} />
+                </Row>
                 <Row label={t("settings.snippets")} description={t("settings.snippetsHint")}>
                   <Switch label={t("settings.snippets")} checked={settings.show_snippets} onChange={(show_snippets) => onChange({ show_snippets })} />
                 </Row>
@@ -326,8 +594,16 @@ export function SettingsView({ settings, accounts, info, section, onSection, onC
                     <option value="never">{t("settings.markReadNever")}</option>
                   </select>
                 </Row>
+                <Row label={t("settings.prefetch")} description={t("settings.prefetchHint")}>
+                  <select className="select" aria-label={t("settings.prefetch")} value={settings.prefetch} onChange={(e) => onChange({ prefetch: e.target.value as Prefetch })}>
+                    <option value="none">{t("settings.prefetchNone")}</option>
+                    <option value="recent">{t("settings.prefetchRecent")}</option>
+                    <option value="month">{t("settings.prefetchMonth")}</option>
+                  </select>
+                </Row>
               </div>
             )}
+            {section === "network" && <NetworkSection net={settings.network} onChange={(network) => onChange({ network })} />}
             {section === "writing" && (
               <div className="set-card">
                 <Row label={t("settings.richText")} description={t("settings.richTextHint")}>
@@ -425,6 +701,11 @@ export function SettingsView({ settings, accounts, info, section, onSection, onC
                 </Row>
                 <Row label={t("settings.license")} description={t("settings.licenseText")}>
                   <span />
+                </Row>
+                <Row label={t("settings.diagnostics")} description={t("settings.diagnosticsHint")}>
+                  <button type="button" className="btn" onClick={() => void exportDiagnostics(t)}>
+                    {t("settings.exportDiagnostics")}
+                  </button>
                 </Row>
               </div>
             )}

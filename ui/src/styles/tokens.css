@@ -91,6 +91,7 @@
   /* Dialogs, the settings panel, the setup card. */
   --dialog-w: 440px;
   --dialog-w-wide: 640px;
+  --palette-list-h: 380px;
   --settings-w: 940px;
   --settings-h: 680px;
   --settings-nav-w: 220px;

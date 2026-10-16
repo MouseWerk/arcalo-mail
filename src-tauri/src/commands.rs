@@ -3,7 +3,9 @@
 
 use base64::Engine;
 use mail_core::Error;
-use mail_core::account::{Account, AccountDraft, Auth, SecretKind, Transport, secret_key};
+use mail_core::account::{
+    Account, AccountDraft, Auth, Credential, OAuthProvider, Provider, SecretKind, Transport, secret_key,
+};
 use mail_core::actions::{self, MessageView, Undo};
 use mail_core::autoconfig::{Discovered, Lookup};
 use mail_core::compose::{Draft, FileAttachment, mime_for};
@@ -29,6 +31,8 @@ pub struct AppInfo {
     /// A fixed „now“ (Unix seconds) for the screenshot generator, from `ARCALO_MAIL_NOW`; the UI
     /// formats dates against it. Unset in normal use.
     clock: Option<i64>,
+    /// This build has a Microsoft client id (`ARCALO_MAIL_MS_CLIENT_ID`, docs/microsoft.md).
+    microsoft_sign_in: bool,
 }
 
 #[tauri::command]
@@ -40,6 +44,7 @@ pub fn app_info() -> AppInfo {
         locale: crate::system_locale(),
         secret_store: secrets::kind(),
         clock: std::env::var("ARCALO_MAIL_NOW").ok().and_then(|v| v.parse().ok()),
+        microsoft_sign_in: mail_core::oauth::microsoft_client_id().is_some(),
     }
 }
 
@@ -48,22 +53,69 @@ pub fn get_settings(state: State<'_, AppState>) -> Res<Settings> {
     mail_core::settings::load(&state.store())
 }
 
-/// Applies at once; the UI keeps the previous value for „Rückgängig“.
+/// Applies at once; the UI keeps the previous value for „Rückgängig“. New network profiles
+/// reconnect every account through them.
 #[tauri::command]
-pub fn set_settings(state: State<'_, AppState>, settings: Settings) -> Res<()> {
+pub fn set_settings(app: AppHandle, state: State<'_, AppState>, settings: Settings) -> Res<()> {
+    settings.network.validate()?;
+    let before = mail_core::settings::load(&state.store())?;
     mail_core::settings::save(&state.store(), &settings)?;
     apply_language(settings.language);
+    #[cfg(desktop)]
+    if before.language != settings.language {
+        crate::tray::refresh(&app);
+    }
+    if before.network != settings.network {
+        crate::apply_network(&settings.network);
+        crate::reconnect_all(&app);
+    }
+    if before.prefetch != settings.prefetch || before.subject_threads != settings.subject_threads {
+        state.all_workers().iter().for_each(|w| w.send(Command::SyncNow));
+    }
     Ok(())
+}
+
+/// The password of a proxy profile, into the credential store.
+#[tauri::command]
+pub fn set_proxy_password(app: AppHandle, state: State<'_, AppState>, profile: String, password: String) -> Res<()> {
+    let key = mail_core::network::proxy_password_key(&profile);
+    if password.is_empty() {
+        secrets::delete(&key)?
+    } else {
+        secrets::set(&key, &password)?
+    }
+    crate::apply_network(&mail_core::settings::load(&state.store())?.network);
+    crate::reconnect_all(&app);
+    Ok(())
+}
+
+/// The system's proxy as the app sees it (Settings → Netzwerk).
+#[tauri::command]
+pub fn system_proxy() -> mail_core::network::SystemProxy {
+    mail_core::network::system_proxy()
+}
+
+/// Writes the diagnostics report (redacted, `mail_core::diag`) where the user chose.
+#[tauri::command]
+pub fn export_diagnostics(state: State<'_, AppState>, path: String) -> Res<()> {
+    let info = serde_json::to_value(app_info()).unwrap_or_default();
+    let text = mail_core::diag::report(&state.store(), &info)?;
+    std::fs::write(&path, text).map_err(|e| Error::Invalid(e.to_string()))
 }
 
 // ---------------------------------------------------------------------------- accounts
 
 /// Where setup looks for the servers. `ARCALO_MAIL_AUTOCONFIG` (the e2e tests and the screenshot
-/// generator) points the lookup at the test server on this computer instead; the network
-/// policy still refuses anything but HTTPS or loopback.
+/// generator) points the lookup at the test server on this computer instead, and
+/// `ARCALO_MAIL_JMAP_DISCOVERY` the JMAP lookup (none without it); the network policy still
+/// refuses anything but HTTPS or loopback.
 fn lookup() -> Lookup {
     match std::env::var("ARCALO_MAIL_AUTOCONFIG") {
-        Ok(url) if !url.is_empty() => Lookup { autoconfig: vec![url.clone()], ispdb: url, dns: false },
+        Ok(url) if !url.is_empty() => {
+            let jmap: Vec<String> =
+                std::env::var("ARCALO_MAIL_JMAP_DISCOVERY").ok().filter(|u| !u.is_empty()).into_iter().collect();
+            Lookup { autoconfig: vec![url.clone()], ispdb: url, dns: false, jmap_lookup: !jmap.is_empty(), jmap }
+        }
         _ => Lookup::default(),
     }
 }
@@ -115,7 +167,10 @@ pub fn add_account(app: AppHandle, state: State<'_, AppState>, draft: AccountDra
     let account = {
         let store = state.store();
         let id = store.add_account(&draft)?;
-        let wants_password = matches!(draft.transport, Transport::Imap { auth: Auth::Password, .. });
+        let wants_password = matches!(
+            draft.transport,
+            Transport::Imap { auth: Auth::Password, .. } | Transport::Jmap { auth: Auth::Password | Auth::Token, .. }
+        );
         if wants_password
             && !password.is_empty()
             && let Err(e) = secrets::set(&secret_key(id, SecretKind::Password), &password)
@@ -194,6 +249,140 @@ pub fn sync_now(state: State<'_, AppState>, account_id: Option<i64>) -> Res<()> 
         None => state.all_workers().iter().for_each(|w| w.send(Command::SyncNow)),
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------- sign-in with Microsoft
+
+/// The result of signing in with Microsoft in the browser: the account's address and the check
+/// of its servers, or why it did not work.
+#[derive(Serialize)]
+pub struct MicrosoftSignIn {
+    /// Hands the tokens to `add_microsoft_account` (kept in memory only).
+    session: Option<String>,
+    email: Option<String>,
+    check: Option<CheckResult>,
+    problem: Option<mail_core::network::Problem>,
+    error: Option<String>,
+}
+
+fn sign_in_failed(e: Error) -> MicrosoftSignIn {
+    let (problem, error) = match e {
+        Error::Connection(p) => (Some(p), None),
+        other => (None, Some(other.to_string())),
+    };
+    MicrosoftSignIn { session: None, email: None, check: None, problem, error }
+}
+
+/// Opens Microsoft's sign-in in the browser and waits for it.
+async fn browser_sign_in(app: &AppHandle, hint: &str) -> Res<mail_core::oauth::Tokens> {
+    use tauri_plugin_opener::OpenerExt;
+    let cfg = mail_core::oauth::config_for(OAuthProvider::Microsoft)?;
+    mail_core::oauth::sign_in(&cfg, hint, |url| {
+        app.opener().open_url(url, None::<&str>).map_err(|e| Error::Invalid(e.to_string()))
+    })
+    .await
+}
+
+/// „Mit Microsoft anmelden“: the browser sign-in, then IMAP and SMTP checked with the token.
+#[tauri::command]
+pub async fn microsoft_sign_in(app: AppHandle, state: State<'_, AppState>, email: String) -> Res<MicrosoftSignIn> {
+    let tokens = match browser_sign_in(&app, &email).await {
+        Ok(t) => t,
+        Err(e) => return Ok(sign_in_failed(e)),
+    };
+    let address = tokens.email.clone().filter(|e| e.contains('@')).unwrap_or_else(|| email.trim().to_string());
+    let transport = mail_core::account::preset(Provider::Microsoft, &address)?;
+    let check =
+        mail_core::engine::check_account_with(&transport, &Credential::XOAuth2(tokens.access_token.clone())).await;
+    let session = format!(
+        "ms-{}-{}",
+        mail_core::store::now(),
+        state.pending_oauth.lock().unwrap_or_else(|e| e.into_inner()).len()
+    );
+    state.pending_oauth.lock().unwrap_or_else(|e| e.into_inner()).insert(session.clone(), tokens);
+    Ok(MicrosoftSignIn { session: Some(session), email: Some(address), check: Some(check), problem: None, error: None })
+}
+
+/// Stores the account of a finished Microsoft sign-in with its refresh token.
+#[tauri::command]
+pub fn add_microsoft_account(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    session: String,
+    name: String,
+) -> Res<Account> {
+    let tokens = state.pending_oauth.lock().unwrap_or_else(|e| e.into_inner()).remove(&session).ok_or_else(|| {
+        Error::Invalid(mail_core::tr!("Bitte melde dich noch einmal an.", "Please sign in again.").into())
+    })?;
+    let email = tokens.email.clone().unwrap_or_default();
+    let refresh = tokens.refresh_token.clone().ok_or_else(|| {
+        Error::Invalid(
+            mail_core::tr!("Microsoft hat keinen dauerhaften Zugang erteilt.", "Microsoft granted no lasting access.")
+                .into(),
+        )
+    })?;
+    let draft = AccountDraft {
+        provider: Provider::Microsoft,
+        name: String::new(),
+        email: email.clone(),
+        sender_name: name.trim().to_string(),
+        transport: mail_core::account::preset(Provider::Microsoft, &email)?,
+    };
+    let account = {
+        let store = state.store();
+        let id = store.add_account(&draft)?;
+        if let Err(e) = secrets::set(&secret_key(id, SecretKind::RefreshToken), &refresh) {
+            store.remove_account(id)?;
+            return Err(e);
+        }
+        store.account(id)?
+    };
+    start_worker(&app, &account);
+    Ok(account)
+}
+
+/// „Anmelden“ for a Microsoft account whose access ended (revoked, password changed).
+#[tauri::command]
+pub async fn microsoft_reauth(app: AppHandle, state: State<'_, AppState>, id: i64) -> Res<MicrosoftSignIn> {
+    let email = state.store().account(id)?.email;
+    let tokens = match browser_sign_in(&app, &email).await {
+        Ok(t) => t,
+        Err(e) => return Ok(sign_in_failed(e)),
+    };
+    let Some(refresh) = tokens.refresh_token.clone() else {
+        return Ok(sign_in_failed(Error::Invalid("no refresh token".into())));
+    };
+    secrets::set(&secret_key(id, SecretKind::RefreshToken), &refresh)?;
+    match state.worker(id) {
+        Some(w) => w.send(Command::SignedIn(refresh)),
+        None => {
+            let account = state.store().account(id)?;
+            start_worker(&app, &account);
+        }
+    }
+    Ok(MicrosoftSignIn { session: None, email: tokens.email, check: None, problem: None, error: None })
+}
+
+/// Signs in to a JMAP server (password with Basic, or an API token with Bearer) and counts
+/// the folders, as `check_account` does for IMAP.
+#[tauri::command]
+pub async fn check_jmap(session_url: String, username: String, password: String, token: bool) -> Res<CheckResult> {
+    let auth = if token {
+        mail_core::jmap::JmapAuth::Bearer(password)
+    } else {
+        mail_core::jmap::JmapAuth::Basic { user: username, password }
+    };
+    Ok(match mail_core::jmap::check(&session_url, &auth).await {
+        Ok(folders) => CheckResult { imap: None, smtp: None, error: None, folders },
+        Err(Error::Connection(p)) => CheckResult { imap: Some(p), smtp: None, error: None, folders: 0 },
+        Err(Error::Network(t)) => CheckResult {
+            imap: Some(mail_core::network::Problem::Protocol { detail: t }),
+            smtp: None,
+            error: None,
+            folders: 0,
+        },
+        Err(e) => CheckResult { imap: None, smtp: None, error: Some(e.to_string()), folders: 0 },
+    })
 }
 
 // ---------------------------------------------------------------------------- folders and lists

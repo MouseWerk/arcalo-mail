@@ -5,6 +5,7 @@ import { frameCsp, frameDocument, openableLink } from "./mailframe";
 import { emptyDraft, isEmpty, isValidAddress, prefixed, replyDraft, splitAddresses, toDraft } from "./compose";
 import { clickSelect, keyAction, pagesFor, visibleRange } from "./listing";
 import { explain, hintKey } from "./problems";
+import { score } from "./palette";
 import { resolveTheme } from "./theme";
 import type { MessageView } from "./types";
 
@@ -179,5 +180,30 @@ describe("theme", () => {
     expect(resolveTheme("system", false, false)).toBe("light");
     expect(resolveTheme("system", false, true)).toBe("contrast");
     expect(resolveTheme("light", true, true)).toBe("light");
+  });
+});
+
+describe("milestone 2", () => {
+  it("opens the command palette with Ctrl or Cmd+K, also while typing", () => {
+    const key = (k: string, mods: Partial<{ ctrlKey: boolean; metaKey: boolean }> = {}) => ({ key: k, ctrlKey: false, metaKey: false, altKey: false, shiftKey: false, ...mods });
+    expect(keyAction(key("k", { ctrlKey: true }), true)).toBe("palette");
+    expect(keyAction(key("K", { metaKey: true }), false)).toBe("palette");
+    expect(keyAction(key("k"), false)).toBe("prev");
+  });
+
+  it("ranks palette commands by word starts", () => {
+    expect(score("Gehe zu Posteingang", "post")).toBeGreaterThanOrEqual(0);
+    expect(score("Gehe zu Posteingang", "eingang")).toBeGreaterThan(score("Gehe zu Posteingang", "post"));
+    expect(score("Neue Nachricht schreiben", "neu nach")).toBeGreaterThanOrEqual(0);
+    expect(score("Neue Nachricht schreiben", "xyz")).toBe(-1);
+    expect(score("anything", "")).toBe(0);
+  });
+
+  it("explains the Microsoft and proxy problems", () => {
+    expect(explain({ kind: "admin_consent", detail: "AADSTS65001" }).title).toBe("problem.adminConsent");
+    expect(explain({ kind: "smtp_auth_disabled", detail: "535 5.7.139" }).hint).toBe("problem.smtpAuthDisabledHint");
+    const p = explain({ kind: "proxy", proxy: "http://proxy:3128", detail: "403" });
+    expect([p.title, p.vars.proxy, p.detail]).toEqual(["problem.proxy", "http://proxy:3128", "403"]);
+    expect(hintKey("google_app_password")).toBeNull();
   });
 });

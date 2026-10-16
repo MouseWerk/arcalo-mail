@@ -16,8 +16,10 @@ import type {
   Mailbox,
   MessageSummary,
   MessageView,
+  MicrosoftSignIn,
   Notice,
   OutboxEntry,
+  SystemProxy,
   Page,
   Queued,
   Settings,
@@ -46,6 +48,15 @@ export const api = {
     call<void>("update_servers", { id, transport, password }, () => undefined),
   removeAccount: (id: number) => call<void>("remove_account", { id }, () => demo.removeAccount(id)),
   signIn: (id: number, password: string) => call<void>("sign_in", { id, password }, () => undefined),
+  microsoftSignIn: (email: string) => call<MicrosoftSignIn>("microsoft_sign_in", { email }, () => demo.microsoftSignIn(email)),
+  addMicrosoftAccount: (session: string, name: string) =>
+    call<Account>("add_microsoft_account", { session, name }, () => demo.addMicrosoftAccount(session, name)),
+  microsoftReauth: (id: number) => call<MicrosoftSignIn>("microsoft_reauth", { id }, () => demo.microsoftSignIn("")),
+  checkJmap: (sessionUrl: string, username: string, password: string, token: boolean) =>
+    call<CheckResult>("check_jmap", { sessionUrl, username, password, token }, () => demo.check(password)),
+  setProxyPassword: (profile: string, password: string) => call<void>("set_proxy_password", { profile, password }, () => undefined),
+  systemProxy: () => call<SystemProxy>("system_proxy", {}, () => ({ http: null, https: null, socks: null, bypass: "", source: "browser" })),
+  exportDiagnostics: (path: string) => call<void>("export_diagnostics", { path }, () => undefined),
   accounts: () => call<AccountInfo[]>("list_accounts", {}, () => demo.accounts()),
   syncNow: (accountId: number | null) => call<void>("sync_now", { accountId }, () => undefined),
 
@@ -99,6 +110,23 @@ export function onNotice(f: (n: Notice) => void): () => void {
   let cancelled = false;
   void import("@tauri-apps/api/event").then(({ listen }) =>
     listen<Notice>("mail-notice", (e) => f(e.payload)).then((un) => {
+      if (cancelled) un();
+      else stop = un;
+    }),
+  );
+  return () => {
+    cancelled = true;
+    stop?.();
+  };
+}
+
+/** Calls `f` with the tray menu's actions (`compose`); returns the unsubscribe function. */
+export function onTrayAction(f: (action: string) => void): () => void {
+  if (!inApp()) return () => {};
+  let stop: (() => void) | null = null;
+  let cancelled = false;
+  void import("@tauri-apps/api/event").then(({ listen }) =>
+    listen<string>("tray-action", (e) => f(e.payload)).then((un) => {
       if (cancelled) un();
       else stop = un;
     }),

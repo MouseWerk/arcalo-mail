@@ -1,5 +1,6 @@
 import {
   Archive,
+  Bookmark,
   CircleAlert,
   FileText,
   Flag,
@@ -34,6 +35,7 @@ const ROLE: Record<Role, { icon: IconType; label: TKey }> = {
   trash: { icon: Trash2, label: "folder.trash" },
   all: { icon: Mails, label: "folder.all" },
   flagged: { icon: Flag, label: "folder.flagged" },
+  important: { icon: Bookmark, label: "folder.important" },
 };
 
 /** The name shown for a folder: the role's name, else the last part of its path. */

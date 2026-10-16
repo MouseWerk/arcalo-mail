@@ -12,6 +12,7 @@ import type {
   Discovered,
   Mailbox,
   MessageSummary,
+  MicrosoftSignIn,
   MessageView,
   Notice,
   Page,
@@ -103,6 +104,12 @@ let settings: Settings = {
   undo_send_secs: 5,
   compose_rich_text: true,
   show_snippets: true,
+  prefetch: "recent",
+  subject_threads: true,
+  network: {
+    profiles: [{ id: "standard", name: "Standard", mode: "system", http_proxy: "", socks_proxy: "", no_proxy: "localhost, 127.0.0.1, ::1", proxy_user: "" }],
+    routes: {},
+  },
 };
 const listeners = new Set<(n: Notice) => void>();
 
@@ -117,7 +124,30 @@ function counts(): Mailbox[] {
 }
 
 export const demo = {
-  appInfo: (): AppInfo => ({ version: "0.1.0", platform: "browser", schema: 2, locale: navigator.language, secret_store: { kind: "system" }, clock: null }),
+  appInfo: (): AppInfo => ({
+    version: "0.1.0",
+    platform: "browser",
+    schema: 3,
+    locale: navigator.language,
+    secret_store: { kind: "system" },
+    clock: null,
+    microsoft_sign_in: true,
+  }),
+  microsoftSignIn: (email: string): MicrosoftSignIn => ({
+    session: "demo",
+    email: email || "maria@outlook.example",
+    check: { imap: null, smtp: null, error: null, folders: 6 },
+    problem: null,
+    error: null,
+  }),
+  addMicrosoftAccount: (_session: string, name: string): Account =>
+    demo.addAccount({
+      provider: "microsoft",
+      name: "",
+      email: "maria@outlook.example",
+      sender_name: name,
+      transport: { ...(transport("maria@outlook.example") as Extract<Account["transport"], { kind: "imap" }>), auth: { kind: "o_auth2", provider: "microsoft" } },
+    }),
   settings: (): Settings => settings,
   saveSettings: (s: Settings) => {
     settings = s;
@@ -131,6 +161,7 @@ export const demo = {
       source: "autoconfig",
       provider: null,
       hint: null,
+      jmap: null,
     };
   },
   check: (password: string): CheckResult =>
