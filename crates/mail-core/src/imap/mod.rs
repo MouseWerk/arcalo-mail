@@ -35,6 +35,10 @@ pub struct Capabilities {
     pub moves: bool,
     /// RFC 6154: `\Sent`, `\Trash` … on folders.
     pub special_use: bool,
+    /// Gmail (`X-GM-EXT-1`): labels are folders, `[Gmail]/All Mail` holds every message once
+    /// more, sent mail is filed by the server.
+    #[serde(default)]
+    pub gmail: bool,
 }
 
 impl Capabilities {
@@ -50,6 +54,7 @@ impl Capabilities {
                 "UIDPLUS" => c.uidplus = true,
                 "MOVE" => c.moves = true,
                 "SPECIAL-USE" => c.special_use = true,
+                "X-GM-EXT-1" => c.gmail = true,
                 _ => {}
             }
         }
@@ -69,6 +74,8 @@ pub enum Role {
     Archive,
     All,
     Flagged,
+    /// Gmail's „Important“ (RFC 8457 `\Important`).
+    Important,
 }
 
 impl Role {
@@ -82,13 +89,30 @@ impl Role {
             Role::Archive => "archive",
             Role::All => "all",
             Role::Flagged => "flagged",
+            Role::Important => "important",
         }
     }
 
     pub fn parse(s: &str) -> Option<Role> {
-        [Role::Inbox, Role::Sent, Role::Drafts, Role::Trash, Role::Junk, Role::Archive, Role::All, Role::Flagged]
-            .into_iter()
-            .find(|r| r.as_str() == s)
+        Role::ALL.into_iter().find(|r| r.as_str() == s)
+    }
+
+    pub const ALL: [Role; 9] = [
+        Role::Inbox,
+        Role::Sent,
+        Role::Drafts,
+        Role::Trash,
+        Role::Junk,
+        Role::Archive,
+        Role::All,
+        Role::Flagged,
+        Role::Important,
+    ];
+
+    /// Folders that only show messages of other folders again (Gmail's All Mail, Starred and
+    /// Important): their bodies are not fetched ahead, and search shows the other copy.
+    pub fn is_virtual(self) -> bool {
+        matches!(self, Role::All | Role::Flagged | Role::Important)
     }
 
     /// From the SPECIAL-USE attributes, else from common names of servers without them.
@@ -98,6 +122,7 @@ impl Role {
         }
         for a in attributes {
             let r = match a.to_ascii_lowercase().as_str() {
+                "\\inbox" => Role::Inbox,
                 "\\sent" => Role::Sent,
                 "\\drafts" => Role::Drafts,
                 "\\trash" => Role::Trash,
@@ -105,6 +130,7 @@ impl Role {
                 "\\archive" => Role::Archive,
                 "\\all" => Role::All,
                 "\\flagged" => Role::Flagged,
+                "\\important" => Role::Important,
                 _ => continue,
             };
             return Some(r);
@@ -341,7 +367,8 @@ mod tests {
     fn capabilities() {
         let c = Capabilities::parse(["IMAP4rev1", "idle", "QRESYNC", "MOVE", "AUTH=XOAUTH2"]);
         assert!(c.idle && c.qresync && c.condstore && c.moves);
-        assert!(!c.uidplus && !c.special_use);
+        assert!(!c.uidplus && !c.special_use && !c.gmail);
+        assert!(Capabilities::parse(["X-GM-EXT-1"]).gmail);
         assert_eq!(Capabilities::parse([]), Capabilities::default());
     }
 
@@ -359,9 +386,9 @@ mod tests {
         assert_eq!(e("Papierkorb", &[]).role(), Some(Role::Trash));
         assert_eq!(e("Projekte", &[]).role(), None);
         assert!(!e("[Gmail]", &["\\Noselect"]).selectable());
-        for r in
-            [Role::Inbox, Role::Sent, Role::Drafts, Role::Trash, Role::Junk, Role::Archive, Role::All, Role::Flagged]
-        {
+        assert_eq!(e("[Gmail]/Wichtig", &["\\Important"]).role(), Some(Role::Important));
+        assert_eq!(e("Posteingang", &["\\Inbox"]).role(), Some(Role::Inbox));
+        for r in Role::ALL {
             assert_eq!(Role::parse(r.as_str()), Some(r));
         }
     }

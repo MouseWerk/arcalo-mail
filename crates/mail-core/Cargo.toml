@@ -26,7 +26,7 @@ mail-parser = "0.11.9"
 # imap-proto's parser combinators: tells a half-received answer from a broken one.
 nom = "8.0.0"
 # HTTPS for the autoconfig lookups (`network::client_for`), rustls with the platform verifier.
-reqwest = { version = "0.13.5", default-features = false, features = ["rustls"] }
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "socks"] }
 roxmltree = "0.20.0"
 # The local store: SQLite with FTS5 (part of the bundled build). Arcalo builds SQLCipher instead;
 # Arcalo Mail switches to `bundled-sqlcipher` when encryption at rest lands (docs/plan.md).
@@ -39,6 +39,10 @@ sha2 = "0.10.9"
 thiserror = "2.0.20"
 tokio = { version = "1.53.1", features = ["rt", "net", "io-util", "time", "macros", "sync"] }
 tokio-rustls = { version = "0.26.5", default-features = false, features = ["aws_lc_rs", "tls12"] }
+
+# The system proxy of the Windows Internet settings (`network::system_proxy`).
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Registry"] }
 
 [dev-dependencies]
 tokio = { version = "1.53.1", features = ["rt", "rt-multi-thread", "macros"] }

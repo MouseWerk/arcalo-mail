@@ -404,3 +404,139 @@ async fn the_worker_end_to_end() {
     drop(worker);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Microsoft's way in: OAuth tokens from the test server's identity provider, XOAUTH2 on IMAP
+/// and SMTP, a refresh when the server refuses the access token, and Exchange Online's refusal
+/// when SMTP AUTH is off for the mailbox.
+#[tokio::test(flavor = "multi_thread")]
+async fn xoauth2_with_tokens_from_the_identity_provider() {
+    use mail_core::account::{Credential, OAuthProvider};
+    use mail_core::engine::Connector;
+    use mail_core::oauth::{OAuthConfig, TokenSource, sign_in};
+    let srv = server(all(), false).await;
+    let cfg = OAuthConfig {
+        provider: OAuthProvider::Microsoft,
+        client_id: "test".into(),
+        authorize_url: format!("http://127.0.0.1:{}/oauth/authorize", srv.control),
+        token_url: format!("http://127.0.0.1:{}/oauth/token", srv.control),
+        scopes: mail_core::oauth::MS_SCOPES.iter().map(|s| s.to_string()).collect(),
+    };
+    // The browser: follows the authorize address to the app's loopback redirect.
+    let tokens = sign_in(&cfg, USER, |url| {
+        let url = url.to_string();
+        tokio::spawn(async move {
+            let client = mail_core::network::client_for(mail_core::network::Service::OAuthMicrosoft).unwrap();
+            let _ = client.get(&url).send().await.unwrap().text().await;
+        });
+        Ok(())
+    })
+    .await
+    .unwrap();
+    assert_eq!(tokens.email.as_deref(), Some(USER));
+
+    let cred = Credential::XOAuth2(tokens.access_token.clone());
+    let mut c = ImapSession::connect_with(&plain(srv.imap), USER, &cred).await.unwrap();
+    assert!(c.list().await.unwrap().len() >= 3);
+    let err =
+        ImapSession::connect_with(&plain(srv.imap), USER, &Credential::XOAuth2("falsch".into())).await.unwrap_err();
+    assert!(matches!(err, Error::Connection(Problem::Auth { ref detail }) if detail.contains("401")), "{err:?}");
+    mail_core::smtp::send_with(&plain(srv.smtp), USER, &cred, USER, &[USER.into()], &msg("o@x", "Per OAuth", "x"))
+        .await
+        .unwrap();
+    assert_eq!(srv.shared.sent.lock().unwrap().len(), 1);
+
+    // The connector refreshes when the server stops taking the access token.
+    let account = Account {
+        id: 1,
+        provider: Provider::Microsoft,
+        name: String::new(),
+        email: USER.into(),
+        sender_name: String::new(),
+        transport: Transport::Imap {
+            imap: plain(srv.imap),
+            smtp: plain(srv.smtp),
+            username: USER.into(),
+            auth: Auth::OAuth2(OAuthProvider::Microsoft),
+        },
+        signature: String::new(),
+    };
+    let rotated = Arc::new(Mutex::new(0));
+    let r2 = rotated.clone();
+    let source = TokenSource::new(
+        cfg.clone(),
+        tokens.refresh_token.clone().unwrap(),
+        Some(Arc::new(move |_: &str| *r2.lock().unwrap() += 1)),
+    );
+    let conn = NetConnector::with_oauth(&account, source).unwrap();
+    assert!(conn.files_sent(), "Microsoft files sent mail itself");
+    conn.imap().await.unwrap();
+    *srv.shared.smtp_auth_disabled.lock().unwrap() = true;
+    let check = mail_core::engine::check_account_with(&account.transport, &cred).await;
+    assert!(check.imap.is_none() && matches!(check.smtp, Some(Problem::SmtpAuthDisabled { .. })), "{check:?}");
+    *srv.shared.smtp_auth_disabled.lock().unwrap() = false;
+    srv.shared.oauth.lock().unwrap().expire_access();
+    conn.imap().await.unwrap();
+    assert_eq!(*rotated.lock().unwrap(), 2, "a refresh for the first connection and one after the refusal");
+
+    // SMTP AUTH switched off for the mailbox: a problem the UI explains, not a wrong password.
+    *srv.shared.smtp_auth_disabled.lock().unwrap() = true;
+    let err = conn.send(USER, &[USER.into()], &msg("p@x", "Nochmal", "x")).await.unwrap_err();
+    assert!(matches!(err, Error::Connection(Problem::SmtpAuthDisabled { .. })), "{err:?}");
+
+    // A revoked grant: sign in again.
+    srv.shared.oauth.lock().unwrap().revoke_all();
+    let err = conn.imap().await.err().unwrap();
+    assert!(matches!(&err, Error::Connection(p) if p.needs_sign_in()), "{err:?}");
+}
+
+/// A JMAP account against the test server: push over EventSource ends the wait as soon as
+/// another client changes the mailbox.
+#[tokio::test(flavor = "multi_thread")]
+async fn jmap_push_over_the_wire() {
+    use mail_core::jmap::{JmapAuth, JmapClient, JmapSession};
+    let srv = server(all(), false).await;
+    srv.shared.with(|f| f.deliver("INBOX", &msg("j@x", "Über JMAP", "Hallo"), 1_792_135_800));
+    let dir = std::env::temp_dir().join(format!("mail-testserver-jmap-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let db = dir.join("mail.db");
+    let store = Store::open(&db).unwrap();
+    let account = store
+        .add_account(&AccountDraft {
+            provider: Provider::Jmap,
+            name: String::new(),
+            email: USER.into(),
+            sender_name: String::new(),
+            transport: Transport::Jmap {
+                session_url: format!("http://127.0.0.1:{}/jmap/session", srv.control),
+                username: USER.into(),
+                auth: Auth::Password,
+            },
+        })
+        .unwrap();
+    let auth = JmapAuth::Basic { user: USER.into(), password: PW.into() };
+    let url = format!("http://127.0.0.1:{}/jmap/session", srv.control);
+    let client = JmapClient::connect(&url, &auth).await.unwrap();
+    assert!(client.has_push());
+    let mut j = JmapSession::new(client, Store::open(&db).unwrap(), account, Duration::from_secs(60));
+    let reports = sync_account(&mut j, &store, account).await.unwrap();
+    assert!(reports.iter().any(|r| r.added == 1));
+    let inbox = store.mailbox_by_role(account, Role::Inbox).unwrap().unwrap();
+    assert_eq!(store.messages(inbox.id, 10, 0).unwrap()[0].subject, "Über JMAP");
+    j.select("INBOX", None).await.unwrap();
+    let shared = srv.shared.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        shared.with(|f| f.deliver("INBOX", &msg("k@x", "Gleich da", "x"), 1_792_135_900));
+    });
+    let start = Instant::now();
+    let outcome = j.idle(Duration::from_secs(20), &Notify::new()).await.unwrap();
+    assert_eq!(outcome, IdleOutcome::Changed);
+    assert!(start.elapsed() < Duration::from_secs(5), "pushed, not polled");
+    let caps = j.capabilities().await.unwrap();
+    let r = sync_mailbox(&mut j, &store, caps, inbox.id).await.unwrap();
+    assert_eq!((r.strategy, r.added), (Strategy::Qresync, 1));
+    // The discovery finds the server at its well-known address.
+    let found = mail_core::jmap::discover(USER, &[format!("http://127.0.0.1:{}/.well-known/jmap", srv.control)]).await;
+    assert!(found.is_some());
+    std::fs::remove_dir_all(&dir).ok();
+}

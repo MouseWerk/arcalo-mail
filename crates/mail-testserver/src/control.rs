@@ -12,6 +12,13 @@
 //! * `POST /delay?ms=…`: new connections wait this long before the greeting (a slow server)
 //! * `GET /autoconfig?host=127.0.0.1`: an autoconfig file (config-v1.1) for this server, so the
 //!   app's setup finds it as it would a provider's
+//! * `GET /oauth/authorize`, `POST /oauth/token`: an identity provider (Microsoft's endpoints as
+//!   far as the app uses them) whose access tokens IMAP and SMTP take with XOAUTH2;
+//!   `POST /oauth/fail?mode=admin_consent|access_denied[&at=token]`, `POST /oauth/revoke`,
+//!   `POST /oauth/expire`, `GET /oauth/state` (token requests so far)
+//! * `POST /smtp-auth?disabled=1`: SMTP refuses XOAUTH2 with `535 5.7.139`, as Exchange Online
+//!   does when SMTP AUTH is off for the mailbox
+//! * `GET /.well-known/jmap`, `/jmap/…`: the same mailboxes over JMAP (`jmap.rs`)
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -120,21 +127,66 @@ async fn handle(stream: TcpStream, shared: Arc<Shared>) -> std::io::Result<()> {
     let method = parts.next().unwrap_or_default().to_string();
     let target = parts.next().unwrap_or("/").to_string();
     let mut length = 0usize;
+    let mut headers: Vec<(String, String)> = vec![];
     loop {
         let mut h = String::new();
         if r.read_line(&mut h).await? == 0 || h.trim().is_empty() {
             break;
         }
-        if let Some((k, v)) = h.split_once(':')
-            && k.trim().eq_ignore_ascii_case("content-length")
-        {
-            length = v.trim().parse().unwrap_or(0);
+        if let Some((k, v)) = h.split_once(':') {
+            if k.trim().eq_ignore_ascii_case("content-length") {
+                length = v.trim().parse().unwrap_or(0);
+            }
+            headers.push((k.trim().to_ascii_lowercase(), v.trim().to_string()));
         }
     }
     let mut body = vec![0u8; length];
     r.read_exact(&mut body).await?;
     let (path, q) = query(&target);
+    // The identity provider: `GET /oauth/authorize` signs in at once, `POST /oauth/token`.
+    if path == "/oauth/authorize" || path == "/oauth/token" {
+        let reply = shared.oauth.lock().unwrap().handle(&method, &target, &body);
+        let mut stream = r.into_inner();
+        let location = reply.location.map(|l| format!("Location: {l}\r\n")).unwrap_or_default();
+        let head = format!(
+            "HTTP/1.1 {} X\r\nContent-Type: {}\r\nContent-Length: {}\r\n{location}Connection: close\r\n\r\n",
+            reply.status,
+            reply.content_type,
+            reply.body.len()
+        );
+        stream.write_all(head.as_bytes()).await?;
+        stream.write_all(&reply.body).await?;
+        return stream.flush().await;
+    }
+    if path.starts_with("/jmap") || path == "/.well-known/jmap" {
+        return crate::jmap::handle(r, &method, &target, &headers, body, shared).await;
+    }
     let (status, ctype, out): (&str, &str, Vec<u8>) = match (method.as_str(), path.as_str()) {
+        ("POST", "/oauth/fail") => {
+            let mode = q.get("mode").cloned().unwrap_or_default();
+            let mut o = shared.oauth.lock().unwrap();
+            match q.get("at").map(String::as_str) {
+                Some("token") => o.token_error = Some(mode).filter(|m| !m.is_empty()),
+                _ => o.next_error = Some(mode).filter(|m| !m.is_empty()),
+            }
+            ("200 OK", "text/plain", b"ok".to_vec())
+        }
+        ("POST", "/oauth/revoke") => {
+            shared.oauth.lock().unwrap().revoke_all();
+            ("200 OK", "text/plain", b"ok".to_vec())
+        }
+        ("POST", "/oauth/expire") => {
+            shared.oauth.lock().unwrap().expire_access();
+            ("200 OK", "text/plain", b"ok".to_vec())
+        }
+        ("GET", "/oauth/state") => {
+            let n = shared.oauth.lock().unwrap().token_requests;
+            ("200 OK", "application/json", json!({ "token_requests": n }).to_string().into_bytes())
+        }
+        ("POST", "/smtp-auth") => {
+            *shared.smtp_auth_disabled.lock().unwrap() = flag(&q, "disabled").unwrap_or(false);
+            ("200 OK", "text/plain", b"ok".to_vec())
+        }
         ("GET", "/state") => ("200 OK", "application/json", state(&shared).to_string().into_bytes()),
         ("GET", "/autoconfig") => {
             let (imap, smtp) = *shared.ports.lock().unwrap();

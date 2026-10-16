@@ -18,12 +18,18 @@ use crate::search::fold;
 use crate::trf;
 
 /// The migrations in order; `MIGRATIONS[i]` brings the schema from version `i` to `i + 1`.
-pub const MIGRATIONS: &[&str] =
-    &[include_str!("../migrations/0001_init.sql"), include_str!("../migrations/0002_mail_actions.sql")];
+pub const MIGRATIONS: &[&str] = &[
+    include_str!("../migrations/0001_init.sql"),
+    include_str!("../migrations/0002_mail_actions.sql"),
+    include_str!("../migrations/0003_sync_sources.sql"),
+];
 pub const SCHEMA_VERSION: u32 = MIGRATIONS.len() as u32;
 
 pub struct Store {
     conn: Connection,
+    /// Replies without reply headers join a conversation by their subject (the setting
+    /// `subject_threads`; the account worker sets it before each round).
+    subject_threads: std::cell::Cell<bool>,
 }
 
 /// A folder with what the sync engine needs to know about it.
@@ -195,7 +201,7 @@ impl Store {
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.busy_timeout(std::time::Duration::from_secs(10))?;
-        let mut store = Store { conn };
+        let mut store = Store { conn, subject_threads: std::cell::Cell::new(true) };
         store.migrate()?;
         Ok(store)
     }
@@ -223,6 +229,14 @@ impl Store {
 
     pub(crate) fn conn(&self) -> &Connection {
         &self.conn
+    }
+
+    pub fn set_subject_threads(&self, on: bool) {
+        self.subject_threads.set(on);
+    }
+
+    pub fn subject_threads(&self) -> bool {
+        self.subject_threads.get()
     }
 
     /// Runs `f` in one transaction (a header batch of a sync: one write instead of hundreds).
@@ -488,8 +502,8 @@ impl Store {
         self.conn.execute(
             "INSERT INTO messages (account_id, mailbox_id, uid, modseq, message_id, in_reply_to, refs, subject,
                from_name, from_email, to_json, cc_json, date, internal_date, size, seen, answered, flagged, draft,
-               keywords, has_attachments, snippet, reply_to_json)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)",
+               keywords, has_attachments, snippet, reply_to_json, base_subject)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)",
             params![
                 account_id,
                 mailbox_id,
@@ -514,6 +528,7 @@ impl Store {
                 has_attachments,
                 p.snippet,
                 serde_json::to_string(&p.reply_to)?,
+                crate::thread::base_subject(&p.subject).0,
             ],
         )?;
         let id = self.conn.last_insert_rowid();
@@ -1049,7 +1064,7 @@ pub(crate) mod tests {
         )
         .unwrap();
         let s = Store::init(conn).unwrap();
-        assert_eq!(s.schema_version().unwrap(), 2);
+        assert_eq!(s.schema_version().unwrap(), SCHEMA_VERSION);
         assert_eq!(s.suggest_contacts("jon", 5).unwrap()[0].email, "jonas@example.org", "senders become contacts");
         assert_eq!(s.mailbox(1).unwrap().total, 1);
     }

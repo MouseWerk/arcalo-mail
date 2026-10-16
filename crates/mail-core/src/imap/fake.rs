@@ -96,6 +96,7 @@ impl Default for FakeImap {
             uidplus: true,
             moves: true,
             special_use: true,
+            gmail: false,
         })
     }
 }

@@ -4,7 +4,7 @@
 //! ```text
 //! arcalo-mail-testserver [--user maria@example.org] [--password secret] [--tls]
 //!     [--without qresync,condstore,move,uidplus,idle,special_use] [--files-sent]
-//!     [--imap-port N] [--smtp-port N] [--control-port N]
+//!     [--imap-port N] [--smtp-port N] [--control-port N] [--no-jmap-push]
 //! ```
 
 use mail_testserver::{Options, start};
@@ -19,6 +19,7 @@ fn main() {
             "--password" => opts.password = value(),
             "--tls" => opts.tls = true,
             "--files-sent" => opts.files_sent = true,
+            "--no-jmap-push" => opts.jmap_push = false,
             "--imap-port" => opts.imap_port = value().parse().unwrap_or(0),
             "--smtp-port" => opts.smtp_port = value().parse().unwrap_or(0),
             "--control-port" => opts.control_port = value().parse().unwrap_or(0),

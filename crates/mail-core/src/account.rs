@@ -71,6 +71,9 @@ pub enum Auth {
     Password,
     /// OAuth 2.0: the refresh token is in the credential store, access tokens only in memory.
     OAuth2(OAuthProvider),
+    /// An API token (JMAP's `Authorization: Bearer`, Fastmail's API tokens), in the credential
+    /// store as the account's password.
+    Token,
 }
 
 /// How the mailbox is reached.
@@ -109,6 +112,23 @@ pub struct AccountDraft {
     pub email: String,
     pub sender_name: String,
     pub transport: Transport,
+}
+
+/// How a connection signs in: a password (AUTHENTICATE PLAIN, LOGIN, AUTH PLAIN) or an OAuth
+/// access token (SASL XOAUTH2). Lives in memory only.
+#[derive(Clone, PartialEq, Eq)]
+pub enum Credential {
+    Password(String),
+    XOAuth2(String),
+}
+
+impl std::fmt::Debug for Credential {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Credential::Password(_) => "Password(…)",
+            Credential::XOAuth2(_) => "XOAuth2(…)",
+        })
+    }
 }
 
 /// What a credential store entry holds.
@@ -202,7 +222,15 @@ pub fn validate(draft: &AccountDraft) -> Result<()> {
             }
         }
         (Provider::Microsoft, Transport::Graph) => {}
-        (Provider::Jmap, Transport::Jmap { session_url, .. }) => crate::network::check_https_url(session_url)?,
+        (Provider::Jmap, Transport::Jmap { session_url, username, auth }) => {
+            crate::network::check_https_url(session_url)?;
+            if username.trim().is_empty() && *auth == Auth::Password {
+                return Err(Error::Invalid(tr!("Der Benutzername fehlt.", "The user name is missing.").into()));
+            }
+            if !matches!(auth, Auth::Password | Auth::Token) {
+                return Err(mismatch());
+            }
+        }
         _ => return Err(mismatch()),
     }
     Ok(())

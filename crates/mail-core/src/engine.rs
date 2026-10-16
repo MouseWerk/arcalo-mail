@@ -21,11 +21,12 @@ use base64::Engine;
 use serde::Serialize;
 use tokio::sync::{Notify, mpsc, oneshot};
 
-use crate::account::{Account, Auth, Transport};
+use crate::account::{Account, Auth, Credential, Transport};
 use crate::error::{Error, Result};
 use crate::imap::client::ImapSession;
 use crate::imap::{ANSWERED, Capabilities, FLAGGED, IdleOutcome, ImapClient, Role, SEEN, Search};
 use crate::network::Problem;
+use crate::oauth::TokenSource;
 use crate::outbox::{self, Op};
 use crate::store::{Store, now};
 use crate::sync::{
@@ -47,30 +48,65 @@ pub trait Connector: Send + 'static {
     fn set_password(&self, password: String);
 }
 
-/// The real servers of an IMAP/SMTP account with a password.
+/// How a [`NetConnector`] signs in.
+enum Secret {
+    Password(Mutex<String>),
+    /// Microsoft: access tokens for XOAUTH2 from the refresh token.
+    OAuth(TokenSource),
+}
+
+/// The real servers of an IMAP/SMTP account: with a password, or with OAuth (XOAUTH2).
 pub struct NetConnector {
     transport: Transport,
-    password: Mutex<String>,
+    secret: Secret,
+}
+
+fn unsupported() -> Error {
+    Error::Invalid(
+        tr!(
+            "Diese Kontoart wird in dieser Version noch nicht unterstützt.",
+            "This kind of account is not supported in this version yet."
+        )
+        .into(),
+    )
+}
+
+/// Whether the server refused the sign-in itself (as opposed to the connection failing).
+fn refused(e: &Error) -> bool {
+    matches!(e, Error::Connection(Problem::Auth { .. }))
 }
 
 impl NetConnector {
     pub fn new(account: &Account, password: String) -> Result<Self> {
         match &account.transport {
-            Transport::Imap { auth: Auth::Password, .. } => {
-                Ok(NetConnector { transport: account.transport.clone(), password: Mutex::new(password) })
-            }
-            _ => Err(Error::Invalid(
-                tr!(
-                    "Diese Kontoart wird in dieser Version noch nicht unterstützt.",
-                    "This kind of account is not supported in this version yet."
-                )
-                .into(),
-            )),
+            Transport::Imap { auth: Auth::Password, .. } => Ok(NetConnector {
+                transport: account.transport.clone(),
+                secret: Secret::Password(Mutex::new(password)),
+            }),
+            _ => Err(unsupported()),
         }
     }
 
-    fn password(&self) -> String {
-        self.password.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    /// An account that signs in with OAuth; `tokens` holds its refresh token.
+    pub fn with_oauth(account: &Account, tokens: TokenSource) -> Result<Self> {
+        match &account.transport {
+            Transport::Imap { auth: Auth::OAuth2(_), .. } => {
+                Ok(NetConnector { transport: account.transport.clone(), secret: Secret::OAuth(tokens) })
+            }
+            _ => Err(unsupported()),
+        }
+    }
+
+    /// The sign-in for the next connection; `fresh`: a new access token (the last one was refused).
+    async fn credential(&self, fresh: bool) -> Result<Credential> {
+        match &self.secret {
+            Secret::Password(p) => Ok(Credential::Password(p.lock().unwrap_or_else(|e| e.into_inner()).clone())),
+            Secret::OAuth(t) => Ok(Credential::XOAuth2(t.access_token(fresh).await?)),
+        }
+    }
+
+    fn oauth(&self) -> bool {
+        matches!(self.secret, Secret::OAuth(_))
     }
 }
 
@@ -79,20 +115,35 @@ impl Connector for NetConnector {
 
     async fn imap(&self) -> Result<ImapSession> {
         let Transport::Imap { imap, username, .. } = &self.transport else { unreachable!("checked in new") };
-        ImapSession::connect(imap, username, &self.password()).await
+        match ImapSession::connect_with(imap, username, &self.credential(false).await?).await {
+            // An access token the server no longer takes (revoked, the clock): once more with
+            // a fresh one before the user is asked to sign in.
+            Err(e) if self.oauth() && refused(&e) => {
+                ImapSession::connect_with(imap, username, &self.credential(true).await?).await
+            }
+            r => r,
+        }
     }
 
     async fn send(&self, from: &str, to: &[String], raw: &[u8]) -> Result<()> {
         let Transport::Imap { smtp, username, .. } = &self.transport else { unreachable!("checked in new") };
-        smtp::send(smtp, username, &self.password(), from, to, raw).await
+        match smtp::send_with(smtp, username, &self.credential(false).await?, from, to, raw).await {
+            Err(e) if self.oauth() && refused(&e) => {
+                smtp::send_with(smtp, username, &self.credential(true).await?, from, to, raw).await
+            }
+            r => r,
+        }
     }
 
     fn files_sent(&self) -> bool {
-        matches!(&self.transport, Transport::Imap { smtp, .. } if autoconfig::server_files_sent(smtp))
+        self.oauth() || matches!(&self.transport, Transport::Imap { smtp, .. } if autoconfig::server_files_sent(smtp))
     }
 
     fn set_password(&self, password: String) {
-        *self.password.lock().unwrap_or_else(|e| e.into_inner()) = password;
+        match &self.secret {
+            Secret::Password(p) => *p.lock().unwrap_or_else(|e| e.into_inner()) = password,
+            Secret::OAuth(t) => t.signed_in(password, None),
+        }
     }
 }
 
@@ -319,7 +370,14 @@ async fn apply<C: Connector>(ctx: &Ctx<C>, conn: &mut C::Imap, id: i64, op: &Op)
                 answered: answered.clone(),
             };
             outbox::replace(&ctx.store, id, &rest)?;
-            Box::pin(apply(ctx, conn, id, &rest)).await
+            let mut touched = Box::pin(apply(ctx, conn, id, &rest)).await?;
+            // The server filed it (Gmail, Microsoft, JMAP): Sent is synced right away.
+            if ctx.connector.files_sent()
+                && let Some(sent) = sent_mailbox
+            {
+                touched.push(sent.clone());
+            }
+            Ok(touched)
         }
         Op::AppendSent { mailbox, raw_b64, draft, answered } => {
             let mut touched = vec![];
@@ -846,6 +904,11 @@ fn as_problem(e: Error) -> (Option<Problem>, Option<String>) {
 
 /// Signs in to the IMAP server (and lists the folders) and to the SMTP server, side by side.
 pub async fn check_account(transport: &Transport, password: &str) -> CheckResult {
+    check_account_with(transport, &Credential::Password(password.to_string())).await
+}
+
+/// [`check_account`] with a password or an OAuth access token.
+pub async fn check_account_with(transport: &Transport, credential: &Credential) -> CheckResult {
     let Transport::Imap { imap, smtp, username, .. } = transport else {
         return CheckResult {
             imap: None,
@@ -857,12 +920,12 @@ pub async fn check_account(transport: &Transport, password: &str) -> CheckResult
         };
     };
     let imap_check = async {
-        let mut s = ImapSession::connect(imap, username, password).await?;
+        let mut s = ImapSession::connect_with(imap, username, credential).await?;
         let n = s.list().await?.len();
         let _ = s.logout().await;
         Ok::<usize, Error>(n)
     };
-    let smtp_check = smtp::check(smtp, username, password);
+    let smtp_check = smtp::check_with(smtp, username, credential);
     let (i, s) = tokio::join!(imap_check, smtp_check);
     let mut out = CheckResult { imap: None, smtp: None, error: None, folders: 0 };
     match i {

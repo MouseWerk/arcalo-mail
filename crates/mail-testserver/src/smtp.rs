@@ -89,7 +89,7 @@ impl Session {
                     if starttls {
                         r.push_str("250-STARTTLS\r\n");
                     }
-                    r.push_str("250 AUTH PLAIN LOGIN\r\n");
+                    r.push_str("250 AUTH PLAIN LOGIN XOAUTH2\r\n");
                     self.reply(&r).await?;
                 }
                 "STARTTLS" => {
@@ -122,6 +122,25 @@ impl Session {
                             self.reply("334 UGFzc3dvcmQ6\r\n").await?;
                             let pw = b64(&self.line().await?.unwrap_or_default());
                             self.shared.check_login(&user, &pw)
+                        }
+                        "XOAUTH2" => {
+                            let token = match words.get(2) {
+                                Some(t) => t.to_string(),
+                                None => {
+                                    self.reply("334 \r\n").await?;
+                                    self.line().await?.unwrap_or_default()
+                                }
+                            };
+                            let ok = crate::check_xoauth2(&self.shared, &b64(&token));
+                            if ok && *self.shared.smtp_auth_disabled.lock().unwrap() {
+                                // Exchange Online's answer when SMTP AUTH is off for the mailbox.
+                                self.reply(
+                                    "535 5.7.139 Authentication unsuccessful, SmtpClientAuthentication is disabled for the Mailbox.\r\n",
+                                )
+                                .await?;
+                                continue;
+                            }
+                            ok
                         }
                         _ => false,
                     };

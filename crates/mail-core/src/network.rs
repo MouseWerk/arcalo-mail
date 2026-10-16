@@ -21,10 +21,11 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::task::{Context, Poll};
 use std::time::Duration;
 
+use base64::Engine;
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{ClientConfig, DigitallySignedStruct, SignatureScheme};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader, ReadBuf};
 use tokio::net::TcpStream;
@@ -36,7 +37,7 @@ use crate::error::{Error, Result};
 use crate::{tr, trf};
 
 /// Who connects. The timeouts (and later the proxy profile) are chosen per service.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Service {
     Imap,
     Smtp,
@@ -163,18 +164,33 @@ pub enum Problem {
     Protocol {
         detail: String,
     },
+    /// Microsoft: the organization's administrator has to approve Arcalo Mail first
+    /// (AADSTS65001, AADSTS90094).
+    AdminConsent {
+        detail: String,
+    },
+    /// Microsoft: SMTP AUTH is switched off for the mailbox (`535 5.7.139`); reading works,
+    /// sending needs it switched on by the user's IT.
+    SmtpAuthDisabled {
+        detail: String,
+    },
+    /// The proxy of the network profile refused the connection or could not reach the server.
+    Proxy {
+        proxy: String,
+        detail: String,
+    },
 }
 
 impl Problem {
     /// Whether a later attempt may work without the user doing anything.
     pub fn is_transient(&self) -> bool {
         matches!(self, Problem::Dns { .. } | Problem::Refused { .. } | Problem::Timeout { .. } | Problem::Offline)
-            || matches!(self, Problem::Protocol { .. })
+            || matches!(self, Problem::Protocol { .. } | Problem::Proxy { .. })
     }
 
     /// Whether the user has to sign in again (or change the password) before it can work.
     pub fn needs_sign_in(&self) -> bool {
-        matches!(self, Problem::Auth { .. } | Problem::AppPassword { .. })
+        matches!(self, Problem::Auth { .. } | Problem::AppPassword { .. } | Problem::AdminConsent { .. })
     }
 }
 
@@ -213,6 +229,20 @@ impl fmt::Display for Problem {
             ),
             Problem::Protocol { detail } => {
                 trf!("Der Server hat unerwartet geantwortet: {detail}", "The server answered unexpectedly: {detail}")
+            }
+            Problem::AdminConsent { detail } => trf!(
+                "Die IT deiner Organisation muss Arcalo Mail zuerst freigeben ({detail}).",
+                "Your organization's IT has to approve Arcalo Mail first ({detail})."
+            ),
+            Problem::SmtpAuthDisabled { detail } => trf!(
+                "Senden über SMTP ist für dieses Postfach abgeschaltet ({detail}).",
+                "Sending over SMTP is switched off for this mailbox ({detail})."
+            ),
+            Problem::Proxy { proxy, detail } => {
+                trf!(
+                    "Der Proxy {proxy} hat die Verbindung abgelehnt: {detail}",
+                    "The proxy {proxy} refused the connection: {detail}"
+                )
             }
         };
         f.write_str(&s)
@@ -253,6 +283,12 @@ pub fn auth_problem(server_text: &str) -> Problem {
         "freischalten",
     ];
     let detail = server_text.trim().to_string();
+    if t.contains("5.7.139") || t.contains("smtpclientauthentication is disabled") {
+        return Problem::SmtpAuthDisabled { detail };
+    }
+    if ["aadsts65001", "aadsts90094", "aadsts90095", "admin consent", "admin approval"].iter().any(|w| t.contains(w)) {
+        return Problem::AdminConsent { detail };
+    }
     if app.iter().any(|w| t.contains(w)) { Problem::AppPassword { detail } } else { Problem::Auth { detail } }
 }
 
@@ -325,6 +361,589 @@ impl ServerCertVerifier for Verifier {
     }
 }
 
+// ---------------------------------------------------------------------------- proxy profiles
+
+/// How a network profile reaches the internet (as Arcalo's profiles, without PAC).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProxyMode {
+    /// Always direct; proxy variables of the environment are ignored.
+    None,
+    /// The system's proxy: the Windows Internet settings, elsewhere `HTTPS_PROXY`, `ALL_PROXY`
+    /// and `NO_PROXY`. IMAP and SMTP use only a SOCKS proxy of the system.
+    #[default]
+    System,
+    /// An HTTP proxy (CONNECT) and/or a SOCKS5 proxy with an exception list.
+    Manual,
+}
+
+/// Id of the profile every service uses unless it is routed elsewhere („Standard“).
+pub const DEFAULT_PROFILE: &str = "standard";
+
+/// The service groups that can be routed through a profile of their own.
+pub const ROUTE_GROUPS: &[&str] = &["mail", "sign_in", "setup", "updates"];
+
+/// A named way out („Firma“, „Zuhause“): a proxy and its exceptions. The proxy password lives
+/// in the credential store ([`proxy_password_key`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ProxyProfile {
+    /// `[a-z0-9-]`, stable; `standard` is the default profile.
+    pub id: String,
+    pub name: String,
+    pub mode: ProxyMode,
+    /// `host:port` or `http://host:port`: HTTPS through CONNECT, and IMAP and SMTP tunneled the same way.
+    pub http_proxy: String,
+    /// `host:port` or `socks5://host:port`; mail connections prefer it when both are set.
+    pub socks_proxy: String,
+    /// Exceptions: `host`, `.domain`, `*.domain`, IP, CIDR, `<local>`, `*`; comma separated.
+    pub no_proxy: String,
+    pub proxy_user: String,
+}
+
+impl Default for ProxyProfile {
+    fn default() -> Self {
+        ProxyProfile {
+            id: DEFAULT_PROFILE.into(),
+            name: "Standard".into(),
+            mode: ProxyMode::System,
+            http_proxy: String::new(),
+            socks_proxy: String::new(),
+            no_proxy: "localhost, 127.0.0.1, ::1".into(),
+            proxy_user: String::new(),
+        }
+    }
+}
+
+/// The profiles and which service group uses which (`mail`, `sign_in`, `setup`, `updates`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct NetworkSettings {
+    pub profiles: Vec<ProxyProfile>,
+    pub routes: std::collections::BTreeMap<String, String>,
+}
+
+impl Default for NetworkSettings {
+    fn default() -> Self {
+        NetworkSettings { profiles: vec![ProxyProfile::default()], routes: Default::default() }
+    }
+}
+
+impl Service {
+    /// The route group of a service ([`ROUTE_GROUPS`]).
+    pub fn group(self) -> &'static str {
+        match self {
+            Service::Imap | Service::Smtp | Service::Jmap | Service::Graph => "mail",
+            Service::OAuthMicrosoft | Service::OAuthGoogle => "sign_in",
+            Service::Autoconfig => "setup",
+            Service::UpdateFeed => "updates",
+        }
+    }
+}
+
+impl NetworkSettings {
+    /// The profile a service uses: its route, else the default profile.
+    pub fn profile_for(&self, service: Service) -> ProxyProfile {
+        let id = self.routes.get(service.group()).map(String::as_str).unwrap_or(DEFAULT_PROFILE);
+        self.profiles
+            .iter()
+            .find(|p| p.id == id)
+            .or_else(|| self.profiles.iter().find(|p| p.id == DEFAULT_PROFILE))
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// Checks the profiles before they are saved: ids, a default profile, proxy addresses.
+    pub fn validate(&self) -> Result<()> {
+        if !self.profiles.iter().any(|p| p.id == DEFAULT_PROFILE) {
+            return Err(Error::Invalid(
+                tr!("Das Profil „Standard“ fehlt.", "The “Standard” profile is missing.").into(),
+            ));
+        }
+        for p in &self.profiles {
+            if p.id.is_empty() || !p.id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-') {
+                return Err(Error::Invalid(trf!("Ungültige Profil-ID „{}“.", "Invalid profile id “{}”.", p.id)));
+            }
+            normalize_proxy_url(&p.http_proxy, "http")?;
+            normalize_proxy_url(&p.socks_proxy, "socks5")?;
+            if p.mode == ProxyMode::Manual && p.http_proxy.trim().is_empty() && p.socks_proxy.trim().is_empty() {
+                return Err(Error::Invalid(trf!(
+                    "Profil „{}“: Für einen eigenen Proxy bitte eine Proxy-Adresse eintragen.",
+                    "Profile “{}”: for a manual proxy, enter a proxy address.",
+                    p.name
+                )));
+            }
+        }
+        for (group, id) in &self.routes {
+            if !ROUTE_GROUPS.contains(&group.as_str()) || !self.profiles.iter().any(|p| &p.id == id) {
+                return Err(Error::Invalid(trf!("Unbekannte Zuordnung „{group}“.", "Unknown route “{group}”.")));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// The credential store name of a profile's proxy password.
+pub fn proxy_password_key(profile_id: &str) -> String {
+    format!("proxy-{profile_id}-password")
+}
+
+/// The profiles in use and their proxy passwords (from the credential store), set by the shell
+/// at start and when the settings change. Unset: the default profile.
+static CONFIG: std::sync::RwLock<Option<(NetworkSettings, std::collections::BTreeMap<String, String>)>> =
+    std::sync::RwLock::new(None);
+
+/// Sets the network profiles; the next connection uses them.
+pub fn configure(settings: NetworkSettings, passwords: std::collections::BTreeMap<String, String>) {
+    *CONFIG.write().unwrap_or_else(|e| e.into_inner()) = Some((settings, passwords));
+}
+
+/// `host:port` or a URL → a proxy URL without a path (`http://host:port`, `socks5://host:port`).
+pub fn normalize_proxy_url(raw: &str, default_scheme: &str) -> Result<Option<String>> {
+    let s = raw.trim();
+    if s.is_empty() {
+        return Ok(None);
+    }
+    let with_scheme = if s.contains("://") { s.to_owned() } else { format!("{default_scheme}://{s}") };
+    let bad = || {
+        Error::Invalid(trf!(
+            "Proxy-Adresse „{s}“ ist ungültig (erwartet Host:Port).",
+            "Proxy address “{s}” is invalid (expected host:port)."
+        ))
+    };
+    let url = reqwest::Url::parse(&with_scheme).map_err(|_| bad())?;
+    let scheme = match url.scheme() {
+        "socks" | "socks5" | "socks5h" => "socks5",
+        "http" | "https" => "http",
+        other => {
+            return Err(Error::Invalid(trf!(
+                "Proxy-Protokoll „{other}“ wird nicht unterstützt (HTTP oder SOCKS5).",
+                "Proxy protocol “{other}” is not supported (HTTP or SOCKS5)."
+            )));
+        }
+    };
+    let host = url.host_str().filter(|h| !h.is_empty()).ok_or_else(bad)?;
+    let port = url.port().unwrap_or(if scheme == "socks5" { 1080 } else { 8080 });
+    Ok(Some(format!("{scheme}://{host}:{port}")))
+}
+
+/// The proxy configured in the operating system.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct SystemProxy {
+    pub http: Option<String>,
+    pub https: Option<String>,
+    pub socks: Option<String>,
+    /// Exceptions in [`NoProxy`] syntax.
+    pub bypass: String,
+    /// Where the values came from, for the settings page.
+    pub source: String,
+}
+
+/// Proxy from the environment (`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY`, also lower
+/// case). `get` reads a variable (injected for tests).
+pub fn parse_env(get: impl Fn(&str) -> Option<String>) -> SystemProxy {
+    let var = |names: &[&str]| names.iter().find_map(|n| get(n)).filter(|v| !v.trim().is_empty());
+    let all = var(&["ALL_PROXY", "all_proxy"]);
+    let norm = |v: Option<String>, scheme: &str| v.and_then(|v| normalize_proxy_url(&v, scheme).ok().flatten());
+    let socks = all.clone().filter(|a| a.trim_start().starts_with("socks"));
+    let all_http = all.filter(|a| !a.trim_start().starts_with("socks"));
+    SystemProxy {
+        http: norm(var(&["http_proxy", "HTTP_PROXY"]).or(all_http.clone()), "http"),
+        https: norm(var(&["https_proxy", "HTTPS_PROXY"]).or(all_http), "http"),
+        socks: norm(socks, "socks5"),
+        bypass: var(&["no_proxy", "NO_PROXY"]).unwrap_or_default(),
+        source: tr!(
+            "Umgebungsvariablen (HTTPS_PROXY, ALL_PROXY, NO_PROXY)",
+            "environment variables (HTTPS_PROXY, ALL_PROXY, NO_PROXY)"
+        )
+        .into(),
+    }
+}
+
+/// Interprets the WinINet values `ProxyEnable`, `ProxyServer` and `ProxyOverride`.
+/// `ProxyServer` is `host:port` (all protocols) or `http=host:port;https=host:port;socks=host:port`.
+pub fn parse_wininet(enable: u32, server: &str, overrides: &str) -> SystemProxy {
+    let mut sp = SystemProxy {
+        source: tr!("Windows-Interneteinstellungen", "Windows Internet settings").into(),
+        ..Default::default()
+    };
+    if enable == 0 || server.trim().is_empty() {
+        return sp;
+    }
+    let norm = |v: &str, scheme: &str| normalize_proxy_url(v, scheme).ok().flatten();
+    if server.contains('=') {
+        for part in server.split(';') {
+            let Some((k, v)) = part.split_once('=') else { continue };
+            match k.trim().to_ascii_lowercase().as_str() {
+                "http" => sp.http = norm(v, "http"),
+                "https" => sp.https = norm(v, "http"),
+                "socks" => sp.socks = norm(v, "socks5"),
+                _ => {}
+            }
+        }
+    } else {
+        let p = norm(server, "http");
+        sp.http = p.clone();
+        sp.https = p;
+    }
+    sp.bypass = overrides.split(';').map(str::trim).filter(|s| !s.is_empty()).collect::<Vec<_>>().join(", ");
+    sp
+}
+
+/// The proxy of the operating system now: the Windows Internet settings, elsewhere the
+/// environment.
+pub fn system_proxy() -> SystemProxy {
+    #[cfg(windows)]
+    {
+        win::read()
+    }
+    #[cfg(not(windows))]
+    {
+        parse_env(|n| std::env::var(n).ok())
+    }
+}
+
+#[cfg(windows)]
+mod win {
+    use windows_sys::Win32::System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_DWORD, RRF_RT_REG_SZ, RegGetValueW};
+
+    const KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Internet Settings";
+
+    fn wide(s: &str) -> Vec<u16> {
+        s.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+
+    fn dword(name: &str) -> u32 {
+        let (key, name) = (wide(KEY), wide(name));
+        let mut value = 0u32;
+        let mut size = std::mem::size_of::<u32>() as u32;
+        // SAFETY: valid NUL-terminated strings and a correctly sized output buffer.
+        let rc = unsafe {
+            RegGetValueW(
+                HKEY_CURRENT_USER,
+                key.as_ptr(),
+                name.as_ptr(),
+                RRF_RT_REG_DWORD,
+                std::ptr::null_mut(),
+                (&mut value as *mut u32).cast(),
+                &mut size,
+            )
+        };
+        if rc == 0 { value } else { 0 }
+    }
+
+    fn string(name: &str) -> String {
+        let (key, name) = (wide(KEY), wide(name));
+        let mut buf = vec![0u16; 4096];
+        let mut size = (buf.len() * 2) as u32;
+        // SAFETY: as above; `size` is the buffer size in bytes.
+        let rc = unsafe {
+            RegGetValueW(
+                HKEY_CURRENT_USER,
+                key.as_ptr(),
+                name.as_ptr(),
+                RRF_RT_REG_SZ,
+                std::ptr::null_mut(),
+                buf.as_mut_ptr().cast(),
+                &mut size,
+            )
+        };
+        if rc != 0 {
+            return String::new();
+        }
+        let len = (size as usize / 2).saturating_sub(1).min(buf.len());
+        String::from_utf16_lossy(&buf[..len]).trim_end_matches('\0').to_owned()
+    }
+
+    pub fn read() -> super::SystemProxy {
+        super::parse_wininet(dword("ProxyEnable"), &string("ProxyServer"), &string("ProxyOverride"))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum Bypass {
+    All,
+    /// `<local>`: host names without a dot.
+    Local,
+    /// `example.com`: the domain and its subdomains.
+    Domain(String),
+    /// `.example.com` / `*.example.com`: subdomains only.
+    Subdomains(String),
+    Ip(IpAddr),
+    Cidr(IpAddr, u8),
+}
+
+/// The exception list of a proxy, as in `NO_PROXY` or the Windows „Ausnahmen“ field.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct NoProxy {
+    entries: Vec<Bypass>,
+}
+
+impl NoProxy {
+    /// Entries separated by commas, semicolons or whitespace.
+    pub fn parse(list: &str) -> NoProxy {
+        let mut entries = vec![];
+        for raw in list.split([',', ';', ' ', '\n', '\r', '\t']) {
+            let e = raw.trim().to_ascii_lowercase();
+            if e.is_empty() {
+                continue;
+            }
+            if e == "*" {
+                entries.push(Bypass::All);
+            } else if e == "<local>" {
+                entries.push(Bypass::Local);
+            } else if let Some((ip, bits)) = e.split_once('/') {
+                if let (Ok(ip), Ok(bits)) = (ip.trim_matches(['[', ']']).parse::<IpAddr>(), bits.parse::<u8>()) {
+                    entries.push(Bypass::Cidr(ip, bits.min(if ip.is_ipv4() { 32 } else { 128 })));
+                }
+            } else if let Ok(ip) = e.trim_matches(['[', ']']).parse::<IpAddr>() {
+                entries.push(Bypass::Ip(ip));
+            } else {
+                // `host:port`: the port is ignored.
+                let host = match e.rsplit_once(':') {
+                    Some((h, p)) if p.chars().all(|c| c.is_ascii_digit()) && !h.contains(':') => h.to_owned(),
+                    _ => e,
+                };
+                if let Some(rest) = host.strip_prefix("*.").or_else(|| host.strip_prefix('.')) {
+                    entries.push(Bypass::Subdomains(rest.to_owned()));
+                } else {
+                    entries.push(Bypass::Domain(host));
+                }
+            }
+        }
+        NoProxy { entries }
+    }
+
+    /// Whether `host` (a name or an IP) bypasses the proxy.
+    pub fn matches(&self, host: &str) -> bool {
+        let host = host.trim().trim_matches(['[', ']']).trim_end_matches('.').to_ascii_lowercase();
+        let ip = host.parse::<IpAddr>().ok();
+        self.entries.iter().any(|e| match e {
+            Bypass::All => true,
+            Bypass::Local => ip.is_none() && !host.contains('.'),
+            Bypass::Domain(d) => host == *d || host.strip_suffix(d.as_str()).is_some_and(|p| p.ends_with('.')),
+            Bypass::Subdomains(d) => host.strip_suffix(d.as_str()).is_some_and(|p| p.ends_with('.') && p.len() > 1),
+            Bypass::Ip(a) => ip == Some(*a),
+            Bypass::Cidr(net, bits) => ip.is_some_and(|ip| in_cidr(ip, *net, *bits)),
+        })
+    }
+}
+
+fn in_cidr(ip: IpAddr, net: IpAddr, bits: u8) -> bool {
+    match (ip, net) {
+        (IpAddr::V4(a), IpAddr::V4(n)) => {
+            let mask = if bits == 0 { 0 } else { u32::MAX << (32 - bits.min(32)) };
+            u32::from(a) & mask == u32::from(n) & mask
+        }
+        (IpAddr::V6(a), IpAddr::V6(n)) => {
+            let mask = if bits == 0 { 0 } else { u128::MAX << (128 - bits.min(128)) };
+            u128::from(a) & mask == u128::from(n) & mask
+        }
+        _ => false,
+    }
+}
+
+/// The way one connection takes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Via {
+    Direct,
+    /// An HTTP proxy: `CONNECT host:port` for mail and HTTPS.
+    Http {
+        host: String,
+        port: u16,
+        auth: Option<(String, String)>,
+    },
+    /// A SOCKS5 proxy (RFC 1928), the name resolved by the proxy.
+    Socks5 {
+        host: String,
+        port: u16,
+        auth: Option<(String, String)>,
+    },
+}
+
+impl Via {
+    /// The proxy as shown in messages (`http://proxy:8080`), without credentials.
+    pub fn label(&self) -> String {
+        match self {
+            Via::Direct => String::new(),
+            Via::Http { host, port, .. } => format!("http://{host}:{port}"),
+            Via::Socks5 { host, port, .. } => format!("socks5://{host}:{port}"),
+        }
+    }
+
+    fn url(&self) -> Option<reqwest::Url> {
+        let (scheme, host, port, auth) = match self {
+            Via::Direct => return None,
+            Via::Http { host, port, auth } => ("http", host, port, auth),
+            Via::Socks5 { host, port, auth } => ("socks5h", host, port, auth),
+        };
+        let mut u = reqwest::Url::parse(&format!("{scheme}://{host}:{port}")).ok()?;
+        if let Some((user, pw)) = auth {
+            let _ = u.set_username(user);
+            let _ = u.set_password(Some(pw));
+        }
+        Some(u)
+    }
+}
+
+fn via_of(url: &str, auth: &Option<(String, String)>) -> Option<Via> {
+    let u = reqwest::Url::parse(url).ok()?;
+    let host = u.host_str()?.trim_matches(['[', ']']).to_string();
+    let port = u.port_or_known_default()?;
+    Some(if u.scheme().starts_with("socks") {
+        Via::Socks5 { host, port, auth: auth.clone() }
+    } else {
+        Via::Http { host, port, auth: auth.clone() }
+    })
+}
+
+/// The way to `host` for a profile. `socket`: IMAP or SMTP (the SOCKS proxy first, as it
+/// carries any protocol); else HTTPS (the HTTP proxy first).
+pub fn route(profile: &ProxyProfile, password: Option<&str>, system: &SystemProxy, host: &str, socket: bool) -> Via {
+    let auth = (!profile.proxy_user.trim().is_empty())
+        .then(|| (profile.proxy_user.trim().to_string(), password.unwrap_or_default().to_string()));
+    let (http, socks, bypass) = match profile.mode {
+        ProxyMode::None => return Via::Direct,
+        // IMAP and SMTP take only a SOCKS proxy from the system: an HTTP proxy set for the
+        // browser rarely lets port 993 or 587 through. A profile of its own can tunnel them.
+        ProxyMode::System if socket => (None, system.socks.clone(), system.bypass.clone()),
+        ProxyMode::System => {
+            (system.https.clone().or(system.http.clone()), system.socks.clone(), system.bypass.clone())
+        }
+        ProxyMode::Manual => (
+            normalize_proxy_url(&profile.http_proxy, "http").ok().flatten(),
+            normalize_proxy_url(&profile.socks_proxy, "socks5").ok().flatten(),
+            profile.no_proxy.clone(),
+        ),
+    };
+    // This computer is never reached through a proxy.
+    if is_loopback(host) || NoProxy::parse(&bypass).matches(host) {
+        return Via::Direct;
+    }
+    let pick = if socket { socks.or(http) } else { http.or(socks) };
+    pick.and_then(|p| via_of(&p, &auth)).unwrap_or(Via::Direct)
+}
+
+/// The way a service takes to `host` with the configured profiles.
+pub fn route_for(service: Service, host: &str) -> Via {
+    let cfg = CONFIG.read().unwrap_or_else(|e| e.into_inner());
+    let (settings, passwords) = cfg.clone().unwrap_or_default();
+    let profile = settings.profile_for(service);
+    let socket = matches!(service, Service::Imap | Service::Smtp);
+    let system = if profile.mode == ProxyMode::System { system_proxy() } else { SystemProxy::default() };
+    route(&profile, passwords.get(&profile.id).map(String::as_str), &system, host, socket)
+}
+
+fn proxy_problem(via: &Via, detail: impl Into<String>) -> Problem {
+    Problem::Proxy { proxy: via.label(), detail: detail.into() }
+}
+
+/// `CONNECT host:port` through an HTTP proxy; the stream then belongs to the server.
+async fn http_connect(mut s: TcpStream, via: &Via, host: &str, port: u16) -> std::result::Result<TcpStream, Problem> {
+    let Via::Http { auth, .. } = via else { return Ok(s) };
+    let target = if host.contains(':') { format!("[{host}]:{port}") } else { format!("{host}:{port}") };
+    let mut req = format!("CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n");
+    if let Some((user, pw)) = auth {
+        let b = base64::engine::general_purpose::STANDARD.encode(format!("{user}:{pw}"));
+        req.push_str(&format!("Proxy-Authorization: Basic {b}\r\n"));
+    }
+    req.push_str("\r\n");
+    s.write_all(req.as_bytes()).await.map_err(|e| proxy_problem(via, e.to_string()))?;
+    // The answer's head, byte by byte, so nothing of the server's greeting is read with it.
+    let mut head = Vec::with_capacity(256);
+    let mut byte = [0u8; 1];
+    while !head.ends_with(b"\r\n\r\n") {
+        if head.len() > 16 * 1024 {
+            return Err(proxy_problem(via, "answer too long"));
+        }
+        match tokio::time::timeout(CONNECT_TIMEOUT, tokio::io::AsyncReadExt::read(&mut s, &mut byte)).await {
+            Ok(Ok(1)) => head.push(byte[0]),
+            Ok(Ok(_)) => return Err(proxy_problem(via, tr!("Verbindung geschlossen", "connection closed"))),
+            Ok(Err(e)) => return Err(proxy_problem(via, e.to_string())),
+            Err(_) => return Err(proxy_problem(via, tr!("keine Antwort", "no answer"))),
+        }
+    }
+    let status = String::from_utf8_lossy(&head);
+    let first = status.lines().next().unwrap_or_default().trim().to_string();
+    if first.split_whitespace().nth(1) == Some("200") { Ok(s) } else { Err(proxy_problem(via, first)) }
+}
+
+/// The SOCKS5 handshake (RFC 1928, user name and password per RFC 1929), the name resolved by
+/// the proxy.
+async fn socks5_connect(mut s: TcpStream, via: &Via, host: &str, port: u16) -> std::result::Result<TcpStream, Problem> {
+    use tokio::io::AsyncReadExt;
+    let Via::Socks5 { auth, .. } = via else { return Ok(s) };
+    let err = |d: &str| proxy_problem(via, d.to_string());
+    let io = |e: io::Error| proxy_problem(via, e.to_string());
+    let methods: &[u8] = if auth.is_some() { &[0x00, 0x02] } else { &[0x00] };
+    let mut hello = vec![0x05, methods.len() as u8];
+    hello.extend_from_slice(methods);
+    s.write_all(&hello).await.map_err(io)?;
+    let mut reply = [0u8; 2];
+    s.read_exact(&mut reply).await.map_err(io)?;
+    match (reply[0], reply[1]) {
+        (0x05, 0x00) => {}
+        (0x05, 0x02) => {
+            let (user, pw) = auth.clone().unwrap_or_default();
+            let mut m = vec![0x01, user.len().min(255) as u8];
+            m.extend_from_slice(&user.as_bytes()[..user.len().min(255)]);
+            m.push(pw.len().min(255) as u8);
+            m.extend_from_slice(&pw.as_bytes()[..pw.len().min(255)]);
+            s.write_all(&m).await.map_err(io)?;
+            let mut r = [0u8; 2];
+            s.read_exact(&mut r).await.map_err(io)?;
+            if r[1] != 0 {
+                return Err(err(tr!("Anmeldung am Proxy abgelehnt", "proxy sign-in refused")));
+            }
+        }
+        _ => return Err(err(tr!("keine passende Anmeldeart", "no acceptable sign-in method"))),
+    }
+    let mut req = vec![0x05, 0x01, 0x00];
+    match host.parse::<IpAddr>() {
+        Ok(IpAddr::V4(a)) => {
+            req.push(0x01);
+            req.extend_from_slice(&a.octets());
+        }
+        Ok(IpAddr::V6(a)) => {
+            req.push(0x04);
+            req.extend_from_slice(&a.octets());
+        }
+        Err(_) => {
+            let h = &host.as_bytes()[..host.len().min(255)];
+            req.push(0x03);
+            req.push(h.len() as u8);
+            req.extend_from_slice(h);
+        }
+    }
+    req.extend_from_slice(&port.to_be_bytes());
+    s.write_all(&req).await.map_err(io)?;
+    let mut head = [0u8; 4];
+    s.read_exact(&mut head).await.map_err(io)?;
+    if head[1] != 0 {
+        let why = match head[1] {
+            0x02 => tr!("nicht erlaubt", "not allowed"),
+            0x03 => tr!("Netz nicht erreichbar", "network unreachable"),
+            0x04 => tr!("Server nicht erreichbar", "host unreachable"),
+            0x05 => tr!("Verbindung abgelehnt", "connection refused"),
+            _ => tr!("Fehler", "failure"),
+        };
+        return Err(err(why));
+    }
+    let rest = match head[3] {
+        0x01 => 4 + 2,
+        0x04 => 16 + 2,
+        0x03 => {
+            let mut n = [0u8; 1];
+            s.read_exact(&mut n).await.map_err(io)?;
+            n[0] as usize + 2
+        }
+        _ => return Err(err("bad address type")),
+    };
+    let mut skip = vec![0u8; rest];
+    s.read_exact(&mut skip).await.map_err(io)?;
+    Ok(s)
+}
+
 // ---------------------------------------------------------------------------- the stream
 
 #[derive(Debug)]
@@ -395,11 +1014,25 @@ impl lettre::transport::smtp::client::AsyncTokioStream for MailStream {
     }
 }
 
-/// TCP to the server: the name is looked up first, so an unknown name and a closed port are
-/// told apart.
-async fn tcp(server: &Server) -> std::result::Result<TcpStream, Problem> {
+/// TCP to the server, through the proxy of the service's network profile when it has one.
+async fn tcp(server: &Server, service: Service) -> std::result::Result<TcpStream, Problem> {
     let host = server.host.trim();
-    let port = server.port;
+    let via = route_for(service, host);
+    match &via {
+        Via::Direct => direct(host, server.port).await,
+        Via::Http { host: ph, port: pp, .. } | Via::Socks5 { host: ph, port: pp, .. } => {
+            let s = direct(ph, *pp).await.map_err(|p| proxy_problem(&via, p.to_string()))?;
+            match via {
+                Via::Http { .. } => http_connect(s, &via, host, server.port).await,
+                _ => socks5_connect(s, &via, host, server.port).await,
+            }
+        }
+    }
+}
+
+/// TCP straight to a host: the name is looked up first, so an unknown name and a closed port
+/// are told apart.
+async fn direct(host: &str, port: u16) -> std::result::Result<TcpStream, Problem> {
     let addrs: Vec<_> = match tokio::time::timeout(CONNECT_TIMEOUT, tokio::net::lookup_host((host, port))).await {
         Err(_) => return Err(Problem::Timeout { host: host.into(), port }),
         Ok(Err(_)) => return Err(Problem::Dns { host: host.into() }),
@@ -509,7 +1142,7 @@ pub struct ImapTransport {
 /// sent; plain text only to this computer ([`check_server`]).
 pub async fn connect_imap(server: &Server) -> Result<ImapTransport> {
     check_server(server)?;
-    let mut tcp = tcp(server).await?;
+    let mut tcp = tcp(server, Service::Imap).await?;
     match server.security {
         Security::Plain => {
             Ok(ImapTransport { stream: MailStream { inner: Inner::Plain(tcp), prelude: vec![] }, greeted: false })
@@ -564,7 +1197,7 @@ async fn smtp_reply(tcp: &mut TcpStream) -> std::result::Result<(u16, Vec<String
 /// only). The returned stream starts with a greeting, as lettre expects.
 pub async fn connect_smtp(server: &Server) -> Result<MailStream> {
     check_server(server)?;
-    let mut tcp = tcp(server).await?;
+    let mut tcp = tcp(server, Service::Smtp).await?;
     match server.security {
         Security::Plain => Ok(MailStream { inner: Inner::Plain(tcp), prelude: vec![] }),
         Security::Tls => Ok(MailStream { inner: Inner::Tls(Box::new(tls(tcp, server).await?)), prelude: vec![] }),
@@ -606,9 +1239,97 @@ pub fn client_for(service: Service) -> Result<HttpClient> {
         Service::Autoconfig => Duration::from_secs(8),
         _ => Duration::from_secs(30),
     };
+    let proxy = reqwest::Proxy::custom(move |url| url.host_str().and_then(|h| route_for(service, h).url()));
     reqwest::Client::builder()
+        .no_proxy()
+        .proxy(proxy)
         .timeout(timeout)
         .connect_timeout(Duration::from_secs(8))
+        .user_agent(concat!("ArcaloMail/", env!("CARGO_PKG_VERSION")))
+        .redirect(reqwest::redirect::Policy::custom(|a| {
+            if a.previous().len() >= 5 || check_https_url(a.url().as_str()).is_err() { a.stop() } else { a.follow() }
+        }))
+        .build()
+        .map_err(|e| Error::Network(e.to_string()))
+}
+
+/// The loopback listener of an OAuth sign-in on the desktop (RFC 8252, 7.3): the browser is
+/// sent back to `http://127.0.0.1:<port>` with the code; nothing else on the network can
+/// reach it.
+pub struct RedirectListener {
+    listener: tokio::net::TcpListener,
+    pub port: u16,
+}
+
+/// Opens the listener on a free port of this computer.
+pub async fn redirect_listener() -> Result<RedirectListener> {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.map_err(|e| Error::Network(e.to_string()))?;
+    let port = listener.local_addr().map_err(|e| Error::Network(e.to_string()))?.port();
+    Ok(RedirectListener { listener, port })
+}
+
+impl RedirectListener {
+    /// The redirect URI to register and send (no path: Microsoft compares it as given).
+    pub fn redirect_uri(&self) -> String {
+        format!("http://127.0.0.1:{}", self.port)
+    }
+
+    /// Waits for the browser's redirect and answers it with `page(query)` (HTML); returns the query
+    /// string (`code=…&state=…` or `error=…`). Other requests (a favicon) get a 404.
+    pub async fn wait(self, timeout: Duration, page: &dyn Fn(&str) -> String) -> Result<String> {
+        let accept = async {
+            loop {
+                let (stream, _) = self.listener.accept().await.map_err(|e| Error::Network(e.to_string()))?;
+                let mut r = BufReader::new(stream);
+                let mut first = String::new();
+                if tokio::time::timeout(IO_TIMEOUT, r.read_line(&mut first)).await.is_err() {
+                    continue;
+                }
+                loop {
+                    let mut h = String::new();
+                    match tokio::time::timeout(IO_TIMEOUT, r.read_line(&mut h)).await {
+                        Ok(Ok(n)) if n > 2 => continue,
+                        _ => break,
+                    }
+                }
+                let target = first.split_whitespace().nth(1).unwrap_or("/").to_string();
+                let query = target.split_once('?').map(|(_, q)| q.to_string()).unwrap_or_default();
+                let hit = query.split('&').any(|kv| kv.starts_with("code=") || kv.starts_with("error="));
+                let mut stream = r.into_inner();
+                let (status, body) = if hit { ("200 OK", page(&query)) } else { ("404 Not Found", String::new()) };
+                let resp = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(resp.as_bytes()).await;
+                let _ = stream.flush().await;
+                if hit {
+                    return Ok(query);
+                }
+            }
+        };
+        match tokio::time::timeout(timeout, accept).await {
+            Ok(r) => r,
+            Err(_) => Err(Error::Network(
+                tr!(
+                    "Die Anmeldung im Browser wurde nicht rechtzeitig abgeschlossen.",
+                    "The sign-in in the browser was not finished in time."
+                )
+                .into(),
+            )),
+        }
+    }
+}
+
+/// An HTTP client for a long-lived stream (JMAP's EventSource push): no total timeout, but a
+/// read timeout, so a stream the server stopped feeding (no pings) ends.
+pub fn client_for_events(service: Service) -> Result<HttpClient> {
+    let proxy = reqwest::Proxy::custom(move |url| url.host_str().and_then(|h| route_for(service, h).url()));
+    reqwest::Client::builder()
+        .no_proxy()
+        .proxy(proxy)
+        .connect_timeout(Duration::from_secs(8))
+        .read_timeout(Duration::from_secs(150))
         .user_agent(concat!("ArcaloMail/", env!("CARGO_PKG_VERSION")))
         .redirect(reqwest::redirect::Policy::custom(|a| {
             if a.previous().len() >= 5 || check_https_url(a.url().as_str()).is_err() { a.stop() } else { a.follow() }
@@ -681,8 +1402,91 @@ pub async fn mx(domain: &str) -> Result<Vec<String>> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+
+    /// A small HTTP server on this computer for the tests of other modules (OAuth, JMAP,
+    /// autoconfig): `handle(method, path_and_query, headers, body)` answers each request.
+    pub(crate) mod testhttp {
+        use std::sync::Arc;
+
+        use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+
+        pub(crate) struct Reply {
+            pub status: u16,
+            pub content_type: String,
+            pub body: Vec<u8>,
+            pub location: Option<String>,
+        }
+
+        impl Reply {
+            pub fn status(status: u16, body: &str) -> Reply {
+                Reply {
+                    status,
+                    content_type: "application/json".into(),
+                    body: body.as_bytes().to_vec(),
+                    location: None,
+                }
+            }
+        }
+
+        type Handler = dyn Fn(&str, &str, &[(String, String)], &[u8]) -> Reply + Send + Sync;
+
+        /// Serves until the test ends; returns the port.
+        pub(crate) async fn serve(handle: Arc<Handler>) -> u16 {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+            tokio::spawn(async move {
+                loop {
+                    let Ok((s, _)) = listener.accept().await else { return };
+                    let handle = handle.clone();
+                    tokio::spawn(async move {
+                        let mut r = BufReader::new(s);
+                        loop {
+                            let mut first = String::new();
+                            if r.read_line(&mut first).await.unwrap_or(0) == 0 {
+                                return;
+                            }
+                            let mut parts = first.split_whitespace();
+                            let method = parts.next().unwrap_or_default().to_string();
+                            let target = parts.next().unwrap_or("/").to_string();
+                            let mut headers = vec![];
+                            let mut length = 0usize;
+                            loop {
+                                let mut h = String::new();
+                                if r.read_line(&mut h).await.unwrap_or(0) == 0 || h.trim().is_empty() {
+                                    break;
+                                }
+                                if let Some((k, v)) = h.split_once(':') {
+                                    if k.trim().eq_ignore_ascii_case("content-length") {
+                                        length = v.trim().parse().unwrap_or(0);
+                                    }
+                                    headers.push((k.trim().to_ascii_lowercase(), v.trim().to_string()));
+                                }
+                            }
+                            let mut body = vec![0u8; length];
+                            if r.read_exact(&mut body).await.is_err() {
+                                return;
+                            }
+                            let reply = handle(&method, &target, &headers, &body);
+                            let location = reply.location.map(|l| format!("Location: {l}\r\n")).unwrap_or_default();
+                            let head = format!(
+                                "HTTP/1.1 {} X\r\nContent-Type: {}\r\nContent-Length: {}\r\n{location}\r\n",
+                                reply.status,
+                                reply.content_type,
+                                reply.body.len()
+                            );
+                            let s = r.get_mut();
+                            if s.write_all(head.as_bytes()).await.is_err() || s.write_all(&reply.body).await.is_err() {
+                                return;
+                            }
+                        }
+                    });
+                }
+            });
+            port
+        }
+    }
 
     #[test]
     fn plain_text_only_to_this_computer() {
@@ -733,6 +1537,167 @@ mod tests {
         assert!(
             !Problem::Certificate { host: "x".into(), fingerprint: "AA".into(), detail: String::new() }.is_transient()
         );
+    }
+
+    #[test]
+    fn proxy_routes_and_exceptions() {
+        let manual = ProxyProfile {
+            mode: ProxyMode::Manual,
+            http_proxy: "proxy.example.org:3128".into(),
+            socks_proxy: "socks5://socks.example.org".into(),
+            no_proxy: "intern.example.org, .corp.example, 10.0.0.0/8".into(),
+            proxy_user: "maria".into(),
+            ..ProxyProfile::default()
+        };
+        let none = SystemProxy::default();
+        let auth = Some(("maria".to_string(), "pw".to_string()));
+        assert_eq!(
+            route(&manual, Some("pw"), &none, "imap.example.org", true),
+            Via::Socks5 { host: "socks.example.org".into(), port: 1080, auth: auth.clone() }
+        );
+        assert_eq!(
+            route(&manual, Some("pw"), &none, "login.microsoftonline.com", false),
+            Via::Http { host: "proxy.example.org".into(), port: 3128, auth }
+        );
+        for direct in ["intern.example.org", "mail.corp.example", "10.1.2.3", "127.0.0.1", "localhost"] {
+            assert_eq!(route(&manual, None, &none, direct, true), Via::Direct, "{direct}");
+        }
+        let off = ProxyProfile { mode: ProxyMode::None, ..manual.clone() };
+        assert_eq!(route(&off, None, &none, "imap.example.org", true), Via::Direct);
+        // The system's HTTP proxy carries HTTPS, not IMAP and SMTP; its SOCKS proxy carries both.
+        let env = parse_env(|n| match n {
+            "HTTPS_PROXY" => Some("http://web-proxy:8080".into()),
+            "NO_PROXY" => Some("example.net".into()),
+            _ => None,
+        });
+        let system = ProxyProfile::default();
+        assert_eq!(route(&system, None, &env, "imap.example.org", true), Via::Direct);
+        assert!(matches!(route(&system, None, &env, "jmap.example.org", false), Via::Http { port: 8080, .. }));
+        assert_eq!(route(&system, None, &env, "api.example.net", false), Via::Direct);
+        let socks = parse_env(|n| (n == "ALL_PROXY").then(|| "socks5://127.0.0.2:1080".to_string()));
+        assert!(matches!(route(&system, None, &socks, "imap.example.org", true), Via::Socks5 { .. }));
+        let win = parse_wininet(1, "http=p:80;https=p:443;socks=s:1080", "<local>;*.intra");
+        assert_eq!((win.https.as_deref(), win.socks.as_deref()), (Some("http://p:443"), Some("socks5://s:1080")));
+        assert!(NoProxy::parse(&win.bypass).matches("server") && NoProxy::parse(&win.bypass).matches("a.intra"));
+        assert!(normalize_proxy_url("ftp://x:1", "http").is_err());
+    }
+
+    #[test]
+    fn network_settings_are_checked_and_routed() {
+        let mut n = NetworkSettings::default();
+        n.profiles.push(ProxyProfile {
+            id: "firma".into(),
+            name: "Firma".into(),
+            mode: ProxyMode::Manual,
+            http_proxy: "proxy:3128".into(),
+            ..ProxyProfile::default()
+        });
+        n.routes.insert("mail".into(), "firma".into());
+        n.validate().unwrap();
+        assert_eq!(n.profile_for(Service::Imap).id, "firma");
+        assert_eq!(n.profile_for(Service::Autoconfig).id, DEFAULT_PROFILE);
+        n.routes.insert("mail".into(), "fehlt".into());
+        assert!(n.validate().is_err());
+        n.routes.clear();
+        n.profiles[1].http_proxy.clear();
+        assert!(n.validate().is_err(), "manual without an address");
+    }
+
+    /// A server that greets like IMAP, reached through an HTTP CONNECT proxy and a SOCKS5
+    /// proxy (with user name and password) on this computer.
+    #[tokio::test]
+    async fn tunnels_through_http_connect_and_socks5() {
+        use tokio::io::AsyncReadExt;
+        let server = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let server_port = server.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut s, _)) = server.accept().await else { return };
+                let _ = s.write_all(b"* OK ready\r\n").await;
+            }
+        });
+        async fn pipe(mut a: TcpStream, port: u16) {
+            let mut b = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+            let _ = tokio::io::copy_bidirectional(&mut a, &mut b).await;
+        }
+        // HTTP CONNECT, checking the target and the credentials.
+        let http = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let http_port = http.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut s, _)) = http.accept().await else { return };
+                let mut head = vec![];
+                let mut b = [0u8; 1];
+                while !head.ends_with(b"\r\n\r\n") {
+                    s.read_exact(&mut b).await.unwrap();
+                    head.push(b[0]);
+                }
+                let h = String::from_utf8_lossy(&head).to_string();
+                assert!(h.starts_with("CONNECT mail.example.org:993 HTTP/1.1"), "{h}");
+                assert!(h.contains("Proxy-Authorization: Basic bWFyaWE6cHc="), "{h}");
+                s.write_all(b"HTTP/1.1 200 Connection established\r\n\r\n").await.unwrap();
+                tokio::spawn(pipe(s, server_port));
+            }
+        });
+        let auth = Some(("maria".to_string(), "pw".to_string()));
+        let via = Via::Http { host: "127.0.0.1".into(), port: http_port, auth: auth.clone() };
+        let s = direct("127.0.0.1", http_port).await.unwrap();
+        let mut s = http_connect(s, &via, "mail.example.org", 993).await.unwrap();
+        let mut greeting = [0u8; 12];
+        s.read_exact(&mut greeting).await.unwrap();
+        assert_eq!(&greeting, b"* OK ready\r\n");
+
+        // SOCKS5 with user name and password, the name resolved by the proxy.
+        let socks = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let socks_port = socks.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut s, _)) = socks.accept().await else { return };
+                let mut hello = [0u8; 4];
+                s.read_exact(&mut hello).await.unwrap();
+                assert_eq!(hello, [5, 2, 0, 2]);
+                s.write_all(&[5, 2]).await.unwrap();
+                let mut v = [0u8; 2];
+                s.read_exact(&mut v).await.unwrap();
+                let mut user = vec![0u8; v[1] as usize];
+                s.read_exact(&mut user).await.unwrap();
+                let mut n = [0u8; 1];
+                s.read_exact(&mut n).await.unwrap();
+                let mut pw = vec![0u8; n[0] as usize];
+                s.read_exact(&mut pw).await.unwrap();
+                assert_eq!((user.as_slice(), pw.as_slice()), (&b"maria"[..], &b"pw"[..]));
+                s.write_all(&[1, 0]).await.unwrap();
+                let mut req = [0u8; 5];
+                s.read_exact(&mut req).await.unwrap();
+                assert_eq!(&req[..4], &[5, 1, 0, 3]);
+                let mut name = vec![0u8; req[4] as usize + 2];
+                s.read_exact(&mut name).await.unwrap();
+                assert_eq!(&name[..name.len() - 2], b"mail.example.org");
+                s.write_all(&[5, 0, 0, 1, 127, 0, 0, 1, 0, 0]).await.unwrap();
+                tokio::spawn(pipe(s, server_port));
+            }
+        });
+        let via = Via::Socks5 { host: "127.0.0.1".into(), port: socks_port, auth };
+        let s = direct("127.0.0.1", socks_port).await.unwrap();
+        let mut s = socks5_connect(s, &via, "mail.example.org", 993).await.unwrap();
+        let mut greeting = [0u8; 12];
+        s.read_exact(&mut greeting).await.unwrap();
+        assert_eq!(&greeting, b"* OK ready\r\n");
+
+        // A proxy that refuses: the problem names the proxy.
+        let refuse = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let refuse_port = refuse.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let Ok((mut s, _)) = refuse.accept().await else { return };
+            let mut b = [0u8; 512];
+            let _ = s.read(&mut b).await;
+            let _ = s.write_all(b"HTTP/1.1 403 Forbidden\r\n\r\n").await;
+        });
+        let via = Via::Http { host: "127.0.0.1".into(), port: refuse_port, auth: None };
+        let s = direct("127.0.0.1", refuse_port).await.unwrap();
+        let err = http_connect(s, &via, "mail.example.org", 993).await.unwrap_err();
+        assert!(matches!(&err, Problem::Proxy { detail, .. } if detail.contains("403")), "{err:?}");
+        assert!(err.is_transient());
     }
 
     #[test]

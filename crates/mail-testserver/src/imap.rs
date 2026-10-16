@@ -251,7 +251,7 @@ impl Session {
 
     fn caps_line(&self) -> String {
         let c = self.shared.fake.lock().unwrap().caps;
-        let mut v = vec!["IMAP4rev1", "LITERAL+", "ENABLE", "ID", "UNSELECT", "AUTH=PLAIN"];
+        let mut v = vec!["IMAP4rev1", "LITERAL+", "ENABLE", "ID", "UNSELECT", "AUTH=PLAIN", "AUTH=XOAUTH2", "SASL-IR"];
         if !self.tls && crate::acceptor(&self.shared).is_some() {
             v.push("STARTTLS");
         }
@@ -579,6 +579,32 @@ impl Session {
                         self.write(&format!("{tag} OK [CAPABILITY {caps}] Logged in\r\n")).await?;
                     } else {
                         self.write(&format!("{tag} NO [AUTHENTICATIONFAILED] Invalid credentials\r\n")).await?;
+                    }
+                }
+                "AUTHENTICATE" if args.first().map(Tok::upper).as_deref() == Some("XOAUTH2") => {
+                    use base64::Engine;
+                    let token = match args.get(1) {
+                        Some(t) => t.text(),
+                        None => {
+                            self.write("+ \r\n").await?;
+                            let mut line = String::new();
+                            self.io.read_line(&mut line).await?;
+                            line.trim().to_string()
+                        }
+                    };
+                    let decoded =
+                        base64::engine::general_purpose::STANDARD.decode(token.as_bytes()).unwrap_or_default();
+                    if crate::check_xoauth2(&self.shared, &String::from_utf8_lossy(&decoded)) {
+                        self.authed = true;
+                        self.write(&format!("{tag} OK Logged in\r\n")).await?;
+                    } else {
+                        // As Gmail and Exchange Online: a JSON error as a challenge, then NO.
+                        let err = base64::engine::general_purpose::STANDARD
+                            .encode(r#"{"status":"401","schemes":"Bearer","scope":"https://outlook.office.com/IMAP.AccessAsUser.All"}"#);
+                        self.write(&format!("+ {err}\r\n")).await?;
+                        let mut line = String::new();
+                        self.io.read_line(&mut line).await?;
+                        self.write(&format!("{tag} NO [AUTHENTICATIONFAILED] AUTHENTICATE failed.\r\n")).await?;
                     }
                 }
                 "AUTHENTICATE" => {

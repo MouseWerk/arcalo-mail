@@ -5,12 +5,16 @@
 //! certificate, and an SMTP server (AUTH PLAIN and LOGIN) that delivers mail to the account's
 //! inbox when it is one of the recipients.
 //!
+//! The same mailboxes are served over JMAP (RFC 8620/8621, with EventSource push) and an
+//! identity provider for OAuth sign-ins (XOAUTH2 on IMAP and SMTP) on the control port.
+//!
 //! A small HTTP control port lets a test deliver mail, look at the server's state, read what
 //! was sent, make commands fail and take the server offline and back. It listens on loopback
 //! only and never talks to the internet.
 
 mod control;
 mod imap;
+mod jmap;
 mod smtp;
 
 use std::io;
@@ -44,6 +48,8 @@ pub struct Options {
     pub imap_port: u16,
     pub smtp_port: u16,
     pub control_port: u16,
+    /// JMAP with push (EventSource); without it clients poll.
+    pub jmap_push: bool,
 }
 
 impl Default for Options {
@@ -57,6 +63,7 @@ impl Default for Options {
             imap_port: 0,
             smtp_port: 0,
             control_port: 0,
+            jmap_push: true,
         }
     }
 }
@@ -87,6 +94,12 @@ pub struct Shared {
     pub ports: Mutex<(u16, u16)>,
     /// A slow server: new connections wait this long before the greeting (milliseconds).
     pub delay_ms: Mutex<u64>,
+    /// The identity provider whose access tokens IMAP and SMTP take (XOAUTH2).
+    pub oauth: Mutex<mail_core::oauth::fake::FakeOAuth>,
+    /// SMTP refuses XOAUTH2 with `535 5.7.139` (SMTP AUTH switched off for the mailbox).
+    pub smtp_auth_disabled: Mutex<bool>,
+    /// The JMAP view of the same mailboxes (`jmap.rs`).
+    pub jmap: Mutex<mail_core::jmap::fake::FakeJmapState>,
 }
 
 impl Shared {
@@ -203,6 +216,20 @@ fn serve(listener: TcpListener, shared: Arc<Shared>, kind: Kind, implicit_tls: b
     });
 }
 
+/// Checks a SASL XOAUTH2 response (`user=…^Aauth=Bearer …^A^A`) against the identity provider.
+pub(crate) fn check_xoauth2(shared: &Shared, decoded: &str) -> bool {
+    let mut user = "";
+    let mut token = "";
+    for part in decoded.split('\x01') {
+        if let Some(u) = part.strip_prefix("user=") {
+            user = u;
+        } else if let Some(t) = part.strip_prefix("auth=Bearer ") {
+            token = t;
+        }
+    }
+    user.eq_ignore_ascii_case(&shared.user) && shared.oauth.lock().unwrap_or_else(|e| e.into_inner()).valid(token)
+}
+
 /// Starts the server on loopback ports.
 pub async fn start(opts: Options) -> io::Result<Running> {
     let (tls, fingerprint) = if opts.tls {
@@ -224,6 +251,9 @@ pub async fn start(opts: Options) -> io::Result<Running> {
         connections: Mutex::new(0),
         ports: Mutex::new((0, 0)),
         delay_ms: Mutex::new(0),
+        oauth: Mutex::new(mail_core::oauth::fake::FakeOAuth::new(&opts.user)),
+        smtp_auth_disabled: Mutex::new(false),
+        jmap: Mutex::new(mail_core::jmap::fake::FakeJmapState::new(&opts.user, opts.jmap_push)),
     });
     let (imap_l, imap) = listen(opts.imap_port).await?;
     let (smtp_l, smtp) = listen(opts.smtp_port).await?;

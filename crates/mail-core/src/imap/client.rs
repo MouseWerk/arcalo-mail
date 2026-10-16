@@ -17,7 +17,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::Notify;
 
 use super::*;
-use crate::account::Server;
+use crate::account::{Credential, Server};
 use crate::error::{Error, Result};
 use crate::network::{self, IO_TIMEOUT, MailStream, Problem, auth_problem};
 use crate::tr;
@@ -39,7 +39,8 @@ enum Reply {
         code: Option<ResponseCode<'static>>,
         text: String,
     },
-    Continue,
+    /// `+ …` with its text (a SASL challenge or error).
+    Continue(String),
     Bye(String),
     /// An untagged line imap-proto does not know (an extension's answer); passed over.
     Unknown,
@@ -213,6 +214,11 @@ impl ImapSession {
     /// Connects, signs in (AUTHENTICATE PLAIN, else LOGIN) and switches on QRESYNC or
     /// CONDSTORE when offered.
     pub async fn connect(server: &Server, username: &str, password: &str) -> Result<Self> {
+        Self::connect_with(server, username, &Credential::Password(password.to_string())).await
+    }
+
+    /// Connects and signs in with a password or an OAuth access token (AUTHENTICATE XOAUTH2).
+    pub async fn connect_with(server: &Server, username: &str, credential: &Credential) -> Result<Self> {
         let t = network::connect_imap(server).await?;
         let mut s = ImapSession {
             stream: t.stream,
@@ -241,7 +247,10 @@ impl ImapSession {
         if s.raw_caps.is_empty() {
             s.refresh_caps().await?;
         }
-        s.login(username, password).await?;
+        match credential {
+            Credential::Password(password) => s.login(username, password).await?,
+            Credential::XOAuth2(token) => s.xoauth2(username, token).await?,
+        }
         s.refresh_caps().await?;
         if s.has("ENABLE") {
             if s.caps.qresync {
@@ -293,7 +302,7 @@ impl ImapSession {
             self.write(format!("{tag} AUTHENTICATE PLAIN\r\n").as_bytes()).await?;
             loop {
                 match self.read_reply(IO_TIMEOUT).await? {
-                    Reply::Continue => break,
+                    Reply::Continue(_) => break,
                     Reply::Tagged { status, text, .. } => {
                         return if status == Status::Ok { Ok(()) } else { Err(auth_problem(&text).into()) };
                     }
@@ -318,6 +327,49 @@ impl ImapSession {
                 Ok(())
             }
             _ => Err(auth_problem(&done.text).into()),
+        }
+    }
+
+    /// SASL XOAUTH2 (Microsoft, Google): the token as the initial response (SASL-IR) or after
+    /// the continuation. A refusal comes as a continuation with a JSON error first, answered
+    /// with an empty line, then `NO`.
+    async fn xoauth2(&mut self, username: &str, token: &str) -> Result<()> {
+        let ir = crate::oauth::xoauth2(username, token);
+        let tag = self.next_tag();
+        let sasl_ir = self.has("SASL-IR");
+        if sasl_ir {
+            self.write(format!("{tag} AUTHENTICATE XOAUTH2 {ir}\r\n").as_bytes()).await?;
+        } else {
+            self.write(format!("{tag} AUTHENTICATE XOAUTH2\r\n").as_bytes()).await?;
+        }
+        let mut sent = sasl_ir;
+        let mut error_json = String::new();
+        loop {
+            match self.read_reply(IO_TIMEOUT).await? {
+                Reply::Continue(_) if !sent => {
+                    self.write(format!("{ir}\r\n").as_bytes()).await?;
+                    sent = true;
+                }
+                Reply::Continue(t) => {
+                    error_json = base64::engine::general_purpose::STANDARD
+                        .decode(t.trim())
+                        .map(|b| String::from_utf8_lossy(&b).into_owned())
+                        .unwrap_or_default();
+                    self.write(b"\r\n").await?;
+                }
+                Reply::Tagged { tag: t, status, code, text } if t == tag => {
+                    if status == Status::Ok {
+                        if let Some(ResponseCode::Capabilities(c)) = &code {
+                            self.set_caps(c);
+                        }
+                        return Ok(());
+                    }
+                    let detail = if error_json.is_empty() { text } else { format!("{text} {error_json}") };
+                    return Err(Problem::Auth { detail: detail.trim().to_string() }.into());
+                }
+                Reply::Tagged { .. } | Reply::Data(_) | Reply::Unknown => {}
+                Reply::Bye(text) => return Err(Problem::Protocol { detail: text }.into()),
+            }
         }
     }
 
@@ -374,7 +426,7 @@ impl ImapSession {
                 let owned = resp.into_owned();
                 self.buf.drain(..used);
                 Ok(Some(match owned {
-                    Response::Continue(_) => Reply::Continue,
+                    Response::Continue(o) => Reply::Continue(o.information.map(|c| c.to_string()).unwrap_or_default()),
                     Response::Done { tag, status, outcome } => Reply::Tagged {
                         tag: tag.0,
                         status,
@@ -395,8 +447,8 @@ impl ImapSession {
                 if line.starts_with('*') {
                     return Ok(Some(Reply::Unknown));
                 }
-                if line.starts_with('+') {
-                    return Ok(Some(Reply::Continue));
+                if let Some(rest) = line.strip_prefix('+') {
+                    return Ok(Some(Reply::Continue(rest.trim().to_string())));
                 }
                 let mut words = line.splitn(3, ' ');
                 let tag = words.next().unwrap_or_default().to_string();
@@ -421,7 +473,7 @@ impl ImapSession {
                     }
                     data.push(d)
                 }
-                Reply::Continue | Reply::Unknown => {}
+                Reply::Continue(_) | Reply::Unknown => {}
                 Reply::Bye(text) => return Err(Problem::Protocol { detail: text }.into()),
                 Reply::Tagged { tag: t, status, code, text } if t == tag => {
                     return Ok(Done { data, status, code, text });
@@ -453,7 +505,7 @@ impl ImapSession {
                     if !plus {
                         loop {
                             match self.read_reply(IO_TIMEOUT).await? {
-                                Reply::Continue => break,
+                                Reply::Continue(_) => break,
                                 Reply::Tagged { status, text, code, .. } => {
                                     return Ok(Done { data: vec![], status, code, text });
                                 }
@@ -770,7 +822,7 @@ impl ImapClient for ImapSession {
         self.write(format!("{tag} IDLE\r\n").as_bytes()).await?;
         loop {
             match self.read_reply(IO_TIMEOUT).await? {
-                Reply::Continue => break,
+                Reply::Continue(_) => break,
                 Reply::Tagged { text, .. } => return Err(Error::Imap(format!("IDLE: {text}"))),
                 Reply::Bye(text) => return Err(Problem::Protocol { detail: text }.into()),
                 Reply::Data(_) | Reply::Unknown => {}
