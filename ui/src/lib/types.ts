@@ -211,6 +211,9 @@ export type NetworkSettings = { profiles: ProxyProfile[]; routes: Partial<Record
 
 export type SystemProxy = { http: string | null; https: string | null; socks: string | null; bypass: string; source: string };
 
+/** What a swipe over a row does on a touch screen. */
+export type SwipeAction = "archive" | "delete" | "read" | "flag" | "none";
+
 export type Settings = {
   version: number;
   language: LanguageChoice;
@@ -225,6 +228,11 @@ export type Settings = {
   prefetch: Prefetch;
   subject_threads: boolean;
   network: NetworkSettings;
+  /** Touch screens: a swipe from right to left, and from left to right. */
+  swipe_left: SwipeAction;
+  swipe_right: SwipeAction;
+  /** Phones: look for new mail in the background. */
+  background_check: boolean;
 };
 
 export type AppInfo = {
@@ -232,9 +240,11 @@ export type AppInfo = {
   platform: string;
   schema: number;
   locale: string;
-  secret_store: { kind: "system" } | { kind: "file"; reason: string } | { kind: "unavailable" };
+  secret_store: { kind: "system" } | { kind: "file"; reason: string } | { kind: "keystore" } | { kind: "unavailable" };
   /** A fixed „now“ in Unix seconds (screenshots only). */
   clock?: number | null;
   /** This build can sign in with Microsoft (a client id was compiled in). */
   microsoft_sign_in?: boolean;
+  /** A phone or tablet (or a desktop asked for the touch layout): swipes, pull to refresh. */
+  touch?: boolean;
 };

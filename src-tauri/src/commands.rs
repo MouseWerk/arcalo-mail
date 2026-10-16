@@ -33,6 +33,9 @@ pub struct AppInfo {
     clock: Option<i64>,
     /// This build has a Microsoft client id (`ARCALO_MAIL_MS_CLIENT_ID`, docs/microsoft.md).
     microsoft_sign_in: bool,
+    /// A phone or tablet: the touch layout (swipes, pull to refresh, bottom actions).
+    /// `ARCALO_MAIL_TOUCH=1` asks for it on a desktop (the e2e tests of the phone layout).
+    touch: bool,
 }
 
 #[tauri::command]
@@ -45,7 +48,18 @@ pub fn app_info() -> AppInfo {
         secret_store: secrets::kind(),
         clock: std::env::var("ARCALO_MAIL_NOW").ok().and_then(|v| v.parse().ok()),
         microsoft_sign_in: mail_core::oauth::microsoft_client_id().is_some(),
+        touch: cfg!(mobile) || std::env::var("ARCALO_MAIL_TOUCH").is_ok_and(|v| v == "1"),
     }
+}
+
+/// The UI tells whether it is visible. A phone keeps its connections only while the app is in
+/// front and checks in the background otherwise (`mobile`); the desktop keeps them always.
+#[tauri::command]
+pub fn set_in_front(app: AppHandle, visible: bool) {
+    #[cfg(mobile)]
+    crate::mobile::set_in_front(&app, visible);
+    #[cfg(desktop)]
+    let _ = (app, visible);
 }
 
 #[tauri::command]
@@ -181,6 +195,9 @@ pub fn add_account(app: AppHandle, state: State<'_, AppState>, draft: AccountDra
         store.account(id)?
     };
     start_worker(&app, &account);
+    // A phone asks whether it may tell about new mail once there is an account.
+    #[cfg(mobile)]
+    crate::mobile::ask_for_notifications(&app);
     Ok(account)
 }
 
@@ -284,14 +301,29 @@ fn microsoft_transport(email: &str) -> Res<Transport> {
     Ok(transport)
 }
 
-/// Opens Microsoft's sign-in in the browser and waits for it.
+/// Opens Microsoft's sign-in in the browser and waits for it: on the desktop with the loopback
+/// redirect, on a phone in the platform's browser session with the app's own redirect.
 async fn browser_sign_in(app: &AppHandle, hint: &str) -> Res<mail_core::oauth::Tokens> {
-    use tauri_plugin_opener::OpenerExt;
     let cfg = mail_core::oauth::config_for(OAuthProvider::Microsoft)?;
-    mail_core::oauth::sign_in(&cfg, hint, |url| {
-        app.opener().open_url(url, None::<&str>).map_err(|e| Error::Invalid(e.to_string()))
-    })
-    .await
+    #[cfg(mobile)]
+    {
+        let _ = app;
+        mail_core::oauth::sign_in_with_session(
+            &cfg,
+            hint,
+            mail_core::oauth::MOBILE_REDIRECT,
+            crate::mobile::auth_session,
+        )
+        .await
+    }
+    #[cfg(desktop)]
+    {
+        use tauri_plugin_opener::OpenerExt;
+        mail_core::oauth::sign_in(&cfg, hint, |url| {
+            app.opener().open_url(url, None::<&str>).map_err(|e| Error::Invalid(e.to_string()))
+        })
+        .await
+    }
 }
 
 /// „Mit Microsoft anmelden“: the browser sign-in, then IMAP and SMTP checked with the token.
@@ -349,6 +381,9 @@ pub fn add_microsoft_account(
         store.account(id)?
     };
     start_worker(&app, &account);
+    // A phone asks whether it may tell about new mail once there is an account.
+    #[cfg(mobile)]
+    crate::mobile::ask_for_notifications(&app);
     Ok(account)
 }
 

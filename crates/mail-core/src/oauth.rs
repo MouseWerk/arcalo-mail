@@ -12,6 +12,7 @@
 //! (milestone 3) the redirect is the platform's custom scheme [`MOBILE_REDIRECT`] through its
 //! browser session; the flow here is the same apart from where the code arrives.
 
+use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -400,7 +401,7 @@ async fn finish(cfg: &OAuthConfig, query: &str, state: &str, pkce: &Pkce, redire
             return Err(Problem::AdminConsent { detail: desc.lines().next().unwrap_or_default().to_string() }.into());
         }
         if err == "access_denied" {
-            return Err(Error::Invalid(tr!("Die Anmeldung wurde abgebrochen.", "The sign-in was cancelled.").into()));
+            return Err(cancelled());
         }
         return Err(Problem::Auth { detail: format!("{err}: {desc}") }.into());
     }
@@ -419,6 +420,58 @@ pub async fn sign_in(cfg: &OAuthConfig, login_hint: &str, open: impl FnOnce(&str
     let query =
         listener.wait(SIGN_IN_TIMEOUT, &|q: &str| done_page(q.split('&').any(|kv| kv.starts_with("code=")))).await?;
     finish(cfg, &query, &state, &pkce, &redirect_uri).await
+}
+
+/// The query of the redirect a phone's browser session hands back
+/// (`de.mousewerk.arcalo.mail://oauth?code=…&state=…`, also with the answer after `#`).
+pub fn redirect_query(url: &str) -> String {
+    let rest = url.split_once('?').map_or("", |(_, q)| q);
+    let rest = if rest.is_empty() { url.split_once('#').map_or("", |(_, f)| f) } else { rest };
+    rest.split('#').next().unwrap_or_default().to_string()
+}
+
+/// Signs in on a phone: `session` opens the provider's address in the platform's browser
+/// session (Custom Tabs on Android, `ASWebAuthenticationSession` on iOS) and resolves with the
+/// address the provider redirected to ([`MOBILE_REDIRECT`]); then the code is exchanged as on
+/// the desktop. A session that ends without a redirect (the user closed it) is an `Err` from
+/// `session`.
+pub async fn sign_in_with_session<F, Fut>(
+    cfg: &OAuthConfig,
+    login_hint: &str,
+    redirect_uri: &str,
+    session: F,
+) -> Result<Tokens>
+where
+    F: FnOnce(String) -> Fut,
+    Fut: Future<Output = Result<String>>,
+{
+    let pkce = pkce()?;
+    let state = b64url(&random(16)?);
+    let url = authorize_url(cfg, redirect_uri, &pkce, &state, login_hint);
+    let back = match tokio::time::timeout(SIGN_IN_TIMEOUT, session(url)).await {
+        Ok(r) => r?,
+        Err(_) => {
+            return Err(Error::Network(
+                tr!(
+                    "Die Anmeldung im Browser wurde nicht rechtzeitig abgeschlossen.",
+                    "The sign-in in the browser was not finished in time."
+                )
+                .into(),
+            ));
+        }
+    };
+    if !back.starts_with(redirect_uri.trim_end_matches('/')) {
+        return Err(Problem::Protocol {
+            detail: tr!("Antwort passt nicht zur Anmeldung", "answer does not match the sign-in").into(),
+        }
+        .into());
+    }
+    finish(cfg, &redirect_query(&back), &state, &pkce, redirect_uri).await
+}
+
+/// What a phone says when the browser session was closed without signing in.
+pub fn cancelled() -> Error {
+    Error::Invalid(tr!("Die Anmeldung wurde abgebrochen.", "The sign-in was cancelled.").into())
 }
 
 // ---------------------------------------------------------------------------- token source
@@ -624,6 +677,50 @@ mod tests {
             .unwrap_err();
             assert!(check(&e), "{mode}: {e:?}");
         }
+    }
+
+    /// The phones' flow: the browser session is played by the fake's authorize endpoint, whose
+    /// redirect to the app's scheme is handed back as the session's result.
+    #[tokio::test]
+    async fn signs_in_through_the_mobile_redirect() {
+        let (port, idp) = idp().await;
+        let c = cfg(port);
+        let session = |idp: Arc<Mutex<fake::FakeOAuth>>| {
+            move |url: String| async move {
+                assert!(url.contains("redirect_uri=de.mousewerk.arcalo.mail%3A%2F%2Foauth"), "{url}");
+                let target = url.split_once("/oauth/").map(|(_, t)| format!("/oauth/{t}")).unwrap();
+                let reply = idp.lock().unwrap().handle("GET", &target, b"");
+                Ok(reply.location.unwrap())
+            }
+        };
+        let tokens =
+            sign_in_with_session(&c, "maria@example.org", MOBILE_REDIRECT, session(idp.clone())).await.unwrap();
+        assert_eq!(tokens.email.as_deref(), Some("maria@example.org"));
+        assert!(idp.lock().unwrap().valid(&tokens.access_token));
+
+        // Refused or cancelled in the browser.
+        idp.lock().unwrap().next_error = Some("access_denied".into());
+        let e = sign_in_with_session(&c, "", MOBILE_REDIRECT, session(idp.clone())).await.unwrap_err();
+        assert!(matches!(e, Error::Invalid(_)), "{e:?}");
+        idp.lock().unwrap().next_error = Some("admin_consent".into());
+        let e = sign_in_with_session(&c, "", MOBILE_REDIRECT, session(idp.clone())).await.unwrap_err();
+        assert!(matches!(e, Error::Connection(Problem::AdminConsent { .. })), "{e:?}");
+
+        // The session closed without a redirect, or something else came back.
+        let e = sign_in_with_session(&c, "", MOBILE_REDIRECT, |_| async { Err(cancelled()) }).await.unwrap_err();
+        assert!(matches!(e, Error::Invalid(_)), "{e:?}");
+        let e = sign_in_with_session(&c, "", MOBILE_REDIRECT, |_| async { Ok("https://evil.example/?code=x".into()) })
+            .await
+            .unwrap_err();
+        assert!(matches!(e, Error::Connection(Problem::Protocol { .. })), "{e:?}");
+    }
+
+    #[test]
+    fn the_query_of_a_redirect() {
+        assert_eq!(redirect_query("de.mousewerk.arcalo.mail://oauth?code=a&state=b"), "code=a&state=b");
+        assert_eq!(redirect_query("de.mousewerk.arcalo.mail://oauth/?code=a#frag"), "code=a");
+        assert_eq!(redirect_query("de.mousewerk.arcalo.mail://oauth#code=a&state=b"), "code=a&state=b");
+        assert_eq!(redirect_query("de.mousewerk.arcalo.mail://oauth"), "");
     }
 
     #[test]

@@ -50,6 +50,27 @@ conformance job against Dovecot and GreenMail. Still open: the signed update fee
 - Tests: the fake identity provider and JMAP server in the core and the test server, XOAUTH2 over the wire,
   e2e for the Microsoft sign-in, the Gmail guide, JMAP, folders and bulk actions; conformance in CI.
 
+## Where we are (milestone 3, Android and iOS)
+
+- **UI**: the phone layout (folders, list, message one at a time; Android's Back walks back), the tablet layout
+  (list and message side by side, folders in a drawer), swipes over rows (archive, delete, read, flag; per side in
+  Settings), pull to refresh, the message's actions at the bottom, compose over the whole screen above the keyboard,
+  44 px targets, safe areas, the system's dark mode and text size. Checked in the desktop app's touch layout
+  (`e2e/tests/mobile.test.js`, pictures in `docs/screenshots/mobile`).
+- **Secrets**: the Android Keystore (a key that never leaves it seals each secret) and the iOS Keychain (readable
+  after the first unlock, for the background check).
+- **Microsoft sign-in on phones**: Custom Tabs and `ASWebAuthenticationSession` with the redirect
+  `de.mousewerk.arcalo.mail://oauth`.
+- **New mail in the background, without a server**: WorkManager about every 15 minutes (Android) and background app
+  refresh (iOS) run one check of every account; local notifications per message; the unread count as the launcher
+  badge (the notification's number) and the iOS icon badge. IMAP IDLE and JMAP push while the app is in front.
+- **Builds**: the Android project is committed; CI builds a signed APK and AAB once the keystore secrets exist and an
+  iOS IPA (TestFlight for a tag) once the Apple secrets exist. Owner steps: [release-mobile.md](release-mobile.md).
+- Open: a mail-specific app icon (Arcalo's icon is the placeholder), store screenshots at the stores' sizes, the
+  share sheet for attachments and opening attachments in other apps on the phones, the in-app update check for the
+  GitHub APK (Google Play updates the Play install), a Play service account for uploads from CI. To verify on
+  devices: everything native (see release-mobile.md, "What only a device or CI can show").
+
 ## Milestone 1 – desktop, one IMAP/SMTP account
 
 Goal: daily use with one IMAP/SMTP account on Windows, macOS and Linux.
@@ -167,6 +188,6 @@ Goal: daily use with one IMAP/SMTP account on Windows, macOS and Linux.
   protection when releases start; add the update signing key as a secret then (never in the repository).
 - Microsoft Entra app registration and publisher verification (milestone 2).
 - Google Cloud project, OAuth clients, consent screen, verification and CASA (milestone 2, decision 3).
-- Apple Developer Program (decision 1), then the `APPLE_DEVELOPMENT_TEAM` secret for the iOS CI job.
-- Android release keystore (milestone 3), kept outside the repository.
+- Apple Developer Program (decided: yes), then the iOS secrets of [release-mobile.md](release-mobile.md).
+- Android release keystore and the Google Play account, kept outside the repository ([release-mobile.md](release-mobile.md)).
 - A privacy policy page (needed for Google and Microsoft consent screens and the stores).

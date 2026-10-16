@@ -2,20 +2,25 @@
 //! hands the commands to the core, the secrets to the OS credential store and the workers'
 //! notices to the UI (`mail-notice` events), desktop notifications and the unread badge. The
 //! same crate builds the desktop app and, through `run` as the mobile entry point, the Android
-//! and iOS apps.
+//! and iOS apps; what the phones do differently is in `mobile` (the workers run while the app is
+//! in front, a background check of its own otherwise, the browser session of the sign-in).
 
+mod background;
 mod commands;
+#[cfg(mobile)]
+mod mobile;
 mod secrets;
 #[cfg(desktop)]
 mod tray;
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use mail_core::account::{Account, Auth, SecretKind, Transport, secret_key};
 use mail_core::engine::{Command, NetConnector, Notice, Status, Worker, WorkerHandle};
 use mail_core::i18n::{Lang, lang_from_locale, set_lang};
+use mail_core::jmap::JmapConnector;
 use mail_core::settings::LanguageChoice;
 use mail_core::store::Store;
 use tauri::{AppHandle, Emitter, Manager};
@@ -99,45 +104,89 @@ fn show_unread(app: &AppHandle, unread: u32) {
     tray::show_unread(unread);
 }
 
-/// Android and iOS have no window badge in Tauri: the launcher badge comes with the
-/// notifications of milestone 3 (Android: the count on the new-mail notification; iOS:
-/// `applicationIconBadgeNumber` through a small plugin, docs/plan.md). Until then nothing is
-/// shown.
+/// Android: the count on the new-mail notification (launchers show it as the badge); iOS: the
+/// number on the app icon.
 #[cfg(mobile)]
-fn show_unread(_app: &AppHandle, _unread: u32) {}
+fn show_unread(_app: &AppHandle, unread: u32) {
+    mobile::show_unread(unread);
+}
 
-/// A desktop notification for new mail, when the window is not in front.
+/// A notification for new mail, when the window is not in front (on a phone the workers run
+/// only while the app is in front; the background check tells about mail otherwise).
 fn notify_new_mail(app: &AppHandle, account_id: i64, messages: &[i64]) {
     use tauri_plugin_notification::NotificationExt;
     let Some(state) = app.try_state::<AppState>() else { return };
     if !mail_core::settings::load(&state.store()).map(|s| s.notifications).unwrap_or(true) {
         return;
     }
+    #[cfg(desktop)]
     if app.get_webview_window("main").and_then(|w| w.is_focused().ok()).unwrap_or(false) {
+        return;
+    }
+    #[cfg(mobile)]
+    if mobile::in_front() {
         return;
     }
     let store = state.store();
     let list = store.summaries(messages).unwrap_or_default();
-    let Some(first) = list.first() else { return };
     let account = store.account(account_id).ok();
-    let (title, body) = if list.len() == 1 {
-        let from = first.from.as_ref().map(|a| a.name.clone().unwrap_or_else(|| a.email.clone())).unwrap_or_default();
-        (from, first.subject.clone())
-    } else {
-        (
-            mail_core::trf!("{n} neue Nachrichten", "{n} new messages", n = list.len()),
-            account.map(|a| if a.name.is_empty() { a.email } else { a.name }).unwrap_or_default(),
-        )
-    };
     drop(store);
+    let Some((title, body)) = background::new_mail_text(&list, account.as_ref()) else { return };
     let _ = app.notification().builder().title(title).body(body).show();
+}
+
+/// How a worker reaches an account's servers, with its secret from the credential store.
+pub(crate) enum Connection {
+    Net(NetConnector),
+    Jmap(JmapConnector),
+}
+
+/// Why an account has no [`Connection`].
+pub(crate) enum NoConnection {
+    /// No password or refresh token stored: the user signs in.
+    SignIn,
+    /// The account cannot run in this build (a provider without a client id).
+    Unusable(String),
+}
+
+/// The connection of an account (the worker's, and the phones' background check).
+pub(crate) fn connection_for(account: &Account, db: &Path) -> Result<Connection, NoConnection> {
+    let password = || secrets::get(&secret_key(account.id, SecretKind::Password)).ok().flatten();
+    match &account.transport {
+        Transport::Imap { auth: Auth::OAuth2(provider), .. } => {
+            let Some(refresh) = secrets::get(&secret_key(account.id, SecretKind::RefreshToken)).ok().flatten() else {
+                return Err(NoConnection::SignIn);
+            };
+            let cfg = mail_core::oauth::config_for(*provider).map_err(|e| NoConnection::Unusable(e.to_string()))?;
+            // A rotated refresh token goes to the credential store at once.
+            let key = secret_key(account.id, SecretKind::RefreshToken);
+            let save: mail_core::oauth::OnRefreshToken = Arc::new(move |t: &str| {
+                if let Err(e) = secrets::set(&key, t) {
+                    mail_core::diag::log("secrets", &format!("refresh token not stored: {e}"));
+                }
+            });
+            let tokens = mail_core::oauth::TokenSource::new(cfg, refresh, Some(save));
+            NetConnector::with_oauth(account, tokens)
+                .map(Connection::Net)
+                .map_err(|e| NoConnection::Unusable(e.to_string()))
+        }
+        Transport::Jmap { .. } => {
+            let Some(password) = password() else { return Err(NoConnection::SignIn) };
+            JmapConnector::new(account, password, db.to_path_buf())
+                .map(Connection::Jmap)
+                .map_err(|e| NoConnection::Unusable(e.to_string()))
+        }
+        _ => {
+            let Some(password) = password() else { return Err(NoConnection::SignIn) };
+            NetConnector::new(account, password).map(Connection::Net).map_err(|e| NoConnection::Unusable(e.to_string()))
+        }
+    }
 }
 
 /// Starts the worker of an account (its password from the credential store); without one the
 /// account waits for „Anmelden“.
 pub fn start_worker(app: &AppHandle, account: &Account) {
     let Some(state) = app.try_state::<AppState>() else { return };
-    let password = secrets::get(&secret_key(account.id, SecretKind::Password)).ok().flatten();
     let sink_app = app.clone();
     let sink: mail_core::engine::Sink = Arc::new(move |notice: Notice| {
         match &notice {
@@ -154,63 +203,41 @@ pub fn start_worker(app: &AppHandle, account: &Account) {
         }
         let _ = sink_app.emit("mail-notice", &notice);
     });
-    let ask = |problem: Option<mail_core::network::Problem>| {
-        let n = Notice::Status { account_id: account.id, status: Status::SignIn, problem, error: None };
+    let tell = |status: Status, error: Option<String>| {
+        let n = Notice::Status { account_id: account.id, status, problem: None, error };
         state.statuses.lock().unwrap_or_else(|e| e.into_inner()).insert(account.id, n.clone());
         let _ = app.emit("mail-notice", &n);
     };
-    let spawned = match &account.transport {
-        Transport::Imap { auth: Auth::OAuth2(provider), .. } => {
-            let Some(refresh) = secrets::get(&secret_key(account.id, SecretKind::RefreshToken)).ok().flatten() else {
-                return ask(None);
-            };
-            let cfg = match mail_core::oauth::config_for(*provider) {
-                Ok(c) => c,
-                Err(e) => {
-                    let n = Notice::Status {
-                        account_id: account.id,
-                        status: Status::Stopped,
-                        problem: None,
-                        error: Some(e.to_string()),
-                    };
-                    state.statuses.lock().unwrap_or_else(|e| e.into_inner()).insert(account.id, n.clone());
-                    let _ = app.emit("mail-notice", &n);
-                    return;
-                }
-            };
-            // A rotated refresh token goes to the credential store at once.
-            let key = secret_key(account.id, SecretKind::RefreshToken);
-            let save: mail_core::oauth::OnRefreshToken = Arc::new(move |t: &str| {
-                if let Err(e) = secrets::set(&key, t) {
-                    mail_core::diag::log("secrets", &format!("refresh token not stored: {e}"));
-                }
-            });
-            let tokens = mail_core::oauth::TokenSource::new(cfg, refresh, Some(save));
-            match NetConnector::with_oauth(account, tokens) {
-                Ok(c) => Worker::spawn(account.id, state.db.clone(), c, sink),
-                Err(_) => return,
-            }
-        }
-        Transport::Jmap { .. } => {
-            let Some(password) = password else { return ask(None) };
-            match mail_core::jmap::JmapConnector::new(account, password, state.db.clone()) {
-                Ok(c) => Worker::spawn(account.id, state.db.clone(), c, sink),
-                Err(_) => return,
-            }
-        }
-        _ => {
-            let Some(password) = password else { return ask(None) };
-            match NetConnector::new(account, password) {
-                Ok(c) => Worker::spawn(account.id, state.db.clone(), c, sink),
-                Err(_) => return,
-            }
-        }
+    let spawned = match connection_for(account, &state.db) {
+        Ok(Connection::Net(c)) => Worker::spawn(account.id, state.db.clone(), c, sink),
+        Ok(Connection::Jmap(c)) => Worker::spawn(account.id, state.db.clone(), c, sink),
+        Err(NoConnection::SignIn) => return tell(Status::SignIn, None),
+        Err(NoConnection::Unusable(e)) => return tell(Status::Stopped, Some(e)),
     };
     match spawned {
         Ok(w) => {
             state.workers.lock().unwrap_or_else(|e| e.into_inner()).insert(account.id, w);
         }
         Err(e) => eprintln!("worker of account {}: {e}", account.id),
+    }
+}
+
+/// Starts the workers of every account (at start; on a phone also when the app comes to the
+/// front again).
+pub fn start_workers(app: &AppHandle) {
+    let Some(state) = app.try_state::<AppState>() else { return };
+    let accounts = state.store().accounts().unwrap_or_default();
+    for a in &accounts {
+        if state.worker(a.id).is_none() {
+            start_worker(app, a);
+        }
+    }
+}
+
+/// Stops every worker (a phone app going to the background: no connection stays open there).
+pub fn stop_workers(app: &AppHandle) {
+    if let Some(state) = app.try_state::<AppState>() {
+        state.workers.lock().unwrap_or_else(|e| e.into_inner()).clear();
     }
 }
 
@@ -269,14 +296,20 @@ pub fn stop_worker(app: &AppHandle, account_id: i64) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(mobile)]
+    mobile::before_launch();
     let builder = tauri::Builder::default();
     #[cfg(desktop)]
     let builder = { builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| tray::show_main(app))) };
+    #[cfg(mobile)]
+    let builder = builder.on_window_event(|window, event| mobile::window_event(window.app_handle(), event));
     builder
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .setup(|app| {
+            #[cfg(mobile)]
+            mobile::setup(app.handle());
             let dir = data_dir(app.handle())?;
             std::fs::create_dir_all(&dir)?;
             let db = dir.join("mail.db");
@@ -285,8 +318,6 @@ pub fn run() {
             let settings = mail_core::settings::load(&store)?;
             apply_language(settings.language);
             secrets::init(&dir);
-            apply_network(&settings.network);
-            let accounts = store.accounts()?;
             app.manage(AppState {
                 store: Mutex::new(store),
                 db,
@@ -295,11 +326,32 @@ pub fn run() {
                 statuses: Mutex::default(),
                 pending_oauth: Mutex::default(),
             });
-            for a in &accounts {
-                start_worker(app.handle(), a);
+            // A phone launched in the background for its check starts no workers.
+            #[cfg(mobile)]
+            let in_front = mobile::launched_in_front();
+            #[cfg(desktop)]
+            let in_front = true;
+            let handle = app.handle().clone();
+            let begin = move || {
+                apply_network(&settings.network);
+                if in_front {
+                    start_workers(&handle);
+                }
+                update_badge(&handle);
+                watch_network(handle);
+            };
+            // On a phone the credential store must not be asked on the main thread.
+            #[cfg(desktop)]
+            begin();
+            #[cfg(mobile)]
+            std::thread::spawn(begin);
+            // The e2e tests of the phone and tablet layouts size the window like a phone.
+            #[cfg(desktop)]
+            if std::env::var("ARCALO_MAIL_TOUCH").is_ok_and(|v| v == "1")
+                && let Some(w) = app.get_webview_window("main")
+            {
+                let _ = w.set_min_size(None::<tauri::Size>);
             }
-            update_badge(app.handle());
-            watch_network(app.handle().clone());
             #[cfg(desktop)]
             if let Err(e) = tray::setup(app.handle()) {
                 mail_core::diag::log("tray", &format!("no tray icon: {e}"));
@@ -357,6 +409,7 @@ pub fn run() {
             commands::outbox_entries,
             commands::retry_outbox,
             commands::discard_outbox,
+            commands::set_in_front,
         ])
         .run(tauri::generate_context!())
         .expect("Arcalo Mail failed to start");

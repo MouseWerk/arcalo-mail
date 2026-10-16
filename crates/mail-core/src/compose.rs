@@ -439,7 +439,13 @@ mod tests {
             FileAttachment { name: "Grüße.pdf".into(), mime_type: "application/pdf".into(), data: b"%PDF".to_vec() };
         let id = new_message_id("maria@example.org");
         assert!(id.ends_with("@example.org"));
-        let raw = build(&account(), &d, &[file], &id, 1_792_135_800, false).unwrap();
+        let notes =
+            FileAttachment { name: "Notizen.txt".into(), mime_type: "text/plain".into(), data: "Grüße".into() };
+        let raw = build(&account(), &d, &[file, notes], &id, 1_792_135_800, false).unwrap();
+        // 7-bit throughout (servers without 8BITMIME take it): encoded headers, quoted-printable
+        // or base64 parts.
+        assert!(raw.is_ascii(), "{}", String::from_utf8_lossy(&raw));
+        assert_eq!(crate::sevenbit::downgrade(&raw).unwrap(), raw, "nothing left to downgrade");
         let p = parse(&raw).unwrap();
         assert_eq!(p.subject, "Re: Angebot für Oktober");
         assert_eq!(p.from.unwrap().name.as_deref(), Some("Maria Muster"));
@@ -449,7 +455,7 @@ mod tests {
         assert_eq!(p.message_id.as_deref(), Some(id.as_str()));
         assert!(p.html.unwrap().contains("<b>danke</b>"));
         assert!(p.text.unwrap().contains("Passt, danke!"), "the plain alternative");
-        assert_eq!(p.attachments.iter().filter(|a| !a.inline).count(), 1);
+        assert_eq!(p.attachments.iter().filter(|a| !a.inline).count(), 2);
         assert_eq!(p.attachments[0].filename.as_deref(), Some("Grüße.pdf"));
         assert!(!String::from_utf8_lossy(&raw).contains("chef@example.org"), "no Bcc in what goes out");
         let kept = build(&account(), &d, &[], &id, 1_792_135_800, true).unwrap();

@@ -300,6 +300,25 @@ async fn smtp_sends_to_everyone_and_delivers_to_the_account() {
     assert!(matches!(err, Error::Connection(Problem::Auth { .. })), "{err:?}");
 }
 
+/// GreenMail offers neither 8BITMIME nor takes 8-bit data: the message goes out 7-bit, its
+/// text and names intact; an address with umlauts is refused with a clear error.
+#[tokio::test]
+async fn smtp_without_8bitmime_gets_a_7bit_message() {
+    let srv = server(all(), false).await;
+    *srv.shared.smtp_8bitmime.lock().unwrap() = false;
+    let raw = msg("8@x", "Grüße aus Köln", "Schöne Grüße");
+    mail_core::smtp::send(&plain(srv.smtp), USER, PW, USER, &[USER.into()], &raw).await.unwrap();
+    let sent = srv.shared.sent.lock().unwrap().clone();
+    assert!(sent[0].raw.is_ascii(), "{}", String::from_utf8_lossy(&sent[0].raw));
+    let parsed = mail_parser::MessageParser::default().parse(&sent[0].raw).unwrap();
+    assert_eq!(parsed.subject(), Some("Grüße aus Köln"));
+    assert_eq!(parsed.from().unwrap().first().unwrap().name(), Some("Jonas Berger"));
+    assert_eq!(parsed.body_text(0).unwrap().trim(), "Schöne Grüße");
+    let err =
+        mail_core::smtp::send(&plain(srv.smtp), USER, PW, USER, &["jörg@example.org".into()], &raw).await.unwrap_err();
+    assert!(err.to_string().contains("SMTPUTF8"), "{err}");
+}
+
 /// The account worker with the real clients: sync, a sent message filed in Sent, and changes
 /// made while the server was gone, replayed in order when it is back.
 #[tokio::test(flavor = "multi_thread")]

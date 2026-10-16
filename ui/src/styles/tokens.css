@@ -127,6 +127,25 @@
   --icon-sm: 16px;
   /* Phones and touch screens: the smallest touch target. */
   --touch-min: 44px;
+  /* Touch screens: the bar of message actions at the bottom, the compose button over the list,
+     the folders drawer of tablets, the compose sheet of tablets, and the smallest text of fields
+     (iOS zooms into smaller ones). */
+  --touch-bar-h: 56px;
+  --fab-h: 48px;
+  --drawer-w: 300px;
+  --compose-w-touch: 720px;
+  --compose-h-touch: 760px;
+  --fs-input-touch: 16px;
+  /* The edges a notch, the status bar or the home indicator cover (iOS; Android pads the app
+     itself, MainActivity.kt). */
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+  /* The height left above the keyboard (lib/viewport.ts sets it on touch screens). */
+  --app-h: 100dvh;
+  /* iOS Dynamic Type as a factor (lib/viewport.ts); 1 elsewhere. */
+  --type-scale: 1;
 
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
   --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
@@ -152,6 +171,24 @@
   --z-select: 90;
   --z-fullscreen: 900;
   --z-top: 1000;
+}
+
+:root[data-touch] {
+  /* Touch screens read from further away: one step larger, and following the system's text
+     size on iOS (Android scales the whole page with its own setting). */
+  --fs-2xs: calc(11px * var(--type-scale));
+  --fs-xs: calc(12px * var(--type-scale));
+  --fs-sm: calc(13px * var(--type-scale));
+  --fs-md: calc(15px * var(--type-scale));
+  --fs-base: calc(16px * var(--type-scale));
+  --fs-lg: calc(17px * var(--type-scale));
+  --fs-xl: calc(22px * var(--type-scale));
+  --row-h: calc(88px * var(--type-scale));
+  --row-h-compact: calc(62px * var(--type-scale));
+  --toolbar-h: 52px;
+  --ctl-sm: 34px;
+  --ctl-md: 40px;
+  --ctl-lg: 44px;
 }
 
 :root,

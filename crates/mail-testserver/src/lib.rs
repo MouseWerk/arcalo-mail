@@ -98,6 +98,9 @@ pub struct Shared {
     pub oauth: Mutex<mail_core::oauth::fake::FakeOAuth>,
     /// SMTP refuses XOAUTH2 with `535 5.7.139` (SMTP AUTH switched off for the mailbox).
     pub smtp_auth_disabled: Mutex<bool>,
+    /// SMTP offers 8BITMIME (on unless a test imitates GreenMail, which offers only AUTH and
+    /// SMTPUTF8); without it, a message with 8-bit bytes is refused.
+    pub smtp_8bitmime: Mutex<bool>,
     /// The JMAP view of the same mailboxes (`jmap.rs`).
     pub jmap: Mutex<mail_core::jmap::fake::FakeJmapState>,
 }
@@ -253,6 +256,7 @@ pub async fn start(opts: Options) -> io::Result<Running> {
         delay_ms: Mutex::new(0),
         oauth: Mutex::new(mail_core::oauth::fake::FakeOAuth::new(&opts.user)),
         smtp_auth_disabled: Mutex::new(false),
+        smtp_8bitmime: Mutex::new(true),
         jmap: Mutex::new(mail_core::jmap::fake::FakeJmapState::new(&opts.user, opts.jmap_push)),
     });
     let (imap_l, imap) = listen(opts.imap_port).await?;

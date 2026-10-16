@@ -85,7 +85,12 @@ impl Session {
             match verb.as_str() {
                 "EHLO" | "HELO" => {
                     let starttls = !self.tls && crate::acceptor(&self.shared).is_some();
-                    let mut r = String::from("250-localhost greets you\r\n250-8BITMIME\r\n250-SIZE 52428800\r\n");
+                    let mut r = String::from("250-localhost greets you\r\n");
+                    if *self.shared.smtp_8bitmime.lock().unwrap() {
+                        r.push_str("250-8BITMIME\r\n250-SIZE 52428800\r\n");
+                    } else {
+                        r.push_str("250-SMTPUTF8\r\n");
+                    }
                     if starttls {
                         r.push_str("250-STARTTLS\r\n");
                     }
@@ -171,6 +176,10 @@ impl Session {
                     }
                     self.reply("354 End data with <CR><LF>.<CR><LF>\r\n").await?;
                     let raw = self.data().await?;
+                    if !raw.is_ascii() && !*self.shared.smtp_8bitmime.lock().unwrap() {
+                        self.reply("554 5.6.0 8-bit data without 8BITMIME\r\n").await?;
+                        continue;
+                    }
                     self.deliver(raw);
                     self.reply("250 2.0.0 OK queued\r\n").await?;
                 }

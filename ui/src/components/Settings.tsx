@@ -1,9 +1,9 @@
-import { Bell, Info, Keyboard, LogIn, Network, Palette, PenLine, Shield, Trash2, UserRound, X, Plus } from "lucide-react";
+import { Bell, ChevronLeft, ChevronRight, Info, Keyboard, LogIn, Network, Palette, PenLine, Shield, Trash2, UserRound, X, Plus } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 import { useT, type TKey } from "../lib/i18n";
 import { api, pickSavePath } from "../lib/api";
 import { showToast } from "../lib/toasts";
-import type { AccountInfo, AppInfo, ImapTransport, LanguageChoice, MicrosoftSignIn, NetworkSettings, Prefetch, ProxyMode, ProxyProfile, RouteGroup, Security, Server, Settings as SettingsT, SystemProxy, ThemeChoice } from "../lib/types";
+import type { AccountInfo, AppInfo, ImapTransport, LanguageChoice, MicrosoftSignIn, NetworkSettings, Prefetch, ProxyMode, ProxyProfile, RouteGroup, Security, Server, Settings as SettingsT, SwipeAction, SystemProxy, ThemeChoice } from "../lib/types";
 import { explain } from "../lib/problems";
 import { ConfirmDialog, Segmented, Spinner, Switch, trapFocus } from "./ui";
 import { ProblemCard, Setup } from "./Setup";
@@ -460,10 +460,23 @@ type Props = {
   onChange: (patch: Partial<SettingsT>) => void;
   onAccountsChanged: () => void;
   onClose: () => void;
+  /** Touch screens: the swipe settings. */
+  touch?: boolean;
+  /** Phones: the list of sections is a page of its own (`nav`), a section opens over it. */
+  phone?: { nav: boolean; onNav: (open: boolean) => void };
 };
 
-export function SettingsView({ settings, accounts, info, section, onSection, onChange, onAccountsChanged, onClose }: Props) {
+const SWIPES: [SwipeAction, TKey][] = [
+  ["archive", "read.archive"],
+  ["delete", "read.delete"],
+  ["read", "settings.swipeRead"],
+  ["flag", "read.flag"],
+  ["none", "settings.swipeNone"],
+];
+
+export function SettingsView({ settings, accounts, info, section, onSection, onChange, onAccountsChanged, onClose, touch, phone }: Props) {
   const t = useT();
+  const mobile = info?.platform === "android" || info?.platform === "ios";
   const [accountId, setAccountId] = useState<number | null>(accounts[0]?.id ?? null);
   const [adding, setAdding] = useState(false);
   const [senders, setSenders] = useState<string[]>([]);
@@ -487,6 +500,7 @@ export function SettingsView({ settings, accounts, info, section, onSection, onC
       <div
         ref={ref}
         className="settings"
+        data-page={phone ? (phone.nav ? "nav" : "section") : undefined}
         role="dialog"
         aria-modal="true"
         aria-label={t("settings.title")}
@@ -499,16 +513,38 @@ export function SettingsView({ settings, accounts, info, section, onSection, onC
         }}
       >
         <nav className="settings-nav" aria-label={t("settings.sections")}>
-          <div className="settings-nav-title">{t("settings.title")}</div>
+          <div className="settings-nav-title">
+            <span>{t("settings.title")}</span>
+            {phone && (
+              <button type="button" className="icon-btn" onClick={onClose} aria-label={t("common.close")}>
+                <X size={18} strokeWidth={1.75} aria-hidden />
+              </button>
+            )}
+          </div>
           {SECTIONS.map(([id, label, Icon]) => (
-            <button key={id} type="button" className="settings-nav-item" aria-current={section === id ? "page" : undefined} onClick={() => onSection(id)}>
+            <button
+              key={id}
+              type="button"
+              className="settings-nav-item"
+              aria-current={section === id && !phone ? "page" : undefined}
+              onClick={() => {
+                onSection(id);
+                phone?.onNav(false);
+              }}
+            >
               <Icon size={15} strokeWidth={1.75} aria-hidden />
               <span>{t(label)}</span>
+              {phone && <ChevronRight size={16} strokeWidth={1.75} aria-hidden className="settings-nav-chevron" />}
             </button>
           ))}
         </nav>
         <div className="settings-main">
           <header className="settings-head">
+            {phone && (
+              <button type="button" className="icon-btn" onClick={() => phone.onNav(true)} aria-label={t("common.back")}>
+                <ChevronLeft size={20} strokeWidth={1.75} aria-hidden />
+              </button>
+            )}
             <h2>{t(SECTIONS.find(([id]) => id === section)?.[1] ?? "settings.title")}</h2>
             <button type="button" className="icon-btn" onClick={onClose} aria-label={t("common.close")}>
               <X size={16} strokeWidth={1.75} aria-hidden />
@@ -603,6 +639,26 @@ export function SettingsView({ settings, accounts, info, section, onSection, onC
                 </Row>
               </div>
             )}
+            {section === "reading" && touch && (
+              <div className="set-card" aria-label={t("settings.gestures")} role="group">
+                {(["swipe_left", "swipe_right"] as const).map((key) => (
+                  <Row key={key} label={t(key === "swipe_left" ? "settings.swipeLeft" : "settings.swipeRight")} description={t("settings.swipeHint")}>
+                    <select
+                      className="select"
+                      aria-label={t(key === "swipe_left" ? "settings.swipeLeft" : "settings.swipeRight")}
+                      value={settings[key]}
+                      onChange={(e) => onChange({ [key]: e.target.value as SwipeAction })}
+                    >
+                      {SWIPES.map(([value, label]) => (
+                        <option key={value} value={value}>
+                          {t(label)}
+                        </option>
+                      ))}
+                    </select>
+                  </Row>
+                ))}
+              </div>
+            )}
             {section === "network" && <NetworkSection net={settings.network} onChange={(network) => onChange({ network })} />}
             {section === "writing" && (
               <div className="set-card">
@@ -626,6 +682,11 @@ export function SettingsView({ settings, accounts, info, section, onSection, onC
                 <Row label={t("settings.notify")} description={t("settings.notifyHint")}>
                   <Switch label={t("settings.notify")} checked={settings.notifications} onChange={(notifications) => onChange({ notifications })} />
                 </Row>
+                {mobile && (
+                  <Row label={t("settings.backgroundCheck")} description={t("settings.backgroundCheckHint")}>
+                    <Switch label={t("settings.backgroundCheck")} checked={settings.background_check} onChange={(background_check) => onChange({ background_check })} />
+                  </Row>
+                )}
               </div>
             )}
             {section === "privacy" && (
@@ -664,8 +725,13 @@ export function SettingsView({ settings, accounts, info, section, onSection, onC
                   </div>
                 </div>
                 <div className="set-card">
-                  <Row label={t("settings.passwords")} description={store?.kind === "file" ? t("settings.passwordsFile", { reason: store.reason }) : t("settings.passwordsSystem")}>
-                    <span className="set-badge">{store?.kind === "file" ? t("settings.storeFile") : t("settings.storeSystem")}</span>
+                  <Row
+                    label={t("settings.passwords")}
+                    description={
+                      store?.kind === "file" ? t("settings.passwordsFile", { reason: store.reason }) : store?.kind === "keystore" ? t("settings.passwordsKeystore") : t("settings.passwordsSystem")
+                    }
+                  >
+                    <span className="set-badge">{store?.kind === "file" ? t("settings.storeFile") : store?.kind === "keystore" ? t("settings.storeKeystore") : t("settings.storeSystem")}</span>
                   </Row>
                   <Row label={t("settings.localFirst")} description={t("settings.localFirstHint")}>
                     <span />

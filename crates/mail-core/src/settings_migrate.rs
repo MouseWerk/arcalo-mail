@@ -12,7 +12,7 @@
 use serde_json::{Map, Value};
 
 /// Version written by this release.
-pub const SETTINGS_VERSION: u32 = 3;
+pub const SETTINGS_VERSION: u32 = 4;
 
 /// One step `from → from + 1`: changes the settings object and says what it did (`None`:
 /// nothing to do for these settings).
@@ -27,6 +27,7 @@ pub const STEPS: [Step; SETTINGS_VERSION as usize] = [
     Step { from: 0, name: "versioned", run: versioned },
     Step { from: 1, name: "mail_basics", run: mail_basics },
     Step { from: 2, name: "fetch_threads_network", run: fetch_threads_network },
+    Step { from: 3, name: "phones", run: phones },
 ];
 
 /// Version 0 is settings written before versions existed (development builds): nothing to
@@ -72,6 +73,23 @@ fn fetch_threads_network(map: &mut Map<String, Value>) -> Option<String> {
     (!added.is_empty()).then(|| format!("added {}", added.join(", ")))
 }
 
+/// Version 4 (milestone 3): the phones' swipe actions and the background check, written with
+/// their defaults (archive to the left, read or unread to the right, the check on).
+fn phones(map: &mut Map<String, Value>) -> Option<String> {
+    let mut added = vec![];
+    for (key, value) in [
+        ("swipe_left", Value::from("archive")),
+        ("swipe_right", Value::from("read")),
+        ("background_check", Value::Bool(true)),
+    ] {
+        if !map.contains_key(key) {
+            map.insert(key.into(), value);
+            added.push(key);
+        }
+    }
+    (!added.is_empty()).then(|| format!("added {}", added.join(", ")))
+}
+
 /// Runs the steps the settings still need; returns what they did.
 pub fn migrate(map: &mut Map<String, Value>) -> Vec<String> {
     let from = map.get("version").and_then(Value::as_u64).unwrap_or(0) as u32;
@@ -103,7 +121,9 @@ mod tests {
     fn mail_basics_keep_what_is_there() {
         let mut m: Map<String, Value> = serde_json::from_str(r#"{"version":1,"undo_send_secs":10}"#).unwrap();
         let done = migrate(&mut m);
-        assert_eq!(done.len(), 2, "{done:?}");
+        // mail_basics, fetch_threads_network and the later steps.
+        assert_eq!(done.len(), 3, "{done:?}");
+        assert!(done[0].starts_with("mail_basics: "), "{done:?}");
         assert_eq!(m["undo_send_secs"], 10);
         assert_eq!(m["notifications"], true);
         assert!(migrate(&mut m).is_empty(), "idempotent");
@@ -113,9 +133,21 @@ mod tests {
     fn version_3_adds_fetching_threads_and_network_once() {
         let mut m: Map<String, Value> = serde_json::from_str(r#"{"version":2,"prefetch":"none"}"#).unwrap();
         let done = migrate(&mut m);
-        assert_eq!(done, ["fetch_threads_network: added subject_threads, network"]);
+        assert_eq!(done[0], "fetch_threads_network: added subject_threads, network");
+        assert_eq!(done.len(), 2, "and the phones' step: {done:?}");
         assert_eq!(m["prefetch"], "none", "kept");
         assert_eq!(m["network"]["profiles"][0]["id"], "standard");
+        assert!(migrate(&mut m).is_empty(), "idempotent");
+    }
+
+    #[test]
+    fn version_4_adds_the_swipes_and_the_background_check_once() {
+        let mut m: Map<String, Value> = serde_json::from_str(r#"{"version":3,"swipe_left":"delete"}"#).unwrap();
+        let done = migrate(&mut m);
+        assert_eq!(done, ["phones: added swipe_right, background_check"]);
+        assert_eq!(m["swipe_left"], "delete", "kept");
+        assert_eq!(m["swipe_right"], "read");
+        assert_eq!(m["background_check"], true);
         assert!(migrate(&mut m).is_empty(), "idempotent");
     }
 

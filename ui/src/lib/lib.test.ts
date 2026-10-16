@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { PULL_MAX, backStep, layoutFor, pullDistance, pullTriggers, swipeIntent, swipeOffset, swipeRemoves, swipeResult, swipeSide, swipeThreshold, typeScale } from "./touch";
 import { langFromLocale, setLang, t } from "./i18n";
 import { fileSize, initials, listDate } from "./format";
 import { frameCsp, frameDocument, openableLink } from "./mailframe";
@@ -205,5 +206,67 @@ describe("milestone 2", () => {
     const p = explain({ kind: "proxy", proxy: "http://proxy:3128", detail: "403" });
     expect([p.title, p.vars.proxy, p.detail]).toEqual(["problem.proxy", "http://proxy:3128", "403"]);
     expect(hintKey("google_app_password")).toBeNull();
+  });
+});
+
+describe("touch", () => {
+  it("chooses one pane on phones, a drawer on tablets, three panes elsewhere", () => {
+    expect(layoutFor(390, true)).toBe("phone");
+    expect(layoutFor(390, false)).toBe("phone");
+    expect(layoutFor(820, true)).toBe("tablet");
+    expect(layoutFor(844, true)).toBe("tablet");
+    expect(layoutFor(1180, true)).toBe("desktop");
+    expect(layoutFor(1000, false)).toBe("desktop");
+  });
+
+  it("tells a swipe from scrolling and picks the side's action", () => {
+    expect(swipeIntent(4, 3)).toBeNull();
+    expect(swipeIntent(30, 5)).toBe("swipe");
+    expect(swipeIntent(-30, 8)).toBe("swipe");
+    expect(swipeIntent(12, 30)).toBe("scroll");
+    expect(swipeSide(-40, "archive", "read")).toBe("archive");
+    expect(swipeSide(40, "archive", "read")).toBe("read");
+    expect(swipeSide(40, "archive", "none")).toBeNull();
+  });
+
+  it("acts only past the threshold, and holds back past it", () => {
+    const w = 390;
+    expect(swipeThreshold(w)).toBe(96);
+    expect(swipeThreshold(150)).toBe(48);
+    expect(swipeResult(-60, w, "archive", "read")).toBeNull();
+    expect(swipeResult(-120, w, "archive", "read")).toBe("archive");
+    expect(swipeResult(120, w, "archive", "none")).toBeNull();
+    expect(swipeOffset(-50, w, "archive", "read")).toBe(-50);
+    expect(Math.abs(swipeOffset(-200, w, "archive", "read"))).toBeLessThan(200);
+    expect(Math.abs(swipeOffset(200, w, "archive", "none"))).toBeLessThanOrEqual(6);
+    expect(swipeRemoves("archive") && swipeRemoves("delete")).toBe(true);
+    expect(swipeRemoves("read") || swipeRemoves("flag")).toBe(false);
+  });
+
+  it("pulls with resistance and refreshes past the trigger", () => {
+    expect(pullDistance(-20)).toBe(0);
+    expect(pullDistance(100)).toBe(50);
+    expect(pullDistance(1000)).toBe(PULL_MAX);
+    expect(pullTriggers(100)).toBe(false);
+    expect(pullTriggers(140)).toBe(true);
+  });
+
+  it("follows the iOS text size within bounds", () => {
+    expect(typeScale(17)).toBe(1);
+    expect(typeScale(23)).toBe(1.35);
+    expect(typeScale(53)).toBe(1.5);
+    expect(typeScale(12)).toBe(0.88);
+    expect(typeScale(null)).toBe(1);
+    expect(typeScale(Number.NaN)).toBe(1);
+  });
+
+  it("walks back through compose, settings, the message and the folders", () => {
+    const s = { view: "message" as const, layout: "phone" as const, composing: false, settings: false };
+    expect(backStep({ ...s, composing: true })).toBe("compose");
+    expect(backStep({ ...s, settings: true })).toBe("settings");
+    expect(backStep(s)).toBe("list");
+    expect(backStep({ ...s, layout: "tablet" })).toBeNull();
+    expect(backStep({ ...s, view: "folders", layout: "tablet" })).toBe("list");
+    expect(backStep({ ...s, view: "list" })).toBeNull();
   });
 });

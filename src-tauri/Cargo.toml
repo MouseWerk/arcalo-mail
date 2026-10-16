@@ -29,8 +29,11 @@ tauri-plugin-dialog = "2"
 tauri-plugin-notification = "2"
 tauri-plugin-opener = "2"
 
-# Secrets in the OS credential store: Windows Credential Manager, macOS and iOS Keychain.
-[target.'cfg(any(windows, target_os = "macos", target_os = "ios"))'.dependencies]
+# The phones' background check: a runtime of its own for one round of every account.
+tokio = { version = "1.53.1", features = ["rt", "sync", "time"] }
+
+# Secrets in the OS credential store: Windows Credential Manager and the macOS Keychain.
+[target.'cfg(any(windows, target_os = "macos"))'.dependencies]
 keyring = { version = "3", features = ["windows-native", "apple-native"] }
 
 # Linux: the Secret Service (GNOME Keyring, KWallet) over D-Bus.
@@ -41,8 +44,20 @@ keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }
 [target.'cfg(any(windows, target_os = "macos", target_os = "linux"))'.dependencies]
 tauri-plugin-single-instance = "2"
 
-# Android: the Android Keystore through a small Kotlin plugin (milestone 3, docs/plan.md); until
-# then `secrets.rs` refuses to store anything there.
+# Android (`mobile/android.rs`): the Kotlin side through JNI, also from the background check that
+# runs without the app (WorkManager): the Keystore cipher, Custom Tabs, notifications.
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21.1"
+ndk-context = "0.1.1"
+
+# iOS (`mobile/ios.rs`): the Keychain with items the background check can read while the phone
+# is locked, and UIKit, AuthenticationServices, BackgroundTasks and UserNotifications through the
+# Objective-C runtime.
+[target.'cfg(target_os = "ios")'.dependencies]
+block2 = "0.6.2"
+dispatch2 = "0.3.1"
+objc2 = "0.6.5"
+security-framework = "3.7.0"
 
 [features]
 # Used by `cargo tauri build`/`dev`; debug builds without it load the Vite dev server.

@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Merged into the iOS app's Info.plist by `cargo tauri ios build` (src-tauri/src/mobile/ios.rs). -->
+<plist version="1.0">
+<dict>
+	<!-- Background app refresh: the check for new mail when the system allows it. -->
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>fetch</string>
+	</array>
+	<key>BGTaskSchedulerPermittedIdentifiers</key>
+	<array>
+		<string>de.mousewerk.arcalo.mail.refresh</string>
+	</array>
+	<!-- A mail server in the user's own network (a NAS, a company server) asks iOS for access. -->
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Arcalo Mail connects to mail servers in your local network when your account uses one.</string>
+	<!-- Attaching photos and saving pictures from a message. -->
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>Arcalo Mail saves pictures from a message to your photos when you ask it to.</string>
+	<!-- Only TLS for the connections (exempt): App Store Connect does not ask for every build. -->
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
+	<!-- The app's own languages. -->
+	<key>CFBundleLocalizations</key>
+	<array>
+		<string>de</string>
+		<string>en</string>
+	</array>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+</dict>
+</plist>

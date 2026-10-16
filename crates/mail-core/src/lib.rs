@@ -24,6 +24,7 @@ pub mod sanitize;
 pub mod search;
 pub mod settings;
 pub mod settings_migrate;
+pub mod sevenbit;
 pub mod smtp;
 pub mod store;
 pub mod sync;

@@ -48,7 +48,8 @@
       "signingIdentity": "-"
     },
     "iOS": {
-      "minimumSystemVersion": "14.0"
+      "minimumSystemVersion": "14.0",
+      "frameworks": ["AuthenticationServices", "BackgroundTasks", "UserNotifications"]
     },
     "android": {
       "minSdkVersion": 24
