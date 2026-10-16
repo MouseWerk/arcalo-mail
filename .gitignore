@@ -1,6 +1,9 @@
 /target/
 /src-tauri/target/
-/src-tauri/gen/
+# The Android project is committed (own changes, as in Arcalo); the schemas and the iOS project
+# (made by `cargo tauri ios init` in CI, src-tauri/Info.ios.plist holds the changes) are not.
+/src-tauri/gen/schemas/
+/src-tauri/gen/apple/
 *.db
 *.db-wal
 *.db-shm

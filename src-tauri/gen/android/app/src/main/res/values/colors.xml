@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- ui/src/styles/tokens.css, token bg-app. -->
+    <color name="arcalo_mail_background">#f4f4f5</color>
+</resources>
