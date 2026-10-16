@@ -400,21 +400,30 @@ async fn replay<C: Connector>(ctx: &Ctx<C>, conn: &mut C::Imap) -> Result<Vec<St
     while let Some(q) = outbox::next_due(&ctx.store, ctx.account_id, now())? {
         outbox::start(&ctx.store, q.id)?;
         let result = apply(ctx, conn, q.id, &q.op).await;
-        ctx.notice(Notice::Outbox { account_id: ctx.account_id });
-        match result {
+        // The notice follows the queue's new state: a UI that reads the queue when it hears
+        // of it must not see the step that just finished.
+        let outcome = match result {
             Ok(t) => {
                 outbox::done(&ctx.store, q.id)?;
                 touched.extend(t);
+                None
             }
             Err(e) if is_transient(&e) => {
                 outbox::failed(&ctx.store, q.id, &e.to_string(), now())?;
-                // A send that could not reach the SMTP server: the IMAP connection is fine.
-                if matches!(q.op, Op::Send { .. }) {
-                    break;
-                }
-                return Err(e);
+                Some(e)
             }
-            Err(e) => outbox::park(&ctx.store, q.id, &e.to_string())?,
+            Err(e) => {
+                outbox::park(&ctx.store, q.id, &e.to_string())?;
+                None
+            }
+        };
+        ctx.notice(Notice::Outbox { account_id: ctx.account_id });
+        if let Some(e) = outcome {
+            // A send that could not reach the SMTP server: the IMAP connection is fine.
+            if matches!(q.op, Op::Send { .. }) {
+                break;
+            }
+            return Err(e);
         }
     }
     Ok(touched)
@@ -1041,6 +1050,36 @@ mod tests {
         })
         .await;
         assert!(s.notices.lock().unwrap().iter().any(|n| matches!(n, Notice::Sent { .. })));
+    }
+
+    /// Each queue notice comes after the queue changed: the UI reads the queue when it hears
+    /// of it, and must not see a finished step still waiting.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn queue_notices_follow_the_queue() {
+        let s = setup("notices");
+        let seen: Arc<Mutex<Vec<u32>>> = Arc::default();
+        let (seen2, db) = (seen.clone(), s.db.clone());
+        let notices = s.notices.clone();
+        let sink: Sink = Arc::new(move |n| {
+            if let Notice::Outbox { account_id } = &n {
+                let store = Store::open(&db).unwrap();
+                seen2.lock().unwrap().push(outbox::pending(&store, *account_id).unwrap());
+            }
+            notices.lock().unwrap().push(n);
+        });
+        let c = FakeConnector { server: s.server.clone(), mail: s.mail.clone() };
+        let w = Worker::spawn(s.account, s.db.clone(), c, sink).unwrap();
+        s.until("first sync", |s| s.status() == Some(Status::Ready)).await;
+        outbox::enqueue(&s.store, s.account, &Op::CreateFolder { name: "Projekte".into() }).unwrap();
+        outbox::enqueue(&s.store, s.account, &Op::CreateFolder { name: "Kunden".into() }).unwrap();
+        w.send(Command::Kick);
+        s.until("replayed", |s| outbox::pending(&s.store, s.account).unwrap() == 0).await;
+        let start = Instant::now();
+        while seen.lock().unwrap().last() != Some(&0) {
+            assert!(start.elapsed() < Duration::from_secs(10), "notices saw {:?}", seen.lock().unwrap());
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(*seen.lock().unwrap(), [1, 0], "one notice per step, after it");
     }
 
     #[tokio::test(flavor = "multi_thread")]
