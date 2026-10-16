@@ -188,6 +188,8 @@ impl Worker {
         let store = Store::open(&db)?;
         std::thread::Builder::new()
             .name(format!("account-{account_id}"))
+            // The sync futures are deep; debug builds need more than the default 2 MB.
+            .stack_size(16 * 1024 * 1024)
             .spawn(move || {
                 let rt = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
                     Ok(rt) => rt,

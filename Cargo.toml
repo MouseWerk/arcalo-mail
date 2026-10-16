@@ -1,9 +1,9 @@
 [workspace]
 resolver = "2"
-members = ["crates/mail-core", "src-tauri"]
+members = ["crates/mail-core", "crates/mail-testserver", "src-tauri"]
 # The Tauri shell needs the platform WebView SDK (WebView2 on Windows, webkit2gtk on Linux), so the
-# headless default build is the core only; CI builds the shell in its own jobs.
-default-members = ["crates/mail-core"]
+# headless default build is the core and its test server; CI builds the shell in its own jobs.
+default-members = ["crates/mail-core", "crates/mail-testserver"]
 
 [workspace.package]
 version = "0.1.0"
