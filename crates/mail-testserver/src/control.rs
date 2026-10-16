@@ -18,6 +18,8 @@
 //!   `POST /oauth/expire`, `GET /oauth/state` (token requests so far)
 //! * `POST /smtp-auth?disabled=1`: SMTP refuses XOAUTH2 with `535 5.7.139`, as Exchange Online
 //!   does when SMTP AUTH is off for the mailbox
+//! * `POST /smtp-8bitmime?offered=0`: SMTP offers only AUTH and SMTPUTF8 (as GreenMail) and
+//!   refuses 8-bit messages
 //! * `GET /.well-known/jmap`, `/jmap/…`: the same mailboxes over JMAP (`jmap.rs`)
 
 use std::collections::BTreeMap;
@@ -185,6 +187,10 @@ async fn handle(stream: TcpStream, shared: Arc<Shared>) -> std::io::Result<()> {
         }
         ("POST", "/smtp-auth") => {
             *shared.smtp_auth_disabled.lock().unwrap() = flag(&q, "disabled").unwrap_or(false);
+            ("200 OK", "text/plain", b"ok".to_vec())
+        }
+        ("POST", "/smtp-8bitmime") => {
+            *shared.smtp_8bitmime.lock().unwrap() = flag(&q, "offered").unwrap_or(true);
             ("200 OK", "text/plain", b"ok".to_vec())
         }
         ("GET", "/state") => ("200 OK", "application/json", state(&shared).to_string().into_bytes()),

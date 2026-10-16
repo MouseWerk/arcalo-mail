@@ -6,7 +6,7 @@
 use lettre::address::{Address as SmtpAddress, Envelope};
 use lettre::transport::smtp::authentication::{Credentials, Mechanism};
 use lettre::transport::smtp::client::AsyncSmtpConnection;
-use lettre::transport::smtp::extension::ClientId;
+use lettre::transport::smtp::extension::{ClientId, Extension};
 
 use crate::account::{Credential, Security, Server};
 use crate::error::{Error, Result};
@@ -92,7 +92,28 @@ pub async fn send_with(
     let rcpt = to.iter().map(|t| address(t)).collect::<Result<Vec<_>>>()?;
     let envelope = Envelope::new(Some(address(from)?), rcpt).map_err(|e| Error::Invalid(e.to_string()))?;
     let mut conn = connect(server, username, credential).await?;
-    conn.send(&envelope, raw).await.map_err(problem)?;
+    let info = conn.server_info();
+    // Addresses with other characters need SMTPUTF8 (and lettre then wants 8BITMIME as well).
+    let utf8 = info.supports_feature(Extension::SmtpUtfEight) && info.supports_feature(Extension::EightBitMime);
+    if let Some(a) = std::iter::once(from).chain(to.iter().map(String::as_str)).find(|a| !a.is_ascii())
+        && !utf8
+    {
+        let _ = conn.quit().await;
+        return Err(crate::sevenbit::needs_smtputf8(a.trim()));
+    }
+    // A server without 8BITMIME takes only 7-bit messages.
+    let raw = if raw.is_ascii() || info.supports_feature(Extension::EightBitMime) {
+        std::borrow::Cow::Borrowed(raw)
+    } else {
+        match crate::sevenbit::downgrade(raw) {
+            Ok(r) => std::borrow::Cow::Owned(r),
+            Err(e) => {
+                let _ = conn.quit().await;
+                return Err(e);
+            }
+        }
+    };
+    conn.send(&envelope, &raw).await.map_err(problem)?;
     let _ = conn.quit().await;
     Ok(())
 }
