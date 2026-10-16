@@ -305,18 +305,65 @@ fn provider() -> Arc<rustls::crypto::CryptoProvider> {
 }
 
 /// The system's verifier, made once (reading the trust store takes a moment).
-fn platform_verifier() -> Result<Arc<rustls_platform_verifier::Verifier>> {
+#[cfg(not(target_os = "android"))]
+fn platform_verifier() -> Result<Arc<dyn ServerCertVerifier>> {
     static V: OnceLock<std::result::Result<Arc<rustls_platform_verifier::Verifier>, String>> = OnceLock::new();
     V.get_or_init(|| rustls_platform_verifier::Verifier::new(provider()).map(Arc::new).map_err(|e| e.to_string()))
         .clone()
+        .map(|v| v as Arc<dyn ServerCertVerifier>)
         .map_err(Error::Network)
+}
+
+/// Android, as in Arcalo's companion app: the platform verifier needs the app's JVM context and
+/// a Kotlin part of its own (also in the background check, where no activity exists), so the
+/// phone checks against Mozilla's root store, compiled in.
+#[cfg(target_os = "android")]
+fn platform_verifier() -> Result<Arc<dyn ServerCertVerifier>> {
+    static V: OnceLock<std::result::Result<Arc<rustls::client::WebPkiServerVerifier>, String>> = OnceLock::new();
+    V.get_or_init(|| {
+        let mut roots = rustls::RootCertStore::empty();
+        roots.add_parsable_certificates(webpki_root_certs::TLS_SERVER_ROOT_CERTS.iter().cloned());
+        rustls::client::WebPkiServerVerifier::builder_with_provider(Arc::new(roots), provider())
+            .build()
+            .map_err(|e| e.to_string())
+    })
+    .clone()
+    .map(|v| v as Arc<dyn ServerCertVerifier>)
+    .map_err(Error::Network)
+}
+
+/// The TLS configuration of the HTTP clients on Android ([`platform_verifier`]); elsewhere
+/// reqwest uses the platform verifier itself.
+#[cfg(target_os = "android")]
+fn http_tls() -> Result<ClientConfig> {
+    let mut cfg = ClientConfig::builder_with_provider(provider())
+        .with_safe_default_protocol_versions()
+        .map_err(|e| Error::Network(e.to_string()))?
+        .dangerous()
+        .with_custom_certificate_verifier(platform_verifier()?)
+        .with_no_client_auth();
+    // reqwest is built without HTTP/2 here.
+    cfg.alpn_protocols = vec![b"http/1.1".to_vec()];
+    Ok(cfg)
+}
+
+/// Hands the Android TLS configuration to an HTTP client; nothing to do elsewhere.
+fn with_tls(builder: reqwest::ClientBuilder) -> Result<reqwest::ClientBuilder> {
+    #[cfg(target_os = "android")]
+    {
+        Ok(builder.tls_backend_preconfigured(http_tls()?))
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        Ok(builder)
+    }
 }
 
 /// The platform verifier, except for the one certificate the user trusted for this server.
 /// It notes the fingerprint of what the server showed, so a refusal can offer to trust it.
 #[derive(Debug)]
 struct Verifier {
-    inner: Arc<rustls_platform_verifier::Verifier>,
+    inner: Arc<dyn ServerCertVerifier>,
     trusted: Option<String>,
     seen: Arc<Mutex<Option<String>>>,
 }
@@ -1240,7 +1287,7 @@ pub fn client_for(service: Service) -> Result<HttpClient> {
         _ => Duration::from_secs(30),
     };
     let proxy = reqwest::Proxy::custom(move |url| url.host_str().and_then(|h| route_for(service, h).url()));
-    reqwest::Client::builder()
+    with_tls(reqwest::Client::builder())?
         .no_proxy()
         .proxy(proxy)
         .timeout(timeout)
@@ -1325,7 +1372,7 @@ impl RedirectListener {
 /// read timeout, so a stream the server stopped feeding (no pings) ends.
 pub fn client_for_events(service: Service) -> Result<HttpClient> {
     let proxy = reqwest::Proxy::custom(move |url| url.host_str().and_then(|h| route_for(service, h).url()));
-    reqwest::Client::builder()
+    with_tls(reqwest::Client::builder())?
         .no_proxy()
         .proxy(proxy)
         .connect_timeout(Duration::from_secs(8))

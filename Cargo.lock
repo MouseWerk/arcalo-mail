@@ -75,9 +75,15 @@ name = "arcalo-mail"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "block2",
+ "dispatch2",
  "if-addrs",
+ "jni 0.21.1",
  "keyring",
  "mail-core",
+ "ndk-context",
+ "objc2",
+ "security-framework 3.7.0",
  "serde",
  "serde_json",
  "sys-locale",
@@ -87,6 +93,7 @@ dependencies = [
  "tauri-plugin-notification",
  "tauri-plugin-opener",
  "tauri-plugin-single-instance",
+ "tokio",
 ]
 
 [[package]]
@@ -2624,6 +2631,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tokio-rustls",
+ "webpki-root-certs",
  "windows-sys 0.61.2",
 ]
 

@@ -59,6 +59,19 @@ pub enum Prefetch {
     Month,
 }
 
+/// What a swipe over a row of the list does on a touch screen.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SwipeAction {
+    #[default]
+    Archive,
+    Delete,
+    /// Read or unread, whichever the message is not.
+    Read,
+    Flag,
+    None,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -83,6 +96,13 @@ pub struct Settings {
     pub subject_threads: bool,
     /// Proxy profiles and which service uses which (`network::NetworkSettings`).
     pub network: crate::network::NetworkSettings,
+    /// Phones and tablets: a swipe from right to left over a row of the list.
+    pub swipe_left: SwipeAction,
+    /// Phones and tablets: a swipe from left to right.
+    pub swipe_right: SwipeAction,
+    /// Phones: look for new mail in the background (Android about every 15 minutes, iOS when
+    /// the system allows) and tell about it.
+    pub background_check: bool,
 }
 
 impl Default for Settings {
@@ -101,6 +121,9 @@ impl Default for Settings {
             prefetch: Prefetch::Recent,
             subject_threads: true,
             network: crate::network::NetworkSettings::default(),
+            swipe_left: SwipeAction::Archive,
+            swipe_right: SwipeAction::Read,
+            background_check: true,
         }
     }
 }

@@ -620,6 +620,32 @@ async fn run<C: Connector>(
     main_loop(&ctx, &wake, &queue, &stop).await;
 }
 
+/// One check without a worker, for the phones' background check (WorkManager on Android,
+/// background app refresh on iOS), where no connection may stay open: connect, replay the
+/// offline queue, sync the inbox (every folder when the account has none yet) and fetch its
+/// first lines, log out. Returns the new unread messages of the inbox. The caller bounds the
+/// time it may take.
+pub async fn check_once<C: Connector>(account_id: i64, store: Store, connector: C) -> Result<Vec<i64>> {
+    let _ = outbox::recover(&store);
+    let found: Arc<Mutex<Vec<i64>>> = Arc::default();
+    let into = found.clone();
+    let sink: Sink = Arc::new(move |n| {
+        if let Notice::NewMail { messages, .. } = n {
+            into.lock().unwrap_or_else(|e| e.into_inner()).extend(messages);
+        }
+    });
+    let ctx = Ctx { account_id, store: Rc::new(store), connector: Rc::new(connector), sink };
+    let mut conn = ctx.connector.imap().await?;
+    let caps = conn.capabilities().await.unwrap_or_default();
+    let full = ctx.inbox().is_none();
+    let r = sync_round(&ctx, &mut conn, caps, full).await;
+    let _ = conn.logout().await;
+    r?;
+    let mut out = found.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    out.dedup();
+    Ok(out)
+}
+
 async fn main_loop<C: Connector>(ctx: &Ctx<C>, wake: &Notify, queue: &RefCell<VecDeque<Command>>, stop: &Cell<bool>) {
     let mut m = SyncMachine::default();
     let mut actions: VecDeque<Action> = m.on(Event::Start).into();
@@ -1072,6 +1098,35 @@ mod tests {
                 _ => None,
             })
         }
+    }
+
+    #[tokio::test]
+    async fn a_background_check_syncs_the_inbox_once() {
+        let s = setup("check-once");
+        let connector = || FakeConnector { server: s.server.clone(), mail: s.mail.clone() };
+        check_once(s.account, Store::open(&s.db).unwrap(), connector()).await.unwrap();
+        assert_eq!(s.store.mailboxes(s.account).unwrap().len(), 6, "every folder the first time");
+        assert_eq!(s.store.messages(s.inbox(), 10, 0).unwrap()[0].subject, "Willkommen");
+
+        // New mail and a change made offline: the change goes out, the new message comes back.
+        s.server.with(|f| f.deliver("INBOX", &sample("b@x", "Neu da", None, "x"), 1_760_000_100));
+        outbox::enqueue(
+            &s.store,
+            s.account,
+            &Op::Flags { mailbox: "INBOX".into(), uids: vec![1], seen: None, flagged: Some(true) },
+        )
+        .unwrap();
+        let new = check_once(s.account, Store::open(&s.db).unwrap(), connector()).await.unwrap();
+        assert_eq!(new.len(), 1, "{new:?}");
+        assert_eq!(s.store.summaries(&new).unwrap()[0].subject, "Neu da");
+        assert!(outbox::next_due(&s.store, s.account, now() + 60).unwrap().is_none(), "queue replayed");
+        assert!(s.server.with(|f| f.mailboxes["INBOX"].messages[&1].flags.flagged));
+        let again = check_once(s.account, Store::open(&s.db).unwrap(), connector()).await.unwrap();
+        assert!(again.is_empty(), "nothing new: {again:?}");
+
+        // A refused sign-in is the caller's to report.
+        *s.mail.refuse.lock().unwrap() = Some(Problem::Auth { detail: "no".into() });
+        assert!(check_once(s.account, Store::open(&s.db).unwrap(), connector()).await.is_err());
     }
 
     #[tokio::test(flavor = "multi_thread")]

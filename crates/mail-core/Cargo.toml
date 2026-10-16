@@ -44,5 +44,9 @@ tokio-rustls = { version = "0.26.5", default-features = false, features = ["aws_
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Registry"] }
 
+# Android: Mozilla's root store for TLS (`network::platform_verifier`), as in Arcalo's companion app.
+[target.'cfg(target_os = "android")'.dependencies]
+webpki-root-certs = "1.0.9"
+
 [dev-dependencies]
 tokio = { version = "1.53.1", features = ["rt", "rt-multi-thread", "macros"] }
