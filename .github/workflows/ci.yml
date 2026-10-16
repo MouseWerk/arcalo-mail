@@ -100,11 +100,17 @@ jobs:
         with:
           distribution: temurin
           java-version: 17
-      - uses: android-actions/setup-android@v3
-      - name: Android NDK
+      # The runner brings the Android SDK and NDK (as in Arcalo's Android build).
+      - name: Android NDK (preinstalled on the runner)
         run: |
-          sdkmanager --install "ndk;27.2.12479018"
-          echo "NDK_HOME=$ANDROID_SDK_ROOT/ndk/27.2.12479018" >> "$GITHUB_ENV"
+          echo "NDK_HOME=$ANDROID_NDK_LATEST_HOME" >> "$GITHUB_ENV"
+          echo "Using the NDK in $ANDROID_NDK_LATEST_HOME"
+          bin="$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          echo "$bin" >> "$GITHUB_PATH"
+          for t in aarch64_linux_android armv7_linux_androideabi x86_64_linux_android i686_linux_android; do
+            echo "AR_$t=$bin/llvm-ar" >> "$GITHUB_ENV"
+            echo "RANLIB_$t=$bin/llvm-ranlib" >> "$GITHUB_ENV"
+          done
       - run: npm ci --prefix ui
       - run: cargo install tauri-cli --version "^2" --locked
       # The Android project (src-tauri/gen/android) is generated until it needs own changes
