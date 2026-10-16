@@ -150,6 +150,25 @@ every command and every folder, a few keys away. The layout holds up from 900 pi
   <img src="docs/screenshots/narrow.png" alt="The app at 900 pixels wide" width="62%">
 </p>
 
+### Phones and tablets
+
+On a phone the folders, the list and the message take the screen one at a time; on a tablet the list and the
+message sit side by side and the folders slide in. A swipe over a message archives it or marks it read (you choose
+what each side does), pulling the list down checks for mail, and the message's actions sit at the bottom, in reach
+of the thumb. Microsoft accounts sign in through the system's browser. New mail arrives while the app is open; in
+the background the phone checks now and then (Android about every 15 minutes, iOS when the system allows) and
+tells you, without a server of ours in between.
+
+<p align="center">
+  <img src="docs/screenshots/mobile/phone-list-light.png" alt="The inbox on a phone" width="30%">
+  <img src="docs/screenshots/mobile/phone-swipe-dark.png" alt="A swipe to the left over a message shows Archive, in the dark theme" width="30%">
+  <img src="docs/screenshots/mobile/phone-message-light.png" alt="A conversation on a phone with the actions at the bottom" width="30%">
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/mobile/tablet-message-light.png" alt="A tablet: the list and the conversation side by side" width="62%">
+</p>
+
 ## Features
 
 - **Accounts:** any IMAP/SMTP provider with TLS or STARTTLS; Microsoft 365 and Outlook.com with Microsoft sign-in
@@ -180,8 +199,9 @@ every command and every folder, a few keys away. The layout holds up from 900 pi
   no server of ours in between.
 - **Remote content blocked.** Images from the internet load only when you say so, for one message or one sender.
 - **Passwords and sign-in tokens** are kept in your system's credential store (Windows Credential Manager, the
-  macOS keychain, the Secret Service on Linux), never in the database, the settings or a log. On a Linux desktop without a keyring they
-  go to a file only your user can read, and the settings say so.
+  macOS and iOS keychain, the Secret Service on Linux; on Android encrypted with a key of the Android Keystore), never
+  in the database, the settings or a log. On a Linux desktop without a keyring they go to a file only your user can
+  read, and the settings say so.
 
 ## Platforms
 
@@ -190,7 +210,8 @@ every command and every folder, a few keys away. The layout holds up from 900 pi
 | Windows 10/11 | builds in CI (unsigned installer) |
 | macOS 11+ | builds in CI (ad hoc signed) |
 | Linux (deb, AppImage) | builds in CI; the end-to-end tests run here |
-| Android, iOS | planned, see [docs/plan.md](docs/plan.md) |
+| Android 7+ | builds in CI (APK, and the AAB for Google Play once the release key is set up) |
+| iOS 14+, iPadOS | the Rust part builds in CI; TestFlight and the App Store once the Apple account is set up |
 
 ## Install
 

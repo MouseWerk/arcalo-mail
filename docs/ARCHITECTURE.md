@@ -36,9 +36,10 @@ Identifier: `de.mousewerk.arcalo.mail`.
 | `network` | The only place that opens connections: the policy (TLS or STARTTLS except to loopback, `https://` only), `connect_imap`/`connect_smtp` (tokio-rustls with the platform verifier, or a certificate pinned by its SHA-256 fingerprint after the user trusted it; STARTTLS), `client_for(Service)` (reqwest) and `client_for_events` (long-lived streams), the OAuth redirect listener, SRV and MX lookups, proxy profiles (none, system, manual HTTP CONNECT or SOCKS5 with exceptions; routes per service group `mail`, `sign_in`, `setup`, `updates`; IMAP and SMTP take only a SOCKS proxy from the system), and `Problem`, the classified connection error (DNS, refused, timeout, offline, TLS, certificate, sign-in, app password, admin consent, SMTP AUTH off, proxy). A test checks that no other code opens sockets, resolvers or HTTP clients | done |
 | `imap` | `ImapClient` trait (capabilities, LIST, SELECT with QRESYNC, header/flag/message FETCH with CHANGEDSINCE, BODYSTRUCTURE and single parts, IDLE, STORE, COPY, MOVE, EXPUNGE, APPEND, SEARCH, CREATE/RENAME/DELETE), `imap::client` (the client on the wire: `imap-proto` parser, LITERAL+, AUTHENTICATE PLAIN or LOGIN, ENABLE QRESYNC), modified UTF-7 folder names, folder roles, and `imap::fake::FakeImap`, an in-memory server with UIDVALIDITY, MODSEQ and vanished UIDs | done |
 | `sync` | Per-folder strategy (QRESYNC, CONDSTORE, plain, full resync on UIDVALIDITY change), `sync_mailbox`, `sync_folders`, bodies on demand (whole up to 2 MB, else text, HTML and inline pictures part by part), bodies of the newest 60 messages per folder ahead of time, attachments on demand, server SEARCH, IDLE wait; `SyncMachine`, the I/O-free connection state machine (connect, sync, idle or poll, backoff, sign-in needed, offline) | done |
-| `engine` | One worker thread per account (a current-thread runtime with its own store connection): runs the `SyncMachine`, replays the outbox before each round, answers body, attachment and search requests from the UI, and reports `Notice`s (status, changed folders, new mail, outbox, sent); connectors for IMAP/SMTP with a password or OAuth (`NetConnector`) and JMAP (`JmapConnector`); `Command::Reconnect` after sleep or a network change | done |
+| `engine` | One worker thread per account (a current-thread runtime with its own store connection): runs the `SyncMachine`, replays the outbox before each round, answers body, attachment and search requests from the UI, and reports `Notice`s (status, changed folders, new mail, outbox, sent); connectors for IMAP/SMTP with a password or OAuth (`NetConnector`) and JMAP (`JmapConnector`); `Command::Reconnect` after sleep or a network change; `check_once`, one round without a worker for the phones' background check | done |
 | `actions` | What the UI does, local first: flags, move, archive, spam, delete, folders, send and drafts become outbox steps after a 5 second undo window; `undo` takes them back; `message_view` builds the reading pane's body (sanitized, quote folded, plain text marked) | done |
-| `smtp` | Sending with lettre over a `network` stream (submission with STARTTLS or implicit TLS, AUTH PLAIN/LOGIN) and the connection check | done |
+| `smtp` | Sending with lettre over a `network` stream (submission with STARTTLS or implicit TLS, AUTH PLAIN/LOGIN) and the connection check; a message for a server without 8BITMIME is made 7-bit first (`sevenbit`) | done |
+| `sevenbit` | 8-bit parts to quoted-printable or base64, 8-bit headers to RFC 2047 encoded words; addresses with other characters need SMTPUTF8 | done |
 | `compose` | Messages built with mail-builder (text and HTML alternative, attachments, reply headers), the plain alternative from the editor's HTML, address parsing | done |
 | `autoconfig` | Finding the servers of an address: presets, the provider's autoconfig file, the Thunderbird ISPDB, SRV records, presets by MX, a guess | done |
 | `store` | SQLite (WAL, foreign keys), positional migrations through `PRAGMA user_version` (a newer database is refused), accounts, folders with sync state, messages, bodies, attachments, settings | done for M1 |
@@ -110,13 +111,49 @@ them otherwise). `ui/src/lib/html.test.ts` checks it.
 
 ## Secrets
 
-`src-tauri/src/secrets.rs`: the `keyring` crate on Windows (Credential Manager), macOS and iOS (Keychain) and Linux
-(Secret Service). On a Linux desktop without a Secret Service (or with `ARCALO_MAIL_SECRET_STORE=file`, which the
-e2e tests use) passwords go to `secrets.json` in the data folder with mode 0600, and Settings → Privacy says so.
-Android gets a small Kotlin plugin for the Android Keystore in milestone 3, as Arcalo's companion
-app has; until then nothing is stored there. Entry names: service `de.mousewerk.arcalo.mail`, account
-`account-<id>-password` (also a JMAP API token), `account-<id>-oauth-refresh-token` (rotated refresh tokens are
-written back at once) and `proxy-<profile>-password`. OAuth access tokens are kept in memory only.
+`src-tauri/src/secrets.rs`, one vault per platform:
+
+- Windows (Credential Manager), macOS (Keychain), Linux (Secret Service): the `keyring` crate. On a Linux desktop
+  without a Secret Service (or with `ARCALO_MAIL_SECRET_STORE=file`, which the e2e tests use) passwords go to
+  `secrets.json` in the data folder with mode 0600, and Settings → Privacy says so.
+- Android: an AES-256-GCM key created in the Android Keystore that never leaves it (`KeystoreCipher.kt`, reached
+  over JNI from `mobile/android.rs`) seals each secret; only the ciphertexts are kept, in `secrets.sealed.json` in
+  the app's private folder (no backups, no device transfer). A value the key cannot open any more reads as missing
+  and the account asks for its sign-in again.
+- iOS: the Keychain through `security-framework`, items readable after the first unlock and bound to the device
+  (`kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`), so the background check works while the phone is locked.
+
+Entry names: service `de.mousewerk.arcalo.mail`, account `account-<id>-password` (also a JMAP API token),
+`account-<id>-oauth-refresh-token` (rotated refresh tokens are written back at once) and `proxy-<profile>-password`.
+OAuth access tokens are kept in memory only. The vault logic is tested with a fake cipher.
+
+## Phones (`src-tauri/src/mobile`, `src-tauri/gen/android`, `src-tauri/Info.ios.plist`)
+
+The same UI, store, commands and core. What differs:
+
+- **In front or not.** The account workers (IDLE, JMAP push) run only while the app is in front; the UI reports
+  `visibilitychange` (`set_in_front`), Android also the activity's pause and resume. In the background the platform
+  runs `background::run`: every account once through `engine::check_once` (the offline queue, the inbox, its first
+  lines) within a time budget, answering the notifications (one per new message, a summary above four) and the
+  unread count. Android: WorkManager about every 15 minutes with a network (`MailCheckWorker.kt`, calling Rust over
+  JNI in a process that may have no activity); iOS: a `BGAppRefreshTask` asked for each time the app goes to the
+  background, 25 seconds (`mobile/ios.rs`). No push server (docs/plan.md, open decision 5).
+- **Badge.** Android: the number of the new-mail notification (launchers show it); iOS: the app icon's number.
+- **Sign-in.** Microsoft opens in Custom Tabs (`AuthTab.kt`) or `ASWebAuthenticationSession`; the redirect
+  `de.mousewerk.arcalo.mail://oauth` comes back through the activity's intent filter or the session's callback,
+  and `oauth::sign_in_with_session` exchanges the code as on the desktop.
+- **TLS on Android** checks against Mozilla's roots compiled in (`webpki-root-certs`), as Arcalo's companion app:
+  the platform verifier needs a JVM context the background check does not have.
+- **Native code without a plugin.** Rust reaches Kotlin over plain JNI (also without Tauri, in the background) and
+  iOS's frameworks through the Objective-C runtime (`objc2`), so the iOS project needs no code of its own: it is
+  generated in CI, `Info.ios.plist` adds background fetch and the usage strings, `tauri.conf.json` links the
+  frameworks, `ios/PrivacyInfo.xcprivacy` is copied in. The Android project is committed (`src-tauri/gen/android`).
+- **UI.** `lib/touch.ts` picks the layout (phone: one pane; tablet: list and message, folders in a drawer;
+  desktop), the swipes, pull to refresh and what Back does; `lib/viewport.ts` follows the keyboard (visual viewport),
+  iOS Dynamic Type and the app's visibility. Touch screens get 44 px targets and one step larger type; the safe areas
+  come from `env(safe-area-inset-*)` on iOS and from the activity's padding on Android.
+
+Release steps for the stores: [release-mobile.md](release-mobile.md).
 
 ## UI (`ui/`)
 
@@ -124,7 +161,7 @@ Vite + React + TypeScript. `src/styles/tokens.css` is Arcalo's token set (spacin
 motion, layers, the neutral state tints) adapted for mail and extended by a contrast theme; `styles.test.ts`
 enforces tokens-only colors, no accent on selected/current/focused states, no side bars and `:focus-visible` rings.
 Three panes (`Sidebar`, `MessageList`, `ReadingPane`) and a compose sheet; below 720 px one pane at a time with
-back navigation and 44 px touch targets. In a plain browser `lib/api.ts` serves sample data (`lib/demo.ts`), so the
+back navigation; touch screens get the phone and tablet layouts of the section above. In a plain browser `lib/api.ts` serves sample data (`lib/demo.ts`), so the
 layout can be checked without the app.
 
 ## Chosen crates

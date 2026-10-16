@@ -19,7 +19,7 @@ Everything works without an app registration except the sign-in itself: a build 
 | Authority | `https://login.microsoftonline.com/common/oauth2/v2.0` (work, school and personal accounts) |
 | Scopes | `offline_access`, `https://outlook.office.com/IMAP.AccessAsUser.All`, `https://outlook.office.com/SMTP.Send`, `openid`, `email`, `profile` |
 | Redirect on the desktop | `http://127.0.0.1:<port>` (any port; no path) |
-| Redirect on Android and iOS | `de.mousewerk.arcalo.mail://oauth` (milestone 3, see below) |
+| Redirect on Android and iOS | `de.mousewerk.arcalo.mail://oauth` (see below) |
 | Client id | compiled in from the build environment variable `ARCALO_MAIL_MS_CLIENT_ID` |
 
 ## Owner steps: register the app in Microsoft Entra
@@ -84,13 +84,15 @@ it exists, needs the same line. For a local build: `ARCALO_MAIL_MS_CLIENT_ID=…
 - **Signing in again**: after a password change, a revoked grant or 90 days without use the refresh token
   ends; the account shows "Sign-in needed" and *Sign in* opens the browser again.
 
-## Phones (milestone 3)
+## Phones
 
 Android and iOS cannot listen on a loopback port while the browser is in front. They use the redirect
-`de.mousewerk.arcalo.mail://oauth` (registered above) through the platform's browser session
-(Custom Tabs on Android with an intent filter for the scheme, `ASWebAuthenticationSession` on iOS). The
-flow in `oauth.rs` stays the same (`authorize_url` takes the redirect, `exchange_code` the code); only the
-place the code arrives differs. Until then the phones build without Microsoft sign-in.
+`de.mousewerk.arcalo.mail://oauth` (registered above) through the platform's browser session: a Custom Tab on
+Android (`AuthTab.kt`; the activity's intent filter for the scheme hands the redirect to Rust), an
+`ASWebAuthenticationSession` on iOS (`mobile/ios.rs`; it shares Safari's sign-ins). `oauth::sign_in_with_session`
+does the rest as on the desktop: PKCE, the state check, the code exchange. Closing the browser without signing in
+counts as cancelled. The core's test `signs_in_through_the_mobile_redirect` runs the flow against the fake identity
+provider.
 
 ## Tests
 
