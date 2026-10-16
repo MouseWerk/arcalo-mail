@@ -1,9 +1,10 @@
-import { Archive, Flag, Mail, MailOpen, Menu as MenuIcon, Paperclip, Search, Server, ShieldAlert, Trash2, X, FolderInput, Reply } from "lucide-react";
-import { useEffect, useLayoutEffect, useState, type ReactNode } from "react";
+import { Archive, ArrowDown, Flag, FlagOff, Mail, MailOpen, Menu as MenuIcon, Paperclip, Search, Server, ShieldAlert, Trash2, X, FolderInput, Reply } from "lucide-react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { currentLang, useT } from "../lib/i18n";
 import { displayName, listDate, now } from "../lib/format";
 import { visibleRange } from "../lib/listing";
-import type { MessageSummary } from "../lib/types";
+import { PULL_TRIGGER, pullDistance, swipeIntent, swipeOffset, swipeRemoves, swipeResult, swipeSide } from "../lib/touch";
+import type { MessageSummary, SwipeAction } from "../lib/types";
 import { Spinner } from "./ui";
 
 export type BulkAction = "archive" | "delete" | "spam" | "read" | "unread" | "flag" | "move";
@@ -31,13 +32,43 @@ type Props = {
   onShowFolders: () => void;
   searchRef: React.RefObject<HTMLInputElement | null>;
   listRef: React.RefObject<HTMLDivElement | null>;
-  /** The row ids in order as far as loaded (for the keyboard). */
+  /** Below the list (the phone's compose button). */
   extra?: ReactNode;
+  /** Touch screens: swipes over rows and pull to refresh. */
+  touch?: { left: SwipeAction; right: SwipeAction; onSwipe: (m: MessageSummary, a: SwipeAction) => void; onRefresh: () => Promise<void> };
 };
 
+/** A finger (or the mouse, for tests) on a row or at the top of the list. */
+type Gesture = { id: number | null; x: number; y: number; atTop: boolean; mode: "swipe" | "scroll" | "pull" | null; pointer: number | null };
+
+function SwipeLayer({ action, m, dir }: { action: SwipeAction; m: MessageSummary; dir: "left" | "right" }) {
+  const t = useT();
+  const [icon, label] =
+    action === "archive"
+      ? [<Archive key="i" size={18} strokeWidth={1.75} aria-hidden />, t("read.archive")]
+      : action === "delete"
+        ? [<Trash2 key="i" size={18} strokeWidth={1.75} aria-hidden />, t("read.delete")]
+        : action === "flag"
+          ? [m.flagged ? <FlagOff key="i" size={18} strokeWidth={1.75} aria-hidden /> : <Flag key="i" size={18} strokeWidth={1.75} aria-hidden />, m.flagged ? t("read.unflag") : t("read.flag")]
+          : [m.seen ? <Mail key="i" size={18} strokeWidth={1.75} aria-hidden /> : <MailOpen key="i" size={18} strokeWidth={1.75} aria-hidden />, m.seen ? t("read.markUnread") : t("read.markRead")];
+  return (
+    <span className="row-swipe" data-action={action} data-dir={dir} aria-hidden>
+      {icon}
+      <span>{label}</span>
+    </span>
+  );
+}
+
+/** A size token in pixels, measured (touch screens compute theirs with the text size). */
 function tokenPx(name: string, fallback: number): number {
-  if (typeof document === "undefined") return fallback;
-  const v = parseFloat(getComputedStyle(document.documentElement).getPropertyValue(name));
+  if (typeof document === "undefined" || !document.body) return fallback;
+  const probe = document.createElement("div");
+  probe.style.position = "absolute";
+  probe.style.visibility = "hidden";
+  probe.style.height = `var(${name})`;
+  document.body.appendChild(probe);
+  const v = probe.getBoundingClientRect().height;
+  probe.remove();
   return Number.isFinite(v) && v > 0 ? v : fallback;
 }
 
@@ -48,10 +79,15 @@ export function MessageList(p: Props) {
   const scroller = p.listRef;
   const [range, setRange] = useState({ start: 0, end: 40 });
   const [rowH, setRowH] = useState(76);
+  const gesture = useRef<Gesture | null>(null);
+  const swallowClick = useRef(false);
+  const [swipe, setSwipe] = useState<{ id: number; dx: number; leaving?: boolean } | null>(null);
+  const [pull, setPull] = useState<{ dy: number; busy: boolean }>({ dy: 0, busy: false });
 
-  useLayoutEffect(() => {
+  // After the app marked a touch screen (its layout effect runs before this one).
+  useEffect(() => {
     setRowH(p.showSnippets ? tokenPx("--row-h", 76) : tokenPx("--row-h-compact", 54));
-  }, [p.showSnippets]);
+  }, [p.showSnippets, !!p.touch]);
 
   const measure = () => {
     const el = scroller.current;
@@ -83,6 +119,77 @@ export function MessageList(p: Props) {
     }
   }, [p.current]);
 
+  // ---- touch: a sideways swipe acts on the row, a pull at the top checks for mail.
+  const touch = p.touch;
+  const width = () => scroller.current?.clientWidth ?? 360;
+  const begin = (x: number, y: number, target: EventTarget | null, pointer: number | null) => {
+    if (!touch || pull.busy) return;
+    const row = (target as HTMLElement | null)?.closest?.<HTMLElement>(".row[data-id]");
+    gesture.current = { id: row ? Number(row.dataset.id) : null, x, y, atTop: (scroller.current?.scrollTop ?? 0) <= 0, mode: null, pointer };
+  };
+  const move = (x: number, y: number): boolean => {
+    const g = gesture.current;
+    if (!g || !touch) return false;
+    const dx = x - g.x;
+    const dy = y - g.y;
+    if (!g.mode) {
+      const intent = swipeIntent(dx, dy);
+      if (!intent) return false;
+      g.mode = intent === "swipe" && g.id != null ? "swipe" : intent === "scroll" && g.atTop && dy > 0 ? "pull" : "scroll";
+    }
+    if (g.mode === "swipe" && g.id != null) {
+      setSwipe({ id: g.id, dx: swipeOffset(dx, width(), touch.left, touch.right) });
+      return true;
+    }
+    if (g.mode === "pull") {
+      setPull({ dy: pullDistance(dy), busy: false });
+      return true;
+    }
+    return false;
+  };
+  const end = (x: number) => {
+    const g = gesture.current;
+    gesture.current = null;
+    if (!g || !touch) return;
+    if (g.mode === "swipe" && g.id != null) {
+      // The click that may follow the lifted finger is not a tap on the row.
+      swallowClick.current = true;
+      setTimeout(() => (swallowClick.current = false), 400);
+      const dx = x - g.x;
+      const action = swipeResult(dx, width(), touch.left, touch.right);
+      const m = action ? Array.from({ length: range.end - range.start }, (_, k) => p.rowAt(range.start + k)).find((r) => r?.id === g.id) : undefined;
+      if (action && m) {
+        if (swipeRemoves(action)) {
+          setSwipe({ id: g.id, dx: Math.sign(dx) * width(), leaving: true });
+          setTimeout(() => {
+            setSwipe(null);
+            touch.onSwipe(m, action);
+          }, 180);
+        } else {
+          setSwipe(null);
+          touch.onSwipe(m, action);
+        }
+      } else setSwipe(null);
+    } else if (g.mode === "pull") {
+      if (pull.dy >= PULL_TRIGGER) {
+        setPull({ dy: PULL_TRIGGER, busy: true });
+        void touch.onRefresh().finally(() => setPull({ dy: 0, busy: false }));
+      } else setPull({ dy: 0, busy: false });
+    }
+  };
+
+  // Fingers: a pull must stop the page from scrolling, which only a non-passive listener can.
+  useEffect(() => {
+    const el = scroller.current;
+    if (!el || !touch) return;
+    const onMove = (e: TouchEvent) => {
+      const t0 = e.touches[0];
+      if (t0 && move(t0.clientX, t0.clientY) && gesture.current?.mode === "pull") e.preventDefault();
+    };
+    el.addEventListener("touchmove", onMove, { passive: false });
+    return () => el.removeEventListener("touchmove", onMove);
+  });
+
   const rows: ReactNode[] = [];
   for (let i = range.start; i < range.end; i++) {
     const m = p.rowAt(i);
@@ -93,6 +200,8 @@ export function MessageList(p: Props) {
     }
     const selected = p.selected.includes(m.id);
     const isCurrent = m.id === p.current;
+    const sw = swipe?.id === m.id ? swipe : null;
+    const side = sw && touch ? swipeSide(sw.dx, touch.left, touch.right) : null;
     rows.push(
       <div
         key={m.id}
@@ -103,30 +212,40 @@ export function MessageList(p: Props) {
         data-id={m.id}
         data-unread={!m.seen || undefined}
         data-selected={selected && p.selected.length > 1 ? "" : undefined}
+        data-swiping={sw ? "" : undefined}
         className="row"
         style={{ top, height: rowH }}
         onMouseDown={(e) => {
           if (e.shiftKey) e.preventDefault();
         }}
-        onClick={(e) => p.onRowClick(i, { shift: e.shiftKey, toggle: e.ctrlKey || e.metaKey })}
+        onClick={(e) => {
+          if (swallowClick.current) {
+            swallowClick.current = false;
+            return;
+          }
+          p.onRowClick(i, { shift: e.shiftKey, toggle: e.ctrlKey || e.metaKey });
+        }}
       >
-        <span className="row-top">
-          <span className="unread-slot">{!m.seen && <span className="unread-dot" aria-label={t("list.unread")} />}</span>
-          <span className="row-from">{displayName(m.from, lang)}</span>
-          {m.thread_count > 1 && (
-            <span className="thread-count" aria-label={t("list.threadCount", { n: m.thread_count })}>
-              {m.thread_count}
+        {sw && side && <SwipeLayer action={side} m={m} dir={sw.dx < 0 ? "left" : "right"} />}
+        <span className="row-body" style={sw ? { transform: `translateX(${sw.dx}px)`, transition: sw.leaving ? undefined : "none" } : undefined}>
+          <span className="row-top">
+            <span className="unread-slot">{!m.seen && <span className="unread-dot" aria-label={t("list.unread")} />}</span>
+            <span className="row-from">{displayName(m.from, lang)}</span>
+            {m.thread_count > 1 && (
+              <span className="thread-count" aria-label={t("list.threadCount", { n: m.thread_count })}>
+                {m.thread_count}
+              </span>
+            )}
+            <span className="row-icons">
+              {m.answered && <Reply size={12} strokeWidth={1.75} aria-label={t("list.answered")} />}
+              {m.has_attachments && <Paperclip size={12} strokeWidth={1.75} aria-label={t("list.attachment")} />}
+              {m.flagged && <Flag size={12} strokeWidth={1.75} className="flag" aria-label={t("list.flagged")} />}
             </span>
-          )}
-          <span className="row-icons">
-            {m.answered && <Reply size={12} strokeWidth={1.75} aria-label={t("list.answered")} />}
-            {m.has_attachments && <Paperclip size={12} strokeWidth={1.75} aria-label={t("list.attachment")} />}
-            {m.flagged && <Flag size={12} strokeWidth={1.75} className="flag" aria-label={t("list.flagged")} />}
+            <span className="row-date">{listDate(m.date, today, lang)}</span>
           </span>
-          <span className="row-date">{listDate(m.date, today, lang)}</span>
+          <span className="row-subject">{m.subject || t("list.noSubject")}</span>
+          {p.showSnippets && <span className="row-snippet">{m.snippet || " "}</span>}
         </span>
-        <span className="row-subject">{m.subject || t("list.noSubject")}</span>
-        {p.showSnippets && <span className="row-snippet">{m.snippet || " "}</span>}
       </div>,
     );
   }
@@ -202,7 +321,31 @@ export function MessageList(p: Props) {
         aria-activedescendant={p.current != null ? `msg-${p.current}` : undefined}
         tabIndex={0}
         onScroll={measure}
+        onPointerDown={(e) => {
+          if (e.pointerType === "touch" || e.button === 0) begin(e.clientX, e.clientY, e.target, e.pointerId);
+        }}
+        onPointerMove={(e) => {
+          // Fingers move through touchmove (above), so a pull can hold the page still.
+          if (e.pointerType !== "touch" && gesture.current?.pointer === e.pointerId) move(e.clientX, e.clientY);
+        }}
+        onPointerUp={(e) => end(e.clientX)}
+        onPointerCancel={() => {
+          if (gesture.current?.mode !== "pull") {
+            gesture.current = null;
+            setSwipe(null);
+          }
+        }}
+        onTouchEnd={(e) => {
+          const t0 = e.changedTouches[0];
+          if (gesture.current && t0) end(t0.clientX);
+        }}
       >
+        {touch && (pull.dy > 0 || pull.busy) && (
+          <div className="pull" style={{ height: pull.dy }} role={pull.busy ? "status" : undefined} aria-live="polite">
+            {pull.busy ? <Spinner /> : <ArrowDown size={16} strokeWidth={1.75} aria-hidden className={pull.dy >= PULL_TRIGGER ? "pull-ready" : undefined} />}
+            <span>{pull.busy ? t("list.refreshing") : pull.dy >= PULL_TRIGGER ? t("list.releaseToRefresh") : t("list.pullToRefresh")}</span>
+          </div>
+        )}
         {p.total === 0 && !p.loading ? (
           <div className="empty">
             {p.searching ? <Search size={28} strokeWidth={1.5} aria-hidden /> : <Mail size={28} strokeWidth={1.5} aria-hidden />}

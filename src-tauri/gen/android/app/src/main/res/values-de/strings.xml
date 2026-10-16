@@ -1,4 +1,4 @@
 <resources>
     <string name="channel_new_mail">Neue Nachrichten</string>
-    <string name="channel_new_mail_text">Eine Mitteilung für jede neue Nachricht im Posteingang</string>
+    <string name="channel_new_mail_text">Eine Benachrichtigung für jede neue Nachricht im Posteingang</string>
 </resources>

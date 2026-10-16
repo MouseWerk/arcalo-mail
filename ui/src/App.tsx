@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { CircleUserRound, Download, Inbox, LogIn, Palette as PaletteIcon, PenSquare, RefreshCw, Search, Settings as SettingsIcon, Upload, X } from "lucide-react";
 import { api, inApp, onNotice, onTrayAction, pickSavePath } from "./lib/api";
 import { applyTheme, onSystemThemeChange, type Theme } from "./lib/theme";
@@ -7,7 +7,9 @@ import { draftFromMessage, emptyDraft, isEmpty, isValidAddress, replyDraft, toDr
 import { clickSelect, isTyping, keyAction, pagesFor, type Selection } from "./lib/listing";
 import { closeToast, runUndo, setUndo, showToast } from "./lib/toasts";
 import { setClock } from "./lib/format";
-import type { AccountInfo, AppInfo, Attachment, Mailbox, MessageSummary, MessageView, MicrosoftSignIn, Notice, OutboxEntry, Settings, ThemeChoice, Undo } from "./lib/types";
+import { backStep, isTouch, layoutFor } from "./lib/touch";
+import { applyTypeScale, onVisibility, watchViewport } from "./lib/viewport";
+import type { AccountInfo, AppInfo, Attachment, Mailbox, MessageSummary, MessageView, MicrosoftSignIn, Notice, OutboxEntry, Settings, SwipeAction, ThemeChoice, Undo } from "./lib/types";
 import { Sidebar, folderIcon, folderLabel, type FolderAction } from "./components/Sidebar";
 import { MessageList, type BulkAction } from "./components/MessageList";
 import { ReadingPane, type Loaded, type MessageAction } from "./components/ReadingPane";
@@ -21,7 +23,8 @@ import { Toasts } from "./components/Toasts";
 import { Outbox } from "./components/Outbox";
 import { ConfirmDialog, Dialog, Menu, PromptDialog, type MenuItem } from "./components/ui";
 
-/** On a phone one pane is shown at a time; `view` says which (app.css, narrow layout). */
+/** On a phone one pane is shown at a time; `view` says which (app.css, narrow layout). On a
+ *  tablet `folders` opens the folders as a drawer over the list. */
 type View = "folders" | "list" | "message";
 
 const PAGE = 100;
@@ -62,10 +65,16 @@ export function App() {
   const [menu, setMenu] = useState<{ items: MenuItem[]; at: { x: number; y: number } } | null>(null);
   const [palette, setPalette] = useState(false);
   const [preview, setPreview] = useState<{ name: string; url: string } | null>(null);
+  const [width, setWidth] = useState(() => (typeof window === "undefined" ? 1280 : window.innerWidth));
+  // Phones: the settings' list of sections, before a section opens.
+  const [settingsNav, setSettingsNav] = useState(true);
   const searchRef = useRef<HTMLInputElement | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
   const openSeq = useRef(0);
-  const lastSync = useRef(0);
+  const lastSync = useRef(Date.now());
+
+  const touch = isTouch(info?.touch ?? false);
+  const layout = layoutFor(width, touch);
 
   const mailbox = useMemo(() => Object.values(mailboxes).flat().find((m) => m.id === mailboxId) ?? null, [mailboxes, mailboxId]);
   const threads = settings?.threads ?? true;
@@ -109,6 +118,36 @@ export function App() {
   useEffect(() => {
     if (settings && accounts && info) document.body.classList.add("ready");
   }, [settings, accounts, info]);
+
+  // ---------------------------------------------------------------- phones and tablets
+
+  useEffect(() => {
+    const onResize = () => setWidth(window.innerWidth);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
+  useLayoutEffect(() => {
+    const root = document.documentElement;
+    root.toggleAttribute("data-touch", touch);
+    if (!touch) return;
+    applyTypeScale(root);
+    return watchViewport(root);
+  }, [touch]);
+
+  // Hidden or shown again: a phone closes or opens its connections; back in front after a
+  // while, the app checks for mail.
+  useEffect(
+    () =>
+      onVisibility((visible) => {
+        void api.setInFront(visible);
+        if (visible && Date.now() - lastSync.current > 60_000) {
+          lastSync.current = Date.now();
+          void api.syncNow(null);
+        }
+      }),
+    [],
+  );
 
   const reloadMailboxes = useCallback(async (accountId: number) => {
     const boxes = await api.mailboxes(accountId);
@@ -545,7 +584,7 @@ export function App() {
   // The tray menu's „Neue Nachricht“.
   useEffect(() => onTrayAction((a) => a === "compose" && newMessage()));
 
-  // Back in front after a while: check for mail now.
+  // Back in front after a while (the window got the focus again): check for mail now.
   useEffect(() => {
     const onFocus = () => {
       if (Date.now() - lastSync.current > 60_000) {
@@ -553,7 +592,6 @@ export function App() {
         void api.syncNow(null);
       }
     };
-    lastSync.current = Date.now();
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
   }, []);
@@ -729,6 +767,70 @@ export function App() {
     },
   });
 
+  // A phone opens the settings at their list of sections unless a section was asked for.
+  useEffect(() => {
+    if (!settingsOpen) setSettingsNav(true);
+  }, [settingsOpen]);
+
+  // ---------------------------------------------------------------- the system's Back
+
+  // Android's Back button and gesture walk the app's screens: each screen with a way back keeps
+  // one entry in the WebView's history, and Back (popstate) takes that way.
+  const phoneSettings = !!settingsOpen && layout === "phone";
+  const step = backStep({ view, layout, composing: !!compose, settings: !!settingsOpen });
+  const goBack = useRef<() => void>(() => {});
+  goBack.current = () => {
+    if (step === "settings" && phoneSettings && !settingsNav) return setSettingsNav(true);
+    if (step === "compose") return void closeCompose();
+    if (step === "settings") return setSettingsOpen(null);
+    if (step === "list") return setView("list");
+  };
+  useEffect(() => {
+    if (!touch) return;
+    const onPop = () => goBack.current();
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, [touch]);
+  useEffect(() => {
+    if (!touch) return;
+    const marked = (window.history.state as { arcaloBack?: boolean } | null)?.arcaloBack === true;
+    if (step && !marked) window.history.pushState({ arcaloBack: true }, "");
+    else if (!step && marked) window.history.back();
+  }, [touch, step, settingsNav]);
+
+  // ---------------------------------------------------------------- swipes and pull to refresh
+
+  /** The messages a row stands for: the conversation in this folder, or the one message. */
+  const rowIds = async (m: MessageSummary): Promise<number[]> => {
+    if (!threads || m.thread_count <= 1) return [m.id];
+    const all = await api.thread(m.thread_id);
+    const here = all.filter((x) => x.mailbox_id === m.mailbox_id).map((x) => x.id);
+    return here.length ? here : [m.id];
+  };
+
+  const swiped = async (m: MessageSummary, a: SwipeAction) => {
+    const ids = await rowIds(m);
+    switch (a) {
+      case "archive":
+        return withUndo(t("toast.archived", { n: 1 }), ids, () => api.archive(ids));
+      case "delete":
+        return withUndo(t("toast.deleted", { n: 1 }), ids, () => api.remove(ids));
+      case "read":
+        patchRows([m.id], { seen: !m.seen });
+        return setFlags(ids, !m.seen, null);
+      case "flag":
+        patchRows([m.id], { flagged: !m.flagged });
+        return setFlags(ids, null, !m.flagged);
+    }
+  };
+
+  const refresh = async () => {
+    lastSync.current = Date.now();
+    await api.syncNow(mailbox?.account_id ?? null);
+    // The check runs in the background; the spinner stays a moment so the pull is answered.
+    await new Promise((r) => setTimeout(r, 1200));
+  };
+
   // ---------------------------------------------------------------- render
 
   if (!settings || !accounts || !info) return <div className="app app-loading" />;
@@ -754,9 +856,10 @@ export function App() {
   const emptyText = results ? t("list.noResults", { q: query.trim() }) : mailbox ? t("list.empty") : t("list.syncing");
 
   return (
-    <div className="app" data-view={view} data-composing={compose ? "" : undefined}>
+    <div className="app" data-view={view} data-layout={layout} data-touch={touch ? "" : undefined} data-composing={compose ? "" : undefined}>
       {!inApp() && <div className="demo-bar">{t("app.demo")}</div>}
       <div className="panes">
+        {layout === "tablet" && view === "folders" && <div className="drawer-scrim" onClick={() => setView("list")} aria-hidden />}
         <Sidebar
           accounts={accounts}
           mailboxes={mailboxes}
@@ -822,6 +925,15 @@ export function App() {
             onShowFolders={() => setView("folders")}
             searchRef={searchRef}
             listRef={listRef}
+            touch={touch ? { left: settings.swipe_left, right: settings.swipe_right, onSwipe: (m, a) => void swiped(m, a), onRefresh: refresh } : undefined}
+            extra={
+              touch && layout !== "desktop" ? (
+                <button type="button" className="compose-fab" onClick={() => newMessage()} aria-label={t("nav.compose")}>
+                  <PenSquare size={20} strokeWidth={1.75} aria-hidden />
+                  <span>{t("nav.compose")}</span>
+                </button>
+              ) : undefined
+            }
           />
         )}
         <ReadingPane
@@ -843,6 +955,7 @@ export function App() {
           onAttachment={(a, how) => void attachment(a, how)}
           onRetry={(id) => void loadView(id)}
           onEditDraft={(v) => void startCompose(draftFromMessage(v, accountById(v.account_id), rich))}
+          touch={touch}
         />
       </div>
       {compose && (
@@ -866,6 +979,8 @@ export function App() {
           section={settingsOpen}
           onSection={setSettingsOpen}
           onChange={updateSettings}
+          touch={touch}
+          phone={layout === "phone" ? { nav: settingsNav, onNav: setSettingsNav } : undefined}
           onAccountsChanged={() =>
             void loadAccounts().then(({ all }) => {
               if (mailboxId != null && !Object.values(all).flat().some((b) => b.id === mailboxId)) setMailboxId(Object.values(all).flat().find((b) => b.role === "inbox")?.id ?? null);

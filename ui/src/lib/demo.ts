@@ -110,6 +110,9 @@ let settings: Settings = {
     profiles: [{ id: "standard", name: "Standard", mode: "system", http_proxy: "", socks_proxy: "", no_proxy: "localhost, 127.0.0.1, ::1", proxy_user: "" }],
     routes: {},
   },
+  swipe_left: "archive",
+  swipe_right: "read",
+  background_check: true,
 };
 const listeners = new Set<(n: Notice) => void>();
 
@@ -132,6 +135,7 @@ export const demo = {
     secret_store: { kind: "system" },
     clock: null,
     microsoft_sign_in: true,
+    touch: false,
   }),
   microsoftSignIn: (email: string): MicrosoftSignIn => ({
     session: "demo",

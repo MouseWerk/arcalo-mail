@@ -278,15 +278,21 @@
   position: absolute;
   left: var(--sp-2);
   right: var(--sp-2);
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  gap: var(--sp-half);
-  padding: 0 var(--sp-3) 0 var(--sp-2);
   border-radius: var(--r-md);
   color: var(--text-2);
   cursor: default;
   user-select: none;
+  overflow: hidden;
+}
+.row-body {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: var(--sp-half);
+  height: 100%;
+  padding: 0 var(--sp-3) 0 var(--sp-2);
+  border-radius: inherit;
+  transition: transform var(--dur) var(--ease-out);
 }
 .row:hover {
   background: var(--bg-hover);
@@ -1528,9 +1534,6 @@
   .server-host {
     grid-column: span 2;
   }
-  .app {
-    padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
-  }
 }
 
 /* Windows High Contrast and other forced colors: the system draws; keep the states visible. */
@@ -1715,4 +1718,290 @@
   color: var(--text-3);
   font-size: var(--fs-md);
   text-align: center;
+}
+
+/* ---- phones and tablets (milestone 3): touch, safe areas, the keyboard
+
+   `data-touch` marks a phone or tablet (or a desktop asked for the touch layout, the e2e tests);
+   `data-layout` is phone (one pane), tablet (list and message, folders in a drawer) or desktop
+   (lib/touch.ts). The keyboard shortens the app through `--app-h` (lib/viewport.ts). */
+
+:root[data-touch] body {
+  position: fixed;
+  inset: 0;
+  overscroll-behavior: none;
+}
+.app[data-touch] {
+  height: var(--app-h, 100%);
+  -webkit-tap-highlight-color: transparent;
+}
+.app[data-touch] .panes {
+  padding-left: var(--safe-left);
+  padding-right: var(--safe-right);
+}
+
+/* Targets for a finger, and fields iOS does not zoom into. */
+.app[data-touch] .icon-btn,
+.app[data-touch] .btn,
+.app[data-touch] .folder,
+.app[data-touch] .settings-nav-item {
+  min-height: var(--touch-min);
+}
+.app[data-touch] .icon-btn {
+  min-width: var(--touch-min);
+}
+.app[data-touch] .input,
+.app[data-touch] .select,
+.app[data-touch] textarea,
+.app[data-touch] [contenteditable] {
+  font-size: max(var(--fs-input-touch), var(--fs-md));
+}
+/* Without hover: the account's menu stays visible; a folder's menu opens with a long press
+   (its context menu), so the narrow column keeps its counts. */
+.app[data-touch] .account-more {
+  opacity: 1;
+}
+.app[data-touch] .folder-more {
+  display: none;
+}
+/* No hover on glass: what was tapped would keep it. */
+.app[data-touch] .row:not([aria-current="true"]):not([data-selected]):hover,
+.app[data-touch] .folder:not([aria-current="page"]):hover,
+.app[data-touch] .message-collapsed:hover,
+.app[data-touch] .icon-btn:not([aria-pressed="true"]):hover,
+.app[data-touch] .settings-nav-item:not([aria-current="page"]):hover {
+  background: transparent;
+}
+
+/* The bars at the top reach under the status bar and the notch, the ones at the bottom over the
+   home indicator. */
+.app[data-touch] .list-head {
+  padding-top: calc(var(--sp-3) + var(--safe-top));
+}
+.app[data-touch] .sidebar-head,
+.app[data-touch] .reading-pane .toolbar,
+.app[data-touch] .settings-head,
+.app[data-touch] .compose-head {
+  min-height: calc(var(--toolbar-h) + var(--safe-top));
+  height: auto;
+  padding-top: var(--safe-top);
+}
+.app[data-touch] .sidebar-scroll,
+.app[data-touch] .settings-body {
+  padding-bottom: calc(var(--sp-4) + var(--safe-bottom));
+}
+
+/* The list: rows that follow the finger, pull to refresh, the compose button. */
+.app[data-touch] .messages {
+  touch-action: pan-y;
+  overscroll-behavior-y: contain;
+}
+.app[data-touch]:not([data-layout="desktop"]) .messages {
+  padding-bottom: calc(var(--fab-h) + var(--sp-8) + var(--safe-bottom));
+}
+.row[data-swiping] .row-body {
+  background: var(--bg-canvas);
+}
+.row-swipe {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: 0 var(--sp-5);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+}
+.row-swipe[data-dir="left"] {
+  justify-content: flex-end;
+}
+.row-swipe[data-action="archive"] {
+  background: var(--success-soft);
+  color: var(--success);
+}
+.row-swipe[data-action="delete"] {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+.row-swipe[data-action="read"] {
+  background: var(--info-soft);
+  color: var(--info);
+}
+.row-swipe[data-action="flag"] {
+  background: var(--warning-soft);
+  color: var(--warning);
+}
+.pull {
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  gap: var(--sp-2);
+  padding-bottom: var(--sp-3);
+  overflow: hidden;
+  color: var(--text-3);
+  font-size: var(--fs-sm);
+}
+.pull svg {
+  transition: transform var(--dur) var(--ease-out);
+}
+.pull .pull-ready {
+  transform: rotate(180deg);
+}
+.list-pane {
+  position: relative;
+}
+.compose-fab {
+  display: none;
+}
+.app[data-touch]:not([data-layout="desktop"]) .compose-fab {
+  position: absolute;
+  right: var(--sp-4);
+  bottom: calc(var(--sp-4) + var(--safe-bottom));
+  z-index: var(--z-float);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  height: var(--fab-h);
+  padding: 0 var(--sp-5);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-pill);
+  background: var(--bg-overlay);
+  color: var(--text);
+  font-weight: var(--fw-medium);
+  box-shadow: var(--shadow-md);
+}
+.compose-fab:active {
+  background: var(--bg-raised);
+}
+.compose-fab:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: 2px;
+}
+
+/* The message: its actions in reach of the thumb. */
+.touch-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: space-around;
+  min-height: var(--touch-bar-h);
+  padding: var(--sp-1) var(--sp-2) calc(var(--sp-1) + var(--safe-bottom));
+  border-top: 1px solid var(--border);
+  background: var(--bg-canvas);
+}
+.touch-actions .icon-btn {
+  flex: 1;
+  max-width: var(--fab-h);
+  color: var(--text-2);
+}
+.app[data-touch] .reading-pane .back-btn {
+  display: inline-grid;
+}
+.app[data-layout="tablet"] .reading-pane .back-btn {
+  display: none;
+}
+
+/* Toasts above the bars at the bottom. */
+.app[data-touch] .toasts {
+  bottom: calc(var(--touch-bar-h) + var(--sp-4) + var(--safe-bottom));
+}
+
+/* Writing: the whole screen on a phone, a large sheet on a tablet; above the keyboard. */
+.app[data-touch] .compose {
+  height: min(var(--compose-h-touch), calc(var(--app-h, 100vh) - 2 * var(--sp-6)));
+}
+.app[data-layout="tablet"] .compose {
+  inset: var(--sp-6) 0 auto;
+  width: min(var(--compose-w-touch), calc(100vw - 2 * var(--sp-6)));
+  margin: 0 auto;
+}
+.app[data-layout="phone"] .compose {
+  inset: 0 0 auto;
+  width: auto;
+  height: var(--app-h, 100%);
+  border-radius: 0;
+}
+.app[data-touch] .compose-foot {
+  padding-bottom: calc(var(--sp-2) + var(--safe-bottom));
+}
+:root[data-keyboard] .app[data-touch] .compose-foot {
+  padding-bottom: var(--sp-2);
+}
+.app[data-layout="phone"][data-composing] .toasts {
+  left: 50%;
+  width: min(var(--toast-w), calc(100vw - 2 * var(--sp-4)));
+  transform: translateX(-50%);
+}
+
+/* Tablets: the list and the message side by side, the folders as a drawer. */
+.app[data-layout="tablet"] .panes {
+  grid-template-columns: minmax(var(--list-min), var(--list-w)) minmax(0, 1fr);
+}
+.app[data-layout="tablet"] .sidebar {
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  z-index: var(--z-overlay);
+  width: min(var(--drawer-w), 85vw);
+  padding-left: var(--safe-left);
+  box-shadow: var(--shadow-lg);
+  transform: translateX(-100%);
+  visibility: hidden;
+  transition:
+    transform var(--dur) var(--ease-out),
+    visibility var(--dur);
+}
+.app[data-layout="tablet"][data-view="folders"] .sidebar {
+  transform: none;
+  visibility: visible;
+}
+.drawer-scrim {
+  position: fixed;
+  inset: 0;
+  /* Over the compose button, under the drawer. */
+  z-index: calc(var(--z-overlay) - 1);
+  background: var(--scrim);
+  animation: fade-in var(--dur) var(--ease-out);
+}
+.app[data-layout="tablet"] .folders-btn {
+  display: inline-grid;
+}
+
+/* Settings on a phone: the sections as a page of their own, a section over it. */
+.settings-nav-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.settings-nav-chevron {
+  margin-left: auto;
+  color: var(--text-3);
+}
+.app[data-layout="phone"] .settings-overlay {
+  padding: 0;
+}
+.app[data-layout="phone"] .settings {
+  width: 100%;
+  height: var(--app-h, 100%);
+  border-radius: 0;
+}
+.app[data-layout="phone"] .settings[data-page="nav"] .settings-nav {
+  display: flex;
+  border-right: 0;
+  padding-top: var(--safe-top);
+}
+.app[data-layout="phone"] .settings[data-page="nav"] .settings-main,
+.app[data-layout="phone"] .settings[data-page="section"] .settings-nav {
+  display: none;
+}
+.app[data-layout="phone"] .settings-nav-item {
+  font-size: var(--fs-md);
+}
+.app[data-layout="phone"] .settings-head {
+  padding-left: var(--sp-1);
+}
+/* The sender is in the From field already; the phone's footer keeps its buttons. */
+.app[data-layout="phone"] .compose-account {
+  display: none;
 }

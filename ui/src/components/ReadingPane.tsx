@@ -48,6 +48,8 @@ type Props = {
   onAttachment: (a: Attachment, how: "open" | "save" | "preview") => void;
   onRetry: (id: number) => void;
   onEditDraft: (view: MessageView) => void;
+  /** Touch screens: the actions in a bar at the bottom, in reach of the thumb. */
+  touch?: boolean;
 };
 
 function attachmentIcon(mime: string) {
@@ -229,39 +231,60 @@ export function ReadingPane(p: Props) {
   const flagged = p.thread.some((m) => m.flagged);
   return (
     <section className="reading-pane" aria-label={t("read.label")}>
-      <div className="toolbar" role="toolbar" aria-label={t("read.actions")}>
-        <button type="button" className="icon-btn back-btn" onClick={p.onBack} aria-label={t("common.back")}>
-          <ChevronLeft size={18} strokeWidth={1.75} aria-hidden />
-        </button>
-        <button type="button" className="btn" disabled={!replyView} onClick={() => replyView && p.onCompose("reply", replyView)} title={t("read.replyKey")}>
-          <Reply size={16} strokeWidth={1.75} aria-hidden />
-          <span>{t("read.reply")}</span>
-        </button>
-        <button type="button" className="btn" disabled={!replyView} onClick={() => replyView && p.onCompose("replyAll", replyView)} title={t("read.replyAllKey")}>
-          <ReplyAll size={16} strokeWidth={1.75} aria-hidden />
-          <span>{t("read.replyAll")}</span>
-        </button>
-        <button type="button" className="btn" disabled={!replyView} onClick={() => replyView && p.onCompose("forward", replyView)} title={t("read.forwardKey")}>
-          <Forward size={16} strokeWidth={1.75} aria-hidden />
-          <span>{t("read.forward")}</span>
-        </button>
-        <span className="toolbar-gap" />
-        {tool("archive", <Archive size={16} strokeWidth={1.75} aria-hidden />, t("read.archiveKey"))}
-        {tool("delete", <Trash2 size={16} strokeWidth={1.75} aria-hidden />, t("read.deleteKey"))}
-        {tool("spam", <ShieldAlert size={16} strokeWidth={1.75} aria-hidden />, t("read.spam"))}
-        {tool("move", <FolderInput size={16} strokeWidth={1.75} aria-hidden />, t("read.move"))}
-        {tool("toggleSeen", seen ? <Mail size={16} strokeWidth={1.75} aria-hidden /> : <MailOpen size={16} strokeWidth={1.75} aria-hidden />, seen ? t("read.markUnread") : t("read.markRead"))}
-        <button
-          type="button"
-          className="icon-btn"
-          aria-pressed={flagged}
-          onClick={(e) => p.onAction("flag", e.currentTarget.getBoundingClientRect())}
-          aria-label={flagged ? t("read.unflag") : t("read.flag")}
-          title={flagged ? t("read.unflag") : t("read.flag")}
-        >
-          <Flag size={16} strokeWidth={1.75} aria-hidden className={flagged ? "flag" : undefined} />
-        </button>
-      </div>
+      {p.touch ? (
+        <div className="toolbar" role="toolbar" aria-label={t("read.actions")}>
+          <button type="button" className="icon-btn back-btn" onClick={p.onBack} aria-label={t("common.back")}>
+            <ChevronLeft size={20} strokeWidth={1.75} aria-hidden />
+          </button>
+          <span className="toolbar-gap" />
+          {tool("spam", <ShieldAlert size={18} strokeWidth={1.75} aria-hidden />, t("read.spam"))}
+          {tool("toggleSeen", seen ? <Mail size={18} strokeWidth={1.75} aria-hidden /> : <MailOpen size={18} strokeWidth={1.75} aria-hidden />, seen ? t("read.markUnread") : t("read.markRead"))}
+          <button
+            type="button"
+            className="icon-btn"
+            aria-pressed={flagged}
+            onClick={(e) => p.onAction("flag", e.currentTarget.getBoundingClientRect())}
+            aria-label={flagged ? t("read.unflag") : t("read.flag")}
+            title={flagged ? t("read.unflag") : t("read.flag")}
+          >
+            <Flag size={18} strokeWidth={1.75} aria-hidden className={flagged ? "flag" : undefined} />
+          </button>
+        </div>
+      ) : (
+        <div className="toolbar" role="toolbar" aria-label={t("read.actions")}>
+          <button type="button" className="icon-btn back-btn" onClick={p.onBack} aria-label={t("common.back")}>
+            <ChevronLeft size={18} strokeWidth={1.75} aria-hidden />
+          </button>
+          <button type="button" className="btn" disabled={!replyView} onClick={() => replyView && p.onCompose("reply", replyView)} title={t("read.replyKey")}>
+            <Reply size={16} strokeWidth={1.75} aria-hidden />
+            <span>{t("read.reply")}</span>
+          </button>
+          <button type="button" className="btn" disabled={!replyView} onClick={() => replyView && p.onCompose("replyAll", replyView)} title={t("read.replyAllKey")}>
+            <ReplyAll size={16} strokeWidth={1.75} aria-hidden />
+            <span>{t("read.replyAll")}</span>
+          </button>
+          <button type="button" className="btn" disabled={!replyView} onClick={() => replyView && p.onCompose("forward", replyView)} title={t("read.forwardKey")}>
+            <Forward size={16} strokeWidth={1.75} aria-hidden />
+            <span>{t("read.forward")}</span>
+          </button>
+          <span className="toolbar-gap" />
+          {tool("archive", <Archive size={16} strokeWidth={1.75} aria-hidden />, t("read.archiveKey"))}
+          {tool("delete", <Trash2 size={16} strokeWidth={1.75} aria-hidden />, t("read.deleteKey"))}
+          {tool("spam", <ShieldAlert size={16} strokeWidth={1.75} aria-hidden />, t("read.spam"))}
+          {tool("move", <FolderInput size={16} strokeWidth={1.75} aria-hidden />, t("read.move"))}
+          {tool("toggleSeen", seen ? <Mail size={16} strokeWidth={1.75} aria-hidden /> : <MailOpen size={16} strokeWidth={1.75} aria-hidden />, seen ? t("read.markUnread") : t("read.markRead"))}
+          <button
+            type="button"
+            className="icon-btn"
+            aria-pressed={flagged}
+            onClick={(e) => p.onAction("flag", e.currentTarget.getBoundingClientRect())}
+            aria-label={flagged ? t("read.unflag") : t("read.flag")}
+            title={flagged ? t("read.unflag") : t("read.flag")}
+          >
+            <Flag size={16} strokeWidth={1.75} aria-hidden className={flagged ? "flag" : undefined} />
+          </button>
+        </div>
+      )}
       <div className="reading-scroll">
         <header className="message-head">
           <h1 className="message-subject">{(ready?.summary.subject ?? focus.subject) || t("list.noSubject")}</h1>
@@ -309,6 +332,22 @@ export function ReadingPane(p: Props) {
           })}
         </div>
       </div>
+      {p.touch && (
+        <div className="touch-actions" role="toolbar" aria-label={t("read.actions")}>
+          {tool("archive", <Archive size={20} strokeWidth={1.75} aria-hidden />, t("read.archive"))}
+          {tool("delete", <Trash2 size={20} strokeWidth={1.75} aria-hidden />, t("read.delete"))}
+          {tool("move", <FolderInput size={20} strokeWidth={1.75} aria-hidden />, t("read.move"))}
+          <button type="button" className="icon-btn" disabled={!replyView} onClick={() => replyView && p.onCompose("reply", replyView)} aria-label={t("read.reply")} title={t("read.reply")}>
+            <Reply size={20} strokeWidth={1.75} aria-hidden />
+          </button>
+          <button type="button" className="icon-btn" disabled={!replyView} onClick={() => replyView && p.onCompose("replyAll", replyView)} aria-label={t("read.replyAll")} title={t("read.replyAll")}>
+            <ReplyAll size={20} strokeWidth={1.75} aria-hidden />
+          </button>
+          <button type="button" className="icon-btn" disabled={!replyView} onClick={() => replyView && p.onCompose("forward", replyView)} aria-label={t("read.forward")} title={t("read.forward")}>
+            <Forward size={20} strokeWidth={1.75} aria-hidden />
+          </button>
+        </div>
+      )}
     </section>
   );
 }

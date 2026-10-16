@@ -59,6 +59,8 @@ export const api = {
   exportDiagnostics: (path: string) => call<void>("export_diagnostics", { path }, () => undefined),
   accounts: () => call<AccountInfo[]>("list_accounts", {}, () => demo.accounts()),
   syncNow: (accountId: number | null) => call<void>("sync_now", { accountId }, () => undefined),
+  /** The app is visible or hidden (a phone keeps its connections only while it is in front). */
+  setInFront: (visible: boolean) => call<void>("set_in_front", { visible }, () => undefined),
 
   mailboxes: (accountId: number) => call<Mailbox[]>("list_mailboxes", { accountId }, () => demo.mailboxes(accountId)),
   messages: (mailboxId: number, offset: number, limit: number, threads: boolean) =>

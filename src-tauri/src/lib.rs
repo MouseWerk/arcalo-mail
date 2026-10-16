@@ -345,6 +345,13 @@ pub fn run() {
             begin();
             #[cfg(mobile)]
             std::thread::spawn(begin);
+            // The e2e tests of the phone and tablet layouts size the window like a phone.
+            #[cfg(desktop)]
+            if std::env::var("ARCALO_MAIL_TOUCH").is_ok_and(|v| v == "1")
+                && let Some(w) = app.get_webview_window("main")
+            {
+                let _ = w.set_min_size(None::<tauri::Size>);
+            }
             #[cfg(desktop)]
             if let Err(e) = tray::setup(app.handle()) {
                 mail_core::diag::log("tray", &format!("no tray icon: {e}"));
