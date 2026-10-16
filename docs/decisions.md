@@ -47,8 +47,8 @@ with the Google sign-in.
 ## Every kind of account, profile pictures, meetings, rules (2026-10-17)
 
 - **Accounts:** besides IMAP/SMTP, Microsoft 365/Outlook.com and JMAP also POP3 (with "leave on server"),
-  Exchange on premises through EWS (still common in companies; Exchange Online uses the Microsoft
-  sign-in), and iCloud, Yahoo, AOL, GMX, WEB.DE, T-Online with presets. Google sign-in follows its
+  and iCloud, Yahoo, AOL, GMX, WEB.DE, T-Online with presets. Exchange on premises (EWS) comes in 1.1
+  (decided 2026-10-17); Exchange Online uses the Microsoft sign-in. Google sign-in follows its
   verification.
 - **Profile pictures:** from the user's contacts and the account (Microsoft Graph photo, CardDAV), from
   BIMI (the sender's verified brand logo, fetched once per domain and cached) and as initials otherwise.
