@@ -1,11 +1,31 @@
-import { Archive, FileText, Flag, Folder, Inbox, Mails, Send, ShieldAlert, SquarePen, Trash2 } from "lucide-react";
-import type { ComponentType } from "react";
+import {
+  Archive,
+  CircleAlert,
+  FileText,
+  Flag,
+  Folder,
+  FolderPlus,
+  Inbox,
+  Mails,
+  MoreHorizontal,
+  Pencil,
+  RefreshCw,
+  Send,
+  Settings as SettingsIcon,
+  ShieldAlert,
+  SquarePen,
+  Trash2,
+  Upload,
+  WifiOff,
+} from "lucide-react";
+import { useState, type ComponentType } from "react";
 import { useT, type TKey } from "../lib/i18n";
-import type { Account, Mailbox, Role } from "../lib/types";
-import { Preferences } from "./Preferences";
-import type { LanguageChoice, ThemeChoice } from "../lib/types";
+import type { AccountInfo, Mailbox, Role } from "../lib/types";
+import { Menu, Spinner, type MenuItem } from "./ui";
 
-const ROLE: Record<Role, { icon: ComponentType<{ size?: number; strokeWidth?: number }>; label: TKey }> = {
+type IconType = ComponentType<{ size?: number; strokeWidth?: number; "aria-hidden"?: boolean }>;
+
+const ROLE: Record<Role, { icon: IconType; label: TKey }> = {
   inbox: { icon: Inbox, label: "folder.inbox" },
   drafts: { icon: FileText, label: "folder.drafts" },
   sent: { icon: Send, label: "folder.sent" },
@@ -23,28 +43,99 @@ export function folderLabel(m: Mailbox, t: ReturnType<typeof useT>): string {
   return parts[parts.length - 1];
 }
 
+export function folderIcon(m: Mailbox): IconType {
+  return m.role ? ROLE[m.role].icon : Folder;
+}
+
 /** Nesting depth of a user folder („Projekte/Website“ is 1). */
 const depth = (m: Mailbox) => (m.role || !m.delimiter ? 0 : m.name.split(m.delimiter).length - 1);
 
+export type FolderAction = { kind: "create"; accountId: number; parent: Mailbox | null } | { kind: "rename"; mailbox: Mailbox } | { kind: "delete"; mailbox: Mailbox };
+
 type Props = {
-  accounts: Account[];
+  accounts: AccountInfo[];
   mailboxes: Record<number, Mailbox[]>;
   current: number | null;
+  showingOutbox: boolean;
+  outboxCount: number;
   onSelect: (m: Mailbox) => void;
+  onOutbox: () => void;
   onCompose: () => void;
-  theme: ThemeChoice;
-  language: LanguageChoice;
-  onTheme: (t: ThemeChoice) => void;
-  onLanguage: (l: LanguageChoice) => void;
+  onSettings: () => void;
+  onFolder: (a: FolderAction) => void;
+  onSignIn: (a: AccountInfo) => void;
+  onSync: (a: AccountInfo) => void;
 };
 
-export function Sidebar({ accounts, mailboxes, current, onSelect, onCompose, theme, language, onTheme, onLanguage }: Props) {
+function AccountStatusLine({ a, onSignIn, onSync }: { a: AccountInfo; onSignIn: () => void; onSync: () => void }) {
   const t = useT();
+  const s = a.status?.status;
+  if (!s || s.state === "ready" || s.state === "stopped") return null;
+  if (s.state === "sign_in")
+    return (
+      <div className="account-status account-status-alert" role="status">
+        <CircleAlert size={14} strokeWidth={1.75} aria-hidden />
+        <span>{t("nav.signInNeeded")}</span>
+        <button type="button" className="link-btn" onClick={onSignIn}>
+          {t("nav.signIn")}
+        </button>
+      </div>
+    );
+  if (s.state === "retrying" || s.state === "offline")
+    return (
+      <div className="account-status" role="status" title={a.status?.error ?? undefined}>
+        <WifiOff size={14} strokeWidth={1.75} aria-hidden />
+        <span>{s.state === "retrying" ? t("nav.retrying", { n: s.in_secs }) : t("nav.offline")}</span>
+        <button type="button" className="icon-btn icon-btn-xs" onClick={onSync} aria-label={t("nav.retryNow")} title={t("nav.retryNow")}>
+          <RefreshCw size={12} strokeWidth={1.75} aria-hidden />
+        </button>
+      </div>
+    );
+  return (
+    <div className="account-status" role="status">
+      <Spinner />
+      <span>{s.state === "connecting" ? t("nav.connecting") : t("nav.syncing")}</span>
+    </div>
+  );
+}
+
+export function Sidebar({
+  accounts,
+  mailboxes,
+  current,
+  showingOutbox,
+  outboxCount,
+  onSelect,
+  onOutbox,
+  onCompose,
+  onSettings,
+  onFolder,
+  onSignIn,
+  onSync,
+}: Props) {
+  const t = useT();
+  const [menu, setMenu] = useState<{ items: MenuItem[]; at: { x: number; y: number } } | null>(null);
+
+  const folderMenu = (m: Mailbox, at: { x: number; y: number }) => {
+    const items: MenuItem[] = [{ label: t("folders.newSub"), icon: <FolderPlus size={14} aria-hidden />, onSelect: () => onFolder({ kind: "create", accountId: m.account_id, parent: m }) }];
+    if (!m.role) {
+      items.push({ label: t("folders.rename"), icon: <Pencil size={14} aria-hidden />, onSelect: () => onFolder({ kind: "rename", mailbox: m }) });
+      items.push("separator");
+      items.push({ label: t("folders.delete"), icon: <Trash2 size={14} aria-hidden />, danger: true, onSelect: () => onFolder({ kind: "delete", mailbox: m }) });
+    }
+    setMenu({ items, at });
+  };
+
   return (
     <nav className="sidebar" aria-label={t("nav.label")}>
       <div className="sidebar-head">
         <span className="brand">{t("app.name")}</span>
-        <button type="button" className="btn btn-primary compose-btn" onClick={onCompose} title={t("nav.compose")}>
+        <button type="button" className="icon-btn" onClick={onSettings} aria-label={t("settings.title")} title={t("settings.titleWithKey")}>
+          <SettingsIcon size={16} strokeWidth={1.75} aria-hidden />
+        </button>
+      </div>
+      <div className="sidebar-compose">
+        <button type="button" className="btn btn-primary compose-btn" onClick={onCompose} title={t("nav.composeKey")}>
           <SquarePen size={16} strokeWidth={1.75} aria-hidden />
           <span>{t("nav.compose")}</span>
         </button>
@@ -52,32 +143,61 @@ export function Sidebar({ accounts, mailboxes, current, onSelect, onCompose, the
       <div className="sidebar-scroll">
         {accounts.length === 0 && <p className="sidebar-empty">{t("nav.noAccount")}</p>}
         {accounts.map((a) => (
-          <section key={a.id} className="account">
-            <h2 className="eyebrow" title={a.email}>
-              {a.name || a.email}
-            </h2>
+          <section key={a.id} className="account" aria-label={a.name || a.email}>
+            <div className="account-head">
+              <h2 className="eyebrow" title={a.email}>
+                {a.name || a.email}
+              </h2>
+              <button
+                type="button"
+                className="icon-btn icon-btn-xs account-more"
+                aria-label={t("folders.new")}
+                title={t("folders.new")}
+                onClick={() => onFolder({ kind: "create", accountId: a.id, parent: null })}
+              >
+                <FolderPlus size={14} strokeWidth={1.75} aria-hidden />
+              </button>
+            </div>
+            <AccountStatusLine a={a} onSignIn={() => onSignIn(a)} onSync={() => onSync(a)} />
             <ul className="folders">
               {(mailboxes[a.id] ?? [])
                 .filter((m) => m.selectable)
                 .map((m) => {
-                  const Icon = m.role ? ROLE[m.role].icon : Folder;
-                  const isCurrent = m.id === current;
+                  const Icon = folderIcon(m);
+                  const isCurrent = m.id === current && !showingOutbox;
+                  const count = m.role === "drafts" || m.role === "sent" || m.role === "trash" ? 0 : m.unread;
                   return (
-                    <li key={m.id}>
+                    <li key={m.id} className="folder-item">
                       <button
                         type="button"
                         className="folder"
-                        aria-current={isCurrent ? "true" : undefined}
+                        data-role={m.role ?? undefined}
+                        aria-current={isCurrent ? "page" : undefined}
                         style={{ paddingInlineStart: `calc(var(--sp-2) + ${depth(m)} * var(--sp-4))` }}
                         onClick={() => onSelect(m)}
+                        onContextMenu={(e) => {
+                          e.preventDefault();
+                          folderMenu(m, { x: e.clientX, y: e.clientY });
+                        }}
                       >
                         <Icon size={16} strokeWidth={1.75} aria-hidden />
                         <span className="folder-name">{folderLabel(m, t)}</span>
-                        {m.unread > 0 && (
-                          <span className="count" aria-label={t("nav.unread", { n: m.unread })}>
-                            {m.unread}
+                        {count > 0 && (
+                          <span className="count" aria-label={t("nav.unread", { n: count })}>
+                            {count}
                           </span>
                         )}
+                      </button>
+                      <button
+                        type="button"
+                        className="icon-btn icon-btn-xs folder-more"
+                        aria-label={t("folders.actions", { name: folderLabel(m, t) })}
+                        onClick={(e) => {
+                          const r = e.currentTarget.getBoundingClientRect();
+                          folderMenu(m, { x: r.left, y: r.bottom + 4 });
+                        }}
+                      >
+                        <MoreHorizontal size={14} strokeWidth={1.75} aria-hidden />
                       </button>
                     </li>
                   );
@@ -85,8 +205,21 @@ export function Sidebar({ accounts, mailboxes, current, onSelect, onCompose, the
             </ul>
           </section>
         ))}
+        {outboxCount > 0 && (
+          <section className="account">
+            <ul className="folders">
+              <li className="folder-item">
+                <button type="button" className="folder" aria-current={showingOutbox ? "page" : undefined} onClick={onOutbox}>
+                  <Upload size={16} strokeWidth={1.75} aria-hidden />
+                  <span className="folder-name">{t("folder.outbox")}</span>
+                  <span className="count">{outboxCount}</span>
+                </button>
+              </li>
+            </ul>
+          </section>
+        )}
       </div>
-      <Preferences theme={theme} language={language} onTheme={onTheme} onLanguage={onLanguage} />
+      {menu && <Menu items={menu.items} at={menu.at} onClose={() => setMenu(null)} label={t("folders.menu")} />}
     </nav>
   );
 }

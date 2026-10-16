@@ -6,7 +6,11 @@ import type { Theme } from "../lib/theme";
 
 type Props = { html: string; allowRemote: boolean; theme: Theme };
 
-/** The message body in a sandboxed frame (lib/mailframe.ts); links open in the browser. */
+/** Opens `mailto:` links in the compose sheet (App listens for this event). */
+export const MAILTO_EVENT = "arcalo-mail:mailto";
+
+/** The message body in a sandboxed frame (lib/mailframe.ts); links open in the browser, mail
+ *  links in the compose sheet. The frame grows with its content. */
 export function MailFrame({ html, allowRemote, theme }: Props) {
   const t = useT();
   const ref = useRef<HTMLIFrameElement>(null);
@@ -14,24 +18,36 @@ export function MailFrame({ html, allowRemote, theme }: Props) {
   useEffect(() => {
     const frame = ref.current;
     if (!frame) return;
+    let observer: ResizeObserver | null = null;
     const fit = () => {
       const doc = frame.contentDocument;
-      if (doc?.documentElement) frame.style.height = `${doc.documentElement.scrollHeight}px`;
+      if (doc?.documentElement) frame.style.height = `${Math.ceil(doc.documentElement.scrollHeight)}px`;
     };
     const onLoad = () => {
       fit();
-      frame.contentDocument?.addEventListener("click", (e) => {
+      const doc = frame.contentDocument;
+      if (!doc) return;
+      doc.addEventListener("click", (e) => {
         const a = (e.target as Element | null)?.closest?.("a");
         if (!a) return;
         e.preventDefault();
         const href = openableLink(a.getAttribute("href"));
-        if (href) void openExternal(href);
+        if (!href) return;
+        if (href.toLowerCase().startsWith("mailto:")) window.dispatchEvent(new CustomEvent(MAILTO_EVENT, { detail: href }));
+        else void openExternal(href);
       });
-      for (const img of Array.from(frame.contentDocument?.images ?? [])) img.addEventListener("load", fit);
+      for (const img of Array.from(doc.images)) img.addEventListener("load", fit);
+      if (typeof ResizeObserver !== "undefined" && doc.body) {
+        observer = new ResizeObserver(fit);
+        observer.observe(doc.body);
+      }
     };
     frame.addEventListener("load", onLoad);
     frame.srcdoc = frameDocument(html, allowRemote, frameColors());
-    return () => frame.removeEventListener("load", onLoad);
+    return () => {
+      frame.removeEventListener("load", onLoad);
+      observer?.disconnect();
+    };
     // The theme changes the frame's colors.
   }, [html, allowRemote, theme]);
 
