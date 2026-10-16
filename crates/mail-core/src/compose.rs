@@ -30,8 +30,10 @@ pub struct Draft {
     pub message_id: Option<String>,
     /// The message replied to (marked answered once sent).
     pub reply_to_id: Option<i64>,
-    /// A forwarded message whose attachments go along (the shell fetches them).
-    pub forward_from: Option<i64>,
+    /// Stored attachments that go along: those of a forwarded message, or of the draft being
+    /// edited (the shell fetches them).
+    #[serde(default)]
+    pub forwarded: Vec<i64>,
 }
 
 /// A file read for sending.
@@ -82,15 +84,183 @@ pub fn new_message_id(from_email: &str) -> String {
     format!("{id}@{domain}")
 }
 
-/// The text of an HTML body (the plain alternative), as mail-parser reads it.
+/// Text written into the plain alternative: line starts carry the quote marks.
+struct TextOut {
+    text: String,
+    depth: usize,
+    at_line_start: bool,
+}
+
+impl TextOut {
+    fn newline(&mut self) {
+        if self.at_line_start && self.depth > 0 {
+            self.text.push_str(&">".repeat(self.depth));
+        }
+        self.text.push('\n');
+        self.at_line_start = true;
+    }
+
+    fn end_line(&mut self) {
+        if !self.at_line_start {
+            self.newline();
+        }
+    }
+
+    fn push(&mut self, s: &str) {
+        for c in s.chars() {
+            if self.at_line_start {
+                if c == ' ' {
+                    continue;
+                }
+                if self.depth > 0 {
+                    self.text.push_str(&"> ".repeat(self.depth));
+                }
+                self.at_line_start = false;
+            }
+            if c == ' ' && self.text.ends_with(' ') {
+                continue;
+            }
+            self.text.push(c);
+        }
+    }
+}
+
+fn html_entity(name: &str) -> Option<char> {
+    Some(match name {
+        "amp" => '&',
+        "lt" => '<',
+        "gt" => '>',
+        "quot" => '"',
+        "apos" => '\'',
+        "nbsp" => ' ',
+        n if n.starts_with("#x") || n.starts_with("#X") => char::from_u32(u32::from_str_radix(&n[2..], 16).ok()?)?,
+        n if n.starts_with('#') => char::from_u32(n[1..].parse().ok()?)?,
+        _ => return None,
+    })
+}
+
+/// Text between tags: entities decoded, white space collapsed as HTML shows it.
+fn html_text(text: &str) -> String {
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(i) = rest.find('&') {
+        out.push_str(&rest[..i]);
+        rest = &rest[i..];
+        match rest.find(';').filter(|&j| j <= 10).and_then(|j| html_entity(&rest[1..j]).map(|c| (c, j))) {
+            Some((c, j)) => {
+                out.push(c);
+                rest = &rest[j + 1..];
+            }
+            None => {
+                out.push('&');
+                rest = &rest[1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    let mut collapsed = String::with_capacity(out.len());
+    for c in out.chars() {
+        let c = if c.is_whitespace() && c != '\u{a0}' { ' ' } else { c };
+        if c == ' ' && collapsed.ends_with(' ') {
+            continue;
+        }
+        collapsed.push(if c == '\u{a0}' { ' ' } else { c });
+    }
+    collapsed
+}
+
+fn html_attr(tag: &str, name: &str) -> Option<String> {
+    let lower = tag.to_ascii_lowercase();
+    let i = lower.find(&format!("{name}="))? + name.len() + 1;
+    let v = &tag[i..];
+    let (q, v) = match v.chars().next()? {
+        q @ ('"' | '\'') => (q, &v[1..]),
+        _ => (' ', v),
+    };
+    Some(html_text(v.split(q).next().unwrap_or_default()))
+}
+
+/// The plain alternative of the compose sheet's HTML: one line per paragraph (an empty one is
+/// an empty line), quotes with `> `, list items with `- ` or their number, links with their
+/// address in angle brackets when it differs from their text.
 pub fn html_to_text(html: &str) -> String {
-    let raw = format!("Content-Type: text/html; charset=utf-8\r\n\r\n{html}");
-    mail_parser::MessageParser::default()
-        .parse(raw.as_bytes())
-        .and_then(|m| m.body_text(0).map(|t| t.into_owned()))
-        .unwrap_or_default()
-        .trim()
-        .to_string()
+    let mut out = TextOut { text: String::new(), depth: 0, at_line_start: true };
+    let mut lists: Vec<Option<u32>> = vec![];
+    let mut links: Vec<Option<String>> = vec![];
+    let mut skip = 0usize;
+    let mut rest = html;
+    while !rest.is_empty() {
+        let open = rest.find('<').unwrap_or(rest.len());
+        if skip == 0 && open > 0 {
+            out.push(&html_text(&rest[..open]));
+        }
+        let Some(close) = rest[open..].find('>') else { break };
+        let tag = &rest[open + 1..open + close];
+        rest = &rest[open + close + 1..];
+        let closing = tag.starts_with('/');
+        let name: String = tag
+            .trim_start_matches('/')
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric())
+            .collect::<String>()
+            .to_ascii_lowercase();
+        match (name.as_str(), closing) {
+            ("style" | "script" | "head" | "title", false) => skip += 1,
+            ("style" | "script" | "head" | "title", true) => skip = skip.saturating_sub(1),
+            _ if skip > 0 => {}
+            ("br", _) => out.newline(),
+            ("p" | "div" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "pre" | "tr", _) => out.end_line(),
+            ("blockquote", false) => {
+                out.end_line();
+                out.depth += 1;
+            }
+            ("blockquote", true) => {
+                out.end_line();
+                out.depth = out.depth.saturating_sub(1);
+            }
+            ("ul", false) => lists.push(None),
+            ("ol", false) => lists.push(Some(0)),
+            ("ul" | "ol", true) => {
+                lists.pop();
+                out.end_line();
+            }
+            ("li", false) => {
+                out.end_line();
+                let indent = "  ".repeat(lists.len().saturating_sub(1));
+                let mark = match lists.last_mut() {
+                    Some(Some(n)) => {
+                        *n += 1;
+                        format!("{indent}{n}. ")
+                    }
+                    _ => format!("{indent}- "),
+                };
+                out.push(&mark);
+            }
+            ("li", true) => out.end_line(),
+            ("a", false) => {
+                links.push(html_attr(tag, "href").filter(|h| !h.to_ascii_lowercase().starts_with("mailto:")))
+            }
+            ("a", true) => {
+                if let Some(Some(href)) = links.pop()
+                    && !out.text.trim_end().ends_with(href.as_str())
+                {
+                    out.push(&format!(" <{href}>"));
+                }
+            }
+            _ => {}
+        }
+    }
+    // Trailing spaces go, and never more than one empty line in a row.
+    let mut text = String::new();
+    let mut blank = 0;
+    for l in out.text.lines().map(str::trim_end) {
+        blank = if l.is_empty() || l.chars().all(|c| c == '>') { blank + 1 } else { 0 };
+        if blank <= 1 {
+            text.push_str(l);
+            text.push('\n');
+        }
+    }
+    text.trim().to_string()
 }
 
 /// The envelope recipients of a draft (To, Cc and Bcc), checked.
@@ -214,6 +384,20 @@ mod tests {
     use super::*;
     use crate::account::{Provider, preset};
     use crate::parse::parse;
+
+    #[test]
+    fn the_plain_alternative_keeps_lines_quotes_and_lists() {
+        let html = "<p>Montag passt.</p><p><br></p><p>Am Freitag schrieb Jonas:</p>\
+<blockquote type=\"cite\"><p>Passt dir Montag?</p><p><br></p><p>Gru&szlig; &amp; bis dann</p></blockquote>\
+<ul><li>Eins</li><li>Zwei</li></ul><ol><li>Erst</li><li>Dann</li></ol>\
+<p>Mehr unter <a href=\"https://example.org/plan\">dem Plan</a> oder <a href=\"https://example.org\">https://example.org</a>.</p>\
+<style>p{color:red}</style><p>Ende&nbsp;gut</p>";
+        assert_eq!(
+            html_to_text(html),
+            "Montag passt.\n\nAm Freitag schrieb Jonas:\n> Passt dir Montag?\n>\n> Gru&szlig; & bis dann\n\
+- Eins\n- Zwei\n1. Erst\n2. Dann\nMehr unter dem Plan <https://example.org/plan> oder https://example.org.\nEnde gut"
+        );
+    }
 
     fn account() -> Account {
         Account {

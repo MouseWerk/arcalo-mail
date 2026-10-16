@@ -435,13 +435,22 @@ async fn sync_round<C: Connector>(ctx: &Ctx<C>, conn: &mut C::Imap, caps: Capabi
         ids.dedup();
     }
     let inbox = ctx.inbox().map(|m| m.id);
-    for id in ids {
+    for &id in &ids {
         let r = sync_mailbox(conn, &ctx.store, caps, id).await?;
         if r.changed() || touched.iter().any(|n| ctx.mailbox_named(n) == Some(id)) {
             ctx.notice(Notice::Changed { account_id: ctx.account_id, mailboxes: vec![id] });
         }
         if Some(id) == inbox && !r.new_unread.is_empty() {
             ctx.notice(Notice::NewMail { account_id: ctx.account_id, messages: r.new_unread });
+        }
+    }
+    // The first lines for the list, the text for search, reading offline: the inbox first,
+    // then the other folders of a full round.
+    let mut ahead: Vec<i64> = inbox.into_iter().collect();
+    ahead.extend(ids.iter().copied().filter(|id| Some(*id) != inbox));
+    for id in ahead {
+        if crate::sync::prefetch_bodies(conn, &ctx.store, id).await? > 0 {
+            ctx.notice(Notice::Changed { account_id: ctx.account_id, mailboxes: vec![id] });
         }
     }
     Ok(())

@@ -248,8 +248,34 @@ fn part_content(bytes: &[u8]) -> Vec<u8> {
 pub async fn fetch_body<C: ImapClient>(client: &mut C, store: &Store, message_id: i64) -> Result<()> {
     let m = store.message(message_id)?;
     let mb = store.mailbox(m.summary.mailbox_id)?;
-    let uid = m.summary.uid;
     client.select(&mb.name, None).await?;
+    fetch_selected(client, store, message_id).await
+}
+
+/// Messages of a folder fetched ahead after a sync (the newest first): the list shows their
+/// first lines, search finds their text, and they open offline.
+pub const PREFETCH_COUNT: u32 = 60;
+/// Larger messages wait until they are opened.
+pub const PREFETCH_SIZE: u32 = 256 * 1024;
+
+/// Fetches the bodies of the newest messages of a folder that have none yet (see
+/// [`PREFETCH_COUNT`]); returns how many were fetched.
+pub async fn prefetch_bodies<C: ImapClient>(client: &mut C, store: &Store, mailbox_id: i64) -> Result<usize> {
+    let ids = store.without_body(mailbox_id, PREFETCH_COUNT, PREFETCH_SIZE)?;
+    if ids.is_empty() {
+        return Ok(0);
+    }
+    let mb = store.mailbox(mailbox_id)?;
+    client.select(&mb.name, None).await?;
+    for &id in &ids {
+        fetch_selected(client, store, id).await?;
+    }
+    Ok(ids.len())
+}
+
+async fn fetch_selected<C: ImapClient>(client: &mut C, store: &Store, message_id: i64) -> Result<()> {
+    let m = store.message(message_id)?;
+    let uid = m.summary.uid;
     let parts = if m.size > FULL_FETCH_LIMIT { client.fetch_structure(uid).await? } else { vec![] };
     if parts.len() <= 1 {
         let raw = client.fetch_message(uid).await?;
@@ -594,6 +620,21 @@ mod tests {
         assert_eq!(wait_for_change(&mut server, IDLE_RENEW, &wake).await.unwrap(), IdleOutcome::Timeout);
         server.deliver("INBOX", &sample("n@x", "x", None, "x"), 0);
         assert_eq!(wait_for_change(&mut server, IDLE_RENEW, &wake).await.unwrap(), IdleOutcome::Changed);
+    }
+
+    #[tokio::test]
+    async fn newest_bodies_are_fetched_ahead() {
+        let (mut server, store, account) = setup(all_caps());
+        sync_account(&mut server, &store, account).await.unwrap();
+        let ib = inbox(&store, account);
+        let n = store.messages(ib, 100, 0).unwrap().len();
+        assert_eq!(prefetch_bodies(&mut server, &store, ib).await.unwrap(), n);
+        assert!(store.messages(ib, 100, 0).unwrap().iter().all(|m| store.message(m.id).unwrap().has_body));
+        assert!(!store.messages(ib, 100, 0).unwrap()[0].snippet.is_empty(), "the list shows the first lines");
+        assert_eq!(prefetch_bodies(&mut server, &store, ib).await.unwrap(), 0, "nothing twice");
+        server.deliver("INBOX", &"x".repeat(PREFETCH_SIZE as usize + 10).into_bytes(), 0);
+        sync_mailbox(&mut server, &store, all_caps(), ib).await.unwrap();
+        assert_eq!(prefetch_bodies(&mut server, &store, ib).await.unwrap(), 0, "large ones wait until opened");
     }
 
     /// A message with an attachment larger than [`FULL_FETCH_LIMIT`]: text and pictures come

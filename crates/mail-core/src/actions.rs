@@ -346,6 +346,8 @@ pub struct Body {
     /// The text part as HTML, for „Als Text anzeigen“ when the message has HTML.
     pub text_html: Option<String>,
     pub blocked_remote: usize,
+    /// Made from plain text: drawn in the app's colors, not on the light paper of HTML mail.
+    pub plain: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -383,6 +385,7 @@ pub fn message_view(store: &Store, id: i64, remote: RemoteContent) -> Result<Mes
                 full_html,
                 text_html: text.as_deref().filter(|t| !t.trim().is_empty()).map(text_to_html),
                 blocked_remote: full.blocked_remote,
+                plain: false,
             }
         }
         (None, Some(text)) => match quote_start_text(text) {
@@ -391,11 +394,13 @@ pub fn message_view(store: &Store, id: i64, remote: RemoteContent) -> Result<Mes
                 full_html: Some(text_to_html(text)),
                 text_html: None,
                 blocked_remote: 0,
+                plain: true,
             },
-            None => Body { html: text_to_html(text), full_html: None, text_html: None, blocked_remote: 0 },
+            None => Body { html: text_to_html(text), full_html: None, text_html: None, blocked_remote: 0, plain: true },
         },
         (None, None) => {
-            Body { html: text_to_html(&detail.summary.snippet), full_html: None, text_html: None, blocked_remote: 0 }
+            let html = text_to_html(&detail.summary.snippet);
+            Body { html, full_html: None, text_html: None, blocked_remote: 0, plain: true }
         }
     };
     let files = detail

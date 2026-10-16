@@ -67,6 +67,38 @@ const STYLE_PROPERTIES: &[&str] = &[
     "direction",
 ];
 
+/// A `style` attribute with only the allowed properties, nothing that loads a resource. The
+/// `background` shorthand is kept as `background-color` when it is only a color (buttons in
+/// newsletters are often drawn with it; without it their white text would vanish).
+fn clean_style(style: &str) -> String {
+    let mut out = String::new();
+    for decl in style.split(';') {
+        let Some((prop, value)) = decl.split_once(':') else { continue };
+        let prop = prop.trim().to_ascii_lowercase();
+        let value = value.trim();
+        let lower = value.to_ascii_lowercase();
+        if value.is_empty()
+            || ["url(", "image(", "image-set(", "expression(", "gradient(", "\\", "@import"]
+                .iter()
+                .any(|b| lower.contains(b))
+        {
+            continue;
+        }
+        let prop = match prop.as_str() {
+            "background" if !value.contains(char::is_whitespace) || lower.ends_with("!important") => "background-color",
+            p if STYLE_PROPERTIES.contains(&p) => p,
+            _ => continue,
+        };
+        if !out.is_empty() {
+            out.push_str("; ");
+        }
+        out.push_str(prop);
+        out.push_str(": ");
+        out.push_str(value);
+    }
+    out
+}
+
 fn is_remote(url: &str) -> bool {
     let u = url.trim_start().to_ascii_lowercase();
     u.starts_with("http:") || u.starts_with("https:") || u.starts_with("//")
@@ -87,8 +119,8 @@ pub fn sanitize_html(html: &str, allow_remote: bool) -> Sanitized {
         .add_tag_attributes("img", ["width", "height", "alt", "title"])
         .add_tag_attributes("font", ["color", "face", "size"])
         .add_tags(["font", "center"])
-        .filter_style_properties(STYLE_PROPERTIES.iter().copied().collect())
         .attribute_filter(move |element, attribute, value| match (element, attribute) {
+            (_, "style") => Some(Cow::Owned(clean_style(value))),
             // `data:` only for pictures; a link must not open a document made by the sender.
             (_, "href") if value.trim_start().to_ascii_lowercase().starts_with("data:") => None,
             ("img", "src") if is_remote(value) && !allow_remote => {
@@ -277,6 +309,12 @@ mod tests {
         assert!(!s.html.contains("x.org"), "{}", s.html);
         assert!(s.html.contains("color"), "{}", s.html);
         assert!(s.html.contains("padding"), "{}", s.html);
+        // A color in the shorthand stays (a button's background), anything else goes.
+        assert_eq!(clean_style("background:#2b2a28;color:#fff"), "background-color: #2b2a28; color: #fff");
+        assert_eq!(clean_style("background: #fff url(https://x.org/a.png)"), "");
+        assert_eq!(clean_style("background: linear-gradient(red, blue); position: fixed"), "");
+        assert_eq!(clean_style("width: expression(alert(1)); height: 4px"), "height: 4px");
+        assert_eq!(clean_style("color: red; font-family: \\66 oo"), "color: red");
     }
 
     #[test]

@@ -815,6 +815,16 @@ impl Store {
         Ok(out)
     }
 
+    /// The newest messages of a folder without a body, up to `max_size` bytes (prefetching).
+    pub fn without_body(&self, mailbox_id: i64, limit: u32, max_size: u32) -> Result<Vec<i64>> {
+        let mut st = self.conn.prepare(
+            "SELECT id FROM messages WHERE mailbox_id = ?1 AND has_body = 0 AND size <= ?2
+             ORDER BY internal_date DESC, id DESC LIMIT ?3",
+        )?;
+        let rows = st.query_map(params![mailbox_id, max_size, limit], |r| r.get(0))?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
     /// Ids of the stored messages of a folder with these UIDs.
     pub fn ids_for_uids(&self, mailbox_id: i64, uids: &[u32]) -> Result<Vec<i64>> {
         let mut st = self.conn.prepare("SELECT id FROM messages WHERE mailbox_id = ?1 AND uid = ?2")?;

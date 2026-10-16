@@ -228,7 +228,8 @@ fn fill(template: &str, email: &str) -> String {
 }
 
 /// Reads a Mozilla autoconfig file (`clientConfig` 1.1): the first IMAP and SMTP server with
-/// TLS or STARTTLS and a password login.
+/// TLS or STARTTLS and a password login (plain text only for a server on this computer, as the
+/// network policy allows).
 pub fn parse_config(xml: &str, email: &str, source: Source) -> Option<Discovered> {
     let doc = roxmltree::Document::parse(xml).ok()?;
     let provider = doc.descendants().find(|n| n.has_tag_name("emailProvider"))?;
@@ -237,9 +238,11 @@ pub fn parse_config(xml: &str, email: &str, source: Source) -> Option<Discovered
     };
     let server = |kind: &str, tag: &str| -> Option<(Server, String)> {
         provider.children().filter(|n| n.has_tag_name(tag) && n.attribute("type") == Some(kind)).find_map(|n| {
+            let host = fill(&text(n, "hostname")?, email);
             let security = match text(n, "socketType")?.to_ascii_uppercase().as_str() {
                 "SSL" | "TLS" => Security::Tls,
                 "STARTTLS" => Security::StartTls,
+                "PLAIN" if network::is_loopback(&host) => Security::Plain,
                 _ => return None,
             };
             let password = n.children().filter(|c| c.has_tag_name("authentication")).any(|c| {
@@ -248,7 +251,6 @@ pub fn parse_config(xml: &str, email: &str, source: Source) -> Option<Discovered
             if !password && n.children().any(|c| c.has_tag_name("authentication")) {
                 return None;
             }
-            let host = fill(&text(n, "hostname")?, email);
             let port = text(n, "port")?.parse().ok()?;
             let user = fill(&text(n, "username").unwrap_or_else(|| "%EMAILADDRESS%".into()), email);
             Some((Server::new(&host, port, security), user))
@@ -419,6 +421,10 @@ mod tests {
         assert_eq!(d.smtp, Server::new("smtp.example.net", 587, Security::StartTls));
         assert_eq!(d.provider.as_deref(), Some("Example"));
         assert!(parse_config("<html>nope</html>", "a@b.de", Source::Ispdb).is_none());
+        // Plain text only for a server on this computer.
+        let local = GMX_LIKE.replace("imap.example.net</hostname><port>143", "127.0.0.1</hostname><port>143");
+        let d = parse_config(&local, "maria@example.net", Source::Autoconfig).unwrap();
+        assert_eq!(d.imap, Server::new("127.0.0.1", 143, Security::Plain));
     }
 
     #[test]

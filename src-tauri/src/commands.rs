@@ -26,6 +26,9 @@ pub struct AppInfo {
     /// The system's language tag (the UI's „Wie das System“).
     locale: String,
     secret_store: secrets::Kind,
+    /// A fixed „now“ (Unix seconds) for the screenshot generator, from `ARCALO_MAIL_NOW`; the UI
+    /// formats dates against it. Unset in normal use.
+    clock: Option<i64>,
 }
 
 #[tauri::command]
@@ -36,6 +39,7 @@ pub fn app_info() -> AppInfo {
         schema: mail_core::store::SCHEMA_VERSION,
         locale: crate::system_locale(),
         secret_store: secrets::kind(),
+        clock: std::env::var("ARCALO_MAIL_NOW").ok().and_then(|v| v.parse().ok()),
     }
 }
 
@@ -54,10 +58,20 @@ pub fn set_settings(state: State<'_, AppState>, settings: Settings) -> Res<()> {
 
 // ---------------------------------------------------------------------------- accounts
 
+/// Where setup looks for the servers. `ARCALO_MAIL_AUTOCONFIG` (the e2e tests and the screenshot
+/// generator) points the lookup at the test server on this computer instead; the network
+/// policy still refuses anything but HTTPS or loopback.
+fn lookup() -> Lookup {
+    match std::env::var("ARCALO_MAIL_AUTOCONFIG") {
+        Ok(url) if !url.is_empty() => Lookup { autoconfig: vec![url.clone()], ispdb: url, dns: false },
+        _ => Lookup::default(),
+    }
+}
+
 /// The servers of an address (presets, autoconfig, provider database, DNS, a guess).
 #[tauri::command]
 pub async fn discover(email: String) -> Res<Discovered> {
-    mail_core::autoconfig::discover(&email, &Lookup::default()).await
+    mail_core::autoconfig::discover(&email, &lookup()).await
 }
 
 /// Signs in to both servers with the settings of the setup form.
@@ -394,12 +408,10 @@ fn read_files(paths: &[String]) -> Res<Vec<FileAttachment>> {
 }
 
 /// The attachments of a forwarded message, fetched when they are not here.
-async fn forwarded(state: &AppState, message_id: Option<i64>) -> Res<Vec<FileAttachment>> {
-    let Some(id) = message_id else { return Ok(vec![]) };
-    let list = actions::message_view(&state.store(), id, mail_core::settings::RemoteContent::Ask)?.files;
+async fn forwarded(state: &AppState, ids: &[i64]) -> Res<Vec<FileAttachment>> {
     let mut out = vec![];
-    for a in list {
-        let (a, data) = attachment_bytes(state, a.id).await?;
+    for &id in ids {
+        let (a, data) = attachment_bytes(state, id).await?;
         let name = a.filename.unwrap_or_else(|| "attachment".into());
         out.push(FileAttachment { name, mime_type: a.mime_type, data });
     }
@@ -417,7 +429,7 @@ pub struct Queued {
 #[tauri::command]
 pub async fn send_message(state: State<'_, AppState>, draft: Draft) -> Res<Queued> {
     let mut files = read_files(&draft.attachments)?;
-    files.extend(forwarded(&state, draft.forward_from).await?);
+    files.extend(forwarded(&state, &draft.forwarded).await?);
     let store = state.store();
     let delay = mail_core::settings::load(&store)?.undo_send_secs.min(30);
     let (outbox_id, message_id) = actions::queue_send(&store, &draft, &files, delay)?;
@@ -435,7 +447,7 @@ pub fn cancel_send(state: State<'_, AppState>, outbox_id: i64) -> Res<bool> {
 #[tauri::command]
 pub async fn save_draft(state: State<'_, AppState>, draft: Draft) -> Res<String> {
     let mut files = read_files(&draft.attachments)?;
-    files.extend(forwarded(&state, draft.forward_from).await?);
+    files.extend(forwarded(&state, &draft.forwarded).await?);
     let mid = actions::queue_draft(&state.store(), &draft, &files)?;
     state.kick(&[draft.account_id]);
     Ok(mid)
