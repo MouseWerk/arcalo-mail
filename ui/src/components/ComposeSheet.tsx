@@ -55,7 +55,8 @@ type Props = {
   onSend: (followupSecs: number | null) => void;
   /** „Später senden“ at `at` (Unix seconds), or `null` to pick the time. */
   onSendLater: (at: number | null, followupSecs: number | null) => void;
-  onSaveDraft: () => void;
+  /** Saves the sheet as it is now (its latest state, also before the parent rendered it). */
+  onSaveDraft: (d: ComposeState) => void;
   onClose: () => void;
   onDiscard: () => void;
   /** The AI assistant is set up (the writing help). */
@@ -659,7 +660,7 @@ export function ComposeSheet({ draft, accounts, error, sending, saved, modal, ph
         }
         if (e.key.toLowerCase() === "s" && (e.ctrlKey || e.metaKey)) {
           e.preventDefault();
-          onSaveDraft();
+          onSaveDraft(latest.current);
         }
         if (e.key === "Tab" && modal) trapFocus(e, sheet.current);
       }}
@@ -1010,7 +1011,7 @@ export function ComposeSheet({ draft, accounts, error, sending, saved, modal, ph
             </span>
           )}
           <span className="muted compose-account">{account?.email}</span>
-          <button type="button" className="btn btn-quiet" onClick={onSaveDraft}>
+          <button type="button" className="btn btn-quiet" onClick={() => onSaveDraft(latest.current)}>
             {t("compose.saveDraft")}
           </button>
           <button type="button" className="icon-btn" onClick={onDiscard} aria-label={t("compose.discard")} title={t("compose.discard")}>

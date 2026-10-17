@@ -139,8 +139,9 @@ export function localTime(secondsAhead) {
 export async function choose(app, select, value) {
   const el = typeof select === "string" ? await app.waitFor(select) : select;
   await el.click();
-  const item = await app.waitFor(`.menu [data-value="${value}"]`);
-  await item.click();
+  // Through the harness: a sheet still sliding in waits until the choice stands still.
+  await app.waitFor(`.menu [data-value="${value}"]`);
+  await app.click(`.menu [data-value="${value}"]`);
   await app.waitUntil(async () => (await el.getAttribute("data-value")) === String(value), 5000, `chose ${value}`);
 }
 

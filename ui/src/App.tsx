@@ -2297,10 +2297,7 @@ export function App() {
           onChange={(d) => setCompose((c) => (c && c.uid === d.uid ? d : c))}
           onSend={(followupSecs) => void send(followupSecs)}
           onSendLater={(at, followupSecs) => (at == null ? setWhen({ kind: "send", followupSecs }) : void sendLater(at, followupSecs))}
-          onSaveDraft={() => {
-            const c = composeRef.current;
-            if (c) void saveDraft(committed(c), false);
-          }}
+          onSaveDraft={(d) => void saveDraft(committed(d), false)}
           onClose={() => void closeCompose()}
           onDiscard={discardCompose}
           aiOn={aiOn}
