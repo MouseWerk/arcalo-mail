@@ -1399,7 +1399,7 @@ export const de: Record<TKey, Msg> = {
   "sec.recoveryHint": "Ohne den Schlüssel lassen sich die E-Mails auf diesem Gerät nicht lesen. Bewahre den Wiederherstellungsschlüssel getrennt vom Gerät auf: im Passwortmanager oder auf Papier.",
   "sec.recoveryKept": "Ich habe den Wiederherstellungsschlüssel gesichert",
   "sec.recoveryCopied": "Wiederherstellungsschlüssel kopiert",
-  "sec.recoveryFile": "arcalo-mail-wiederherstellungsschluessel.txt",
+  "sec.recoveryFile": "arcalo-mail-wiederherstellung.txt",
   "sec.recoverySaved": "Wiederherstellungsschlüssel gespeichert",
   "sec.copy": "Kopieren",
   "sec.saveFile": "Als Datei speichern",

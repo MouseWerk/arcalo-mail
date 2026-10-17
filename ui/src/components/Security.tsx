@@ -438,9 +438,11 @@ function RecoveryDialog({ code, confirm, onConfirm, onClose }: { code: string; c
       }
     >
       <code className="sec-recovery" data-recovery-code>
-        {code}
+        {code.split("-").map((g, i, all) => (
+          <span key={i}>{i < all.length - 1 ? `${g}-` : g}</span>
+        ))}
       </code>
-      <div className="set-actions-left">
+      <div className="sec-actions">
         <button type="button" className="btn btn-sm" onClick={copy}>
           <Copy size={14} strokeWidth={1.75} aria-hidden />
           <span>{t("sec.copy")}</span>
@@ -453,7 +455,7 @@ function RecoveryDialog({ code, confirm, onConfirm, onClose }: { code: string; c
         )}
       </div>
       {confirm && (
-        <div className="lock-switch">
+        <div className="lock-switch" data-recovery-kept>
           <Switch label={t("sec.recoveryKept")} checked={kept} onChange={setKept} />
           <span>{t("sec.recoveryKept")}</span>
         </div>
@@ -622,7 +624,7 @@ export function SecuritySection({ settings, onChange }: { settings: Settings; on
               </Row>
             )}
             <Row label={t("sec.pin")} description={t("sec.privateHint")}>
-              <div className="set-actions-left">
+              <div className="sec-actions">
                 <button type="button" className="btn btn-sm" onClick={() => setDialog({ kind: "pin", next: config })}>
                   {t("sec.pinChange")}
                 </button>
@@ -659,7 +661,7 @@ export function SecuritySection({ settings, onChange }: { settings: Settings; on
               </button>
             </Row>
             <Row label={t("sec.passwordRow")} description={cipher.password ? t("sec.passwordOn") : t("sec.passwordRowHint")}>
-              <div className="set-actions-left">
+              <div className="sec-actions">
                 <button type="button" className="btn btn-sm" onClick={() => setDialog({ kind: "password" })}>
                   {cipher.password ? t("sec.passwordChange") : t("sec.passwordSetUp")}
                 </button>

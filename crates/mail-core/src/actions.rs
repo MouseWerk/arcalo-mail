@@ -623,7 +623,7 @@ pub fn sealed_files_with(store: &Store, id: i64, keys: &dyn crate::crypto::Keys)
     Ok(inner
         .attachments
         .iter()
-        .filter(|a| !(a.inline && a.content_id.is_some()) && !a.is_protocol())
+        .filter(|a| !(a.is_protocol() || a.inline && a.content_id.is_some()))
         .filter_map(|a| {
             Some(FileAttachment {
                 name: a.filename.clone().unwrap_or_else(|| "attachment".into()),
@@ -655,7 +655,7 @@ pub fn draft_of_with(store: &Store, id: i64, keys: &dyn crate::crypto::Keys) -> 
         sealed_files = inner
             .attachments
             .iter()
-            .filter(|a| !(a.inline && a.content_id.is_some()) && !a.is_protocol())
+            .filter(|a| !(a.is_protocol() || a.inline && a.content_id.is_some()))
             .map(|a| a.filename.as_deref().map(crate::files::display_name).unwrap_or_else(|| "attachment".into()))
             .collect();
         let method =

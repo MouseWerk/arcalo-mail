@@ -143,6 +143,20 @@
 
 /* ---- Settings → Sicherheit */
 
+.sec-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+}
+.sec-recovery + .sec-actions {
+  margin: var(--sp-3) 0;
+}
+.sec-recovery span {
+  display: inline-block;
+  white-space: nowrap;
+}
+
 .sec-recovery {
   display: block;
   padding: var(--sp-3);
@@ -154,8 +168,6 @@
   font-size: var(--fs-md);
   letter-spacing: 0.04em;
   line-height: 1.7;
-  word-spacing: 0.3em;
-  overflow-wrap: anywhere;
   user-select: all;
 }
 .notice-plain {

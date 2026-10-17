@@ -575,7 +575,7 @@ pub fn analyze(m: &Input, ctx: &Context) -> Vec<Reason> {
 
     // Answers to another domain (not for mailing lists, nor for a sender that wrote before and
     // passed DMARC: shops answer through their help desk's domain).
-    if m.list_id.is_none() && !(ctx.dmarc_pass && !ctx.first_contact) {
+    if m.list_id.is_none() && (ctx.first_contact || !ctx.dmarc_pass) {
         for r in m.reply_to {
             let r_email = r.email.trim().to_lowercase();
             let Some(rd) = domain_of(&r_email) else { continue };
