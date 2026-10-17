@@ -9,6 +9,7 @@ import type { AccountInfo, AppInfo, ImapTransport, LanguageChoice, MicrosoftSign
 import { AiSection, ContactsSection, RulesSection, TemplatesSection } from "./PowerSettings";
 import { CalendarSection, CryptoSection } from "./CalendarSettings";
 import { SecuritySection } from "./Security";
+import { SyncDetails } from "./SyncDetails";
 import { explain } from "../lib/problems";
 import { SHORTCUTS, keyLabel, usesCommand } from "../lib/shortcuts";
 import { ConfirmDialog, Segmented, Select, Spinner, Switch, trapFocus, useSaveOnLeave } from "./ui";
@@ -288,6 +289,7 @@ function AccountEditor({ a, onChanged, onRemoved }: { a: AccountInfo; onChanged:
           </div>
         </div>
       )}
+      <SyncDetails accountId={a.id} />
       <div className="set-card set-card-danger">
         <Row label={t("settings.removeAccount")} description={t("settings.removeAccountHint")}>
           <button type="button" className="btn btn-danger-quiet" onClick={() => setConfirm(true)}>

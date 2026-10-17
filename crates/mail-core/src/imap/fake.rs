@@ -77,6 +77,25 @@ impl FakeMailbox {
     }
 }
 
+/// A network and server as a phone sees Gmail: a round trip per command, a link of limited
+/// bandwidth that all connections share, and the server's own work per message a command
+/// touches (a `UID SEARCH ALL` over 80,000 messages takes a while).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NetProfile {
+    pub rtt: Duration,
+    /// Bytes per second of the link (0: no limit).
+    pub bytes_per_sec: u64,
+    /// The server's time per message a command looks at.
+    pub per_message: Duration,
+}
+
+impl NetProfile {
+    /// About what the owner's phone sees on mobile data: 100 ms, 2 MB/s, 10 µs per message.
+    pub fn phone() -> Self {
+        NetProfile { rtt: Duration::from_millis(100), bytes_per_sec: 2_000_000, per_message: Duration::from_micros(10) }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct FakeImap {
     pub caps: Capabilities,
@@ -93,6 +112,10 @@ pub struct FakeImap {
     /// How long each command of a [`SharedFake`] connection takes (a slow server, a phone's
     /// network): the connection waits that long before it answers.
     pub latency: Duration,
+    /// Round trips, bandwidth and server work of a [`SharedFake`] connection.
+    pub net: NetProfile,
+    /// Until when the shared link is busy with answers already on their way.
+    link_free: Option<tokio::time::Instant>,
     /// Commands of a [`SharedFake`] connection that never get an answer, once each, by the
     /// method's name (`fetch_message`, …).
     pub stall: Vec<String>,
@@ -144,6 +167,8 @@ impl FakeImap {
             fail: vec![],
             refuse_select: vec![],
             latency: Duration::ZERO,
+            net: NetProfile::default(),
+            link_free: None,
             stall: vec![],
             gm_last: 0,
         }
@@ -355,7 +380,8 @@ impl FakeImap {
                 modseq: condstore.then_some(msg.modseq),
                 internal_date: msg.internal_date,
                 size: msg.raw.len() as u32,
-                header: msg.raw[..header_end(&msg.raw)].to_vec(),
+                // What `BODY.PEEK[HEADER.FIELDS (…)]` brings.
+                header: header_fields(&msg.raw[..header_end(&msg.raw)]),
                 gm_msgid: if gmail { msg.gm_msgid } else { None },
             })
             .collect())
@@ -405,6 +431,12 @@ impl FakeImap {
     pub fn do_fetch_message(&mut self, uid: u32) -> Result<Vec<u8>> {
         self.log.push(format!("UID FETCH {uid} (BODY.PEEK[])"));
         self.raw_of(uid)
+    }
+
+    pub fn do_fetch_messages(&mut self, uids: &[u32]) -> Result<Vec<(u32, Vec<u8>)>> {
+        self.log.push(format!("UID FETCH {} (BODY.PEEK[])", uid_set(uids)));
+        let m = self.selected_mailbox()?;
+        Ok(uids.iter().filter_map(|u| m.messages.get(u).map(|msg| (*u, msg.raw.clone()))).collect())
     }
 
     pub fn do_fetch_structure(&mut self, uid: u32) -> Result<Vec<BodyPart>> {
@@ -583,6 +615,10 @@ impl ImapClient for FakeImap {
         self.do_fetch_message(uid)
     }
 
+    async fn fetch_messages(&mut self, uids: &[u32]) -> Result<Vec<(u32, Vec<u8>)>> {
+        self.do_fetch_messages(uids)
+    }
+
     async fn fetch_structure(&mut self, uid: u32) -> Result<Vec<BodyPart>> {
         self.do_fetch_structure(uid)
     }
@@ -680,9 +716,39 @@ impl SharedFake {
         if stall {
             std::future::pending::<()>().await;
         }
-        if !latency.is_zero() {
-            tokio::time::sleep(latency).await;
+        let rtt = self.server.lock().unwrap_or_else(|e| e.into_inner()).net.rtt;
+        if !(latency + rtt).is_zero() {
+            tokio::time::sleep(latency + rtt).await;
         }
+    }
+
+    /// The answer travels: the server's work for `messages`, then `bytes` over the shared link
+    /// (after the answers already on it), as [`FakeImap::net`] says.
+    async fn transfer(&self, bytes: usize, messages: usize) {
+        let until = {
+            let mut s = self.server.lock().unwrap_or_else(|e| e.into_inner());
+            let net = s.net;
+            if net.bytes_per_sec == 0 && net.per_message.is_zero() {
+                return;
+            }
+            let now = tokio::time::Instant::now();
+            let ready = now + net.per_message * messages as u32;
+            let start = s.link_free.map_or(ready, |f| f.max(ready));
+            let on_link = if net.bytes_per_sec == 0 {
+                Duration::ZERO
+            } else {
+                Duration::from_secs_f64(bytes as f64 / net.bytes_per_sec as f64)
+            };
+            s.link_free = Some(start + on_link);
+            start + on_link
+        };
+        tokio::time::sleep_until(until).await;
+    }
+
+    /// The messages of the selected folder (what a `UID SEARCH ALL` looks at).
+    fn selected_count(&self) -> usize {
+        let s = self.server.lock().unwrap_or_else(|e| e.into_inner());
+        self.selected.as_ref().and_then(|n| s.mailboxes.get(n)).map_or(0, |m| m.messages.len())
     }
 
     /// Runs a command of this connection (its selected folder in place).
@@ -708,7 +774,9 @@ impl ImapClient for SharedFake {
 
     async fn list(&mut self) -> Result<Vec<MailboxEntry>> {
         self.wait("list").await;
-        Ok(self.run(|s| s.do_list()))
+        let r = self.run(|s| s.do_list());
+        self.transfer(r.len() * 60, 0).await;
+        Ok(r)
     }
 
     async fn select(&mut self, mailbox: &str, qresync: Option<QresyncParams>) -> Result<Selected> {
@@ -718,27 +786,49 @@ impl ImapClient for SharedFake {
 
     async fn uids(&mut self) -> Result<Vec<u32>> {
         self.wait("uids").await;
-        self.run(|s| s.do_uids())
+        let r = self.run(|s| s.do_uids());
+        self.transfer(r.as_ref().map_or(0, |u| u.len() * 7), self.selected_count()).await;
+        r
     }
 
     async fn fetch_headers(&mut self, range: UidRange) -> Result<Vec<FetchedHeader>> {
         self.wait("fetch_headers").await;
-        self.run(|s| s.do_fetch_headers(range))
+        let r = self.run(|s| s.do_fetch_headers(range));
+        let (bytes, n) = r.as_ref().map_or((0, 0), |h| (h.iter().map(|h| h.header.len() + 120).sum(), h.len()));
+        self.transfer(bytes, n).await;
+        r
     }
 
     async fn fetch_previews(&mut self, range: UidRange) -> Result<Vec<(u32, Vec<u8>)>> {
         self.wait("fetch_previews").await;
-        self.run(|s| s.do_fetch_previews(range))
+        let r = self.run(|s| s.do_fetch_previews(range));
+        let (bytes, n) = r.as_ref().map_or((0, 0), |p| (p.iter().map(|p| p.1.len() + 40).sum(), p.len()));
+        self.transfer(bytes, n).await;
+        r
     }
 
     async fn fetch_flags(&mut self, range: UidRange, changed_since: Option<u64>) -> Result<Vec<FlagUpdate>> {
         self.wait("fetch_flags").await;
-        self.run(|s| s.do_fetch_flags(range, changed_since))
+        let r = self.run(|s| s.do_fetch_flags(range, changed_since));
+        let n = r.as_ref().map_or(0, |f| f.len());
+        // CHANGEDSINCE looks at every message of the range, the answer only has the changed.
+        self.transfer(n * 50, if changed_since.is_some() { n } else { self.selected_count() }).await;
+        r
     }
 
     async fn fetch_message(&mut self, uid: u32) -> Result<Vec<u8>> {
         self.wait("fetch_message").await;
-        self.run(|s| s.do_fetch_message(uid))
+        let r = self.run(|s| s.do_fetch_message(uid));
+        self.transfer(r.as_ref().map_or(0, |m| m.len()), 1).await;
+        r
+    }
+
+    async fn fetch_messages(&mut self, uids: &[u32]) -> Result<Vec<(u32, Vec<u8>)>> {
+        self.wait("fetch_messages").await;
+        let r = self.run(|s| s.do_fetch_messages(uids));
+        let (bytes, n) = r.as_ref().map_or((0, 0), |m| (m.iter().map(|m| m.1.len()).sum(), m.len()));
+        self.transfer(bytes, n).await;
+        r
     }
 
     async fn fetch_structure(&mut self, uid: u32) -> Result<Vec<BodyPart>> {
@@ -748,7 +838,9 @@ impl ImapClient for SharedFake {
 
     async fn fetch_section(&mut self, uid: u32, section: &str) -> Result<Vec<u8>> {
         self.wait("fetch_section").await;
-        self.run(|s| s.do_fetch_section(uid, section))
+        let r = self.run(|s| s.do_fetch_section(uid, section));
+        self.transfer(r.as_ref().map_or(0, |m| m.len()), 1).await;
+        r
     }
 
     async fn idle(&mut self, timeout: Duration, wake: &Notify) -> Result<IdleOutcome> {
@@ -796,7 +888,9 @@ impl ImapClient for SharedFake {
 
     async fn search(&mut self, query: &Search) -> Result<Vec<u32>> {
         self.wait("search").await;
-        self.run(|s| s.do_search(query))
+        let r = self.run(|s| s.do_search(query));
+        self.transfer(r.as_ref().map_or(0, |u| u.len() * 7), self.selected_count()).await;
+        r
     }
 
     async fn create(&mut self, mailbox: &str) -> Result<()> {

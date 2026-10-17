@@ -245,6 +245,12 @@ pub fn update_servers(
     Ok(())
 }
 
+/// „Sync-Details“: the steps of the account's last sync with their times (empty before one).
+#[tauri::command]
+pub fn sync_details(id: i64) -> String {
+    mail_core::diag::sync_details(id).unwrap_or_default()
+}
+
 #[tauri::command]
 pub fn remove_account(app: AppHandle, state: State<'_, AppState>, id: i64) -> Res<()> {
     stop_worker(&app, id);
@@ -471,29 +477,30 @@ pub fn list_messages(state: State<'_, AppState>, mailbox_id: i64, offset: u32, l
 }
 
 /// One folder of every account at once: „Alle Entwürfe“, „Alle gesendeten“, „Alle archivierten“
-/// (`role` as `Role::as_str`), newest first. Each account's folder gives its first
-/// `offset + limit` rows, merged by date: the pages stay exact without a query across folders.
+/// (`role` as `Role::as_str`), newest first and one row per message, by the date index
+/// (`unified::folder_page`). The list pages by offset: the rows up to the page are read and the
+/// earlier ones skipped.
 #[tauri::command]
-pub fn list_role(state: State<'_, AppState>, role: String, offset: u32, limit: u32, threads: bool) -> Res<Page> {
+pub fn list_role(state: State<'_, AppState>, role: String, offset: u32, limit: u32) -> Res<Page> {
     let store = state.store();
     let Some(role) = mail_core::imap::Role::parse(&role) else { return Ok(Page { total: 0, offset, items: vec![] }) };
     let limit = limit.min(500);
-    let want = offset.saturating_add(limit);
-    let (mut total, mut items) = (0u32, Vec::new());
+    let mut total = 0u32;
     for a in store.accounts()? {
         for m in store.mailboxes(a.id)?.into_iter().filter(|m| m.role == Some(role) && m.selectable) {
-            total += store.list_len(m.id, threads)?;
-            let rows = if threads { store.threads(m.id, want, 0)? } else { store.messages(m.id, want, 0)? };
-            items.extend(rows.into_iter().map(|mut r| {
-                r.account_id = m.account_id;
-                r
-            }));
+            total += store.list_len(m.id, false)?;
         }
     }
-    items.sort_by(|a, b| b.date.cmp(&a.date).then(b.id.cmp(&a.id)));
-    let mut items: Vec<_> = items.into_iter().skip(offset as usize).take(limit as usize).collect();
+    let page = mail_core::unified::folder_page(&store, role, None, None, offset.saturating_add(limit))?;
+    let mut items: Vec<_> = page.items.into_iter().skip(offset as usize).collect();
     crate::tools::annotate(&store, &mut items);
     Ok(Page { total, offset, items })
+}
+
+/// The unread and total mail of every account's inbox (the account switcher's numbers).
+#[tauri::command]
+pub fn account_counts(state: State<'_, AppState>) -> Res<Vec<mail_core::unified::AccountCount>> {
+    mail_core::unified::inbox_counts(&state.store())
 }
 
 #[tauri::command]

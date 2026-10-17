@@ -268,6 +268,52 @@ pub struct FetchedHeader {
 /// How much of a body [`ImapClient::fetch_previews`] fetches: enough for the preview line.
 pub const PREVIEW_BYTES: usize = 2048;
 
+/// The header fields the list, the threads and the sorting read
+/// (`BODY.PEEK[HEADER.FIELDS (…)]`): Gmail's headers are mostly Received, ARC and DKIM lines,
+/// five to ten times what these need.
+pub const HEADER_FIELDS: &[&str] = &[
+    "From",
+    "To",
+    "Cc",
+    "Reply-To",
+    "Subject",
+    "Date",
+    "Message-ID",
+    "In-Reply-To",
+    "References",
+    "List-Id",
+    "List-Unsubscribe",
+    "List-Unsubscribe-Post",
+    "List-Post",
+    "Precedence",
+    "Auto-Submitted",
+    "Authentication-Results",
+    "MIME-Version",
+    "Content-Type",
+    "Content-Transfer-Encoding",
+];
+
+/// The [`HEADER_FIELDS`] of a header, as a server answers `HEADER.FIELDS` (folded lines kept,
+/// the blank line at the end).
+pub fn header_fields(header: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(1024);
+    let mut keep = false;
+    for line in header.split_inclusive(|b| *b == b'\n') {
+        if line == b"\r\n" || line == b"\n" {
+            break;
+        }
+        if !line.starts_with(b" ") && !line.starts_with(b"\t") {
+            let name = line.split(|b| *b == b':').next().unwrap_or_default();
+            keep = HEADER_FIELDS.iter().any(|f| f.as_bytes().eq_ignore_ascii_case(name.trim_ascii()));
+        }
+        if keep {
+            out.extend_from_slice(line);
+        }
+    }
+    out.extend_from_slice(b"\r\n");
+    out
+}
+
 /// A UID range `from:to`; `to: None` is `from:*`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UidRange {
@@ -295,6 +341,11 @@ pub enum IdleOutcome {
 /// The IMAP operations the sync engine uses. One value is one authenticated connection.
 pub trait ImapClient: Send {
     fn capabilities(&mut self) -> impl Future<Output = Result<Capabilities>> + Send;
+    /// How long connecting and signing in took, step by step (for „Sync-Details“); none when
+    /// the connection does not know.
+    fn connect_times(&self) -> Vec<(&'static str, Duration)> {
+        vec![]
+    }
     fn list(&mut self) -> impl Future<Output = Result<Vec<MailboxEntry>>> + Send;
     /// `SELECT`, with `(QRESYNC …)` when `qresync` is given (the caller checks the capability).
     fn select(
@@ -319,6 +370,21 @@ pub trait ImapClient: Send {
     ) -> impl Future<Output = Result<Vec<FlagUpdate>>> + Send;
     /// The whole message (`BODY.PEEK[]`).
     fn fetch_message(&mut self, uid: u32) -> impl Future<Output = Result<Vec<u8>>> + Send;
+    /// Several whole messages in one round trip (`UID FETCH 3,7,9 (BODY.PEEK[])`); the ones the
+    /// server no longer has are left out.
+    fn fetch_messages(&mut self, uids: &[u32]) -> impl Future<Output = Result<Vec<(u32, Vec<u8>)>>> + Send {
+        async move {
+            let mut out = vec![];
+            for &uid in uids {
+                match self.fetch_message(uid).await {
+                    Ok(raw) => out.push((uid, raw)),
+                    Err(crate::error::Error::NotFound(_)) => {}
+                    Err(e) => return Err(e),
+                }
+            }
+            Ok(out)
+        }
+    }
     /// The parts of a message (`BODYSTRUCTURE`), leaves only, for large messages whose
     /// attachments are fetched on demand.
     fn fetch_structure(&mut self, uid: u32) -> impl Future<Output = Result<Vec<BodyPart>>> + Send;

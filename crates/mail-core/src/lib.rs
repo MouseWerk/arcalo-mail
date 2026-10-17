@@ -51,6 +51,7 @@ pub mod templates;
 pub mod thread;
 pub mod tracking;
 pub mod triage;
+pub mod unified;
 pub mod unsubscribe;
 pub mod update;
 pub mod update_android;

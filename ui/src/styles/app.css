@@ -4470,3 +4470,24 @@ button.rule-text:hover {
 :root[data-layout="phone"] .dialog.contact-card {
   height: calc(var(--app-h, 100dvh) - var(--safe-top) - var(--sp-6));
 }
+.sync-details {
+  margin: var(--sp-2) 0 0;
+  padding: var(--sp-2) var(--sp-3);
+  max-height: 320px;
+  overflow: auto;
+  border-radius: var(--r-md);
+  background: var(--bg-active);
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  white-space: pre;
+}
+/* A phone: the sync steps wrap at the screen's width instead of scrolling sideways. */
+.app[data-layout="phone"] .sync-details {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.app[data-layout="phone"] .set-card .set-actions {
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}

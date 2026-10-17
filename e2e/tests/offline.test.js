@@ -22,7 +22,9 @@ before(async () => {
   await addAccount(app, server);
   await app.browser.refresh();
   await waitRow(app, "Wochenplan");
-  await app.waitUntil(async () => (await app.$$(".row-snippet")).length >= 3, 20000, "bodies fetched");
+  // The preview lines come with the headers; the bodies (to read offline) right after.
+  const id = (await app.invoke("list_accounts"))[0].id;
+  await app.waitUntil(async () => /(Inhalte|bodies) inbox: 3/.test(await app.invoke("sync_details", { id })), 20000, "bodies fetched");
 });
 
 after(async () => {

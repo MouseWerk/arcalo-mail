@@ -222,6 +222,8 @@ export function App() {
   const [list, setList] = useState<ListState>({ key: "", total: 0, pages: {}, loading: true });
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<MessageSummary[] | null>(null);
+  // The switcher's numbers: unread mail in each account's inbox.
+  const [acctCounts, setAcctCounts] = useState<Record<number, number>>({});
   // Search runs over every account; the switcher narrows the results to one (null: all).
   const [searchAccount, setSearchAccount] = useState<number | null>(null);
   // Bumped when the store changed (new mail, fetched bodies): open search results follow.
@@ -297,7 +299,7 @@ export function App() {
         return mailboxId == null ? null : { key: `${mailboxId}:${threads}`, page: (o, l) => api.messages(mailboxId, o, l, threads) };
       case "role": {
         const role = place.role;
-        return { key: `role:${role}:${threads}`, page: (o, l) => api.roleList(role, o, l, threads) };
+        return { key: `role:${role}`, page: (o, l) => api.roleList(role, o, l) };
       }
       default:
         return null;
@@ -459,6 +461,7 @@ export function App() {
     );
     if (p.kind === "inbox" && p.account != null) void api.inboxCounts(null).then(latest((c) => setScreenerCount(c.screener)));
     void api.timeCounts().then(latest(setTimes));
+    void api.accountCounts().then(latest((list) => setAcctCounts(Object.fromEntries(list.map((c) => [c.account_id, c.unread])))));
     if (p.kind === "screener") void api.screenerSenders(null).then(latest(setWaiting));
     if (p.kind === "subscriptions") void api.subscriptions().then(latest(setSubs));
     if (p.kind === "scheduled") void api.scheduled().then(latest(setScheduled));
@@ -1679,7 +1682,7 @@ export function App() {
           ? mailbox.role
           : null;
   const switchCurrent = results ? searchAccount : place.kind === "inbox" ? place.account : place.kind === "role" ? null : (mailbox?.account_id ?? null);
-  const inboxUnread = (id: number) => (mailboxes[id] ?? []).filter((m) => m.role === "inbox").reduce((n, m) => n + m.unread, 0);
+  const inboxUnread = (id: number) => acctCounts[id] ?? (mailboxes[id] ?? []).filter((m) => m.role === "inbox").reduce((n, m) => n + m.unread, 0);
   const pickAccount = (id: number | null) => {
     if (results) return setSearchAccount(id);
     if (!switchRole) return;
