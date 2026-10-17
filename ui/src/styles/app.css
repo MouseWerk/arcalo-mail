@@ -1099,13 +1099,19 @@
   line-height: 1.6;
 }
 .setup-logo {
-  display: grid;
-  place-items: center;
-  width: var(--ctl-lg);
-  height: var(--ctl-lg);
-  border-radius: var(--r-md);
-  background: var(--accent-soft);
-  color: var(--accent-text);
+  display: block;
+  width: var(--sp-10);
+  height: var(--sp-10);
+  overflow: visible;
+}
+.setup-logo-ribbon {
+  fill: none;
+  stroke: var(--text);
+  stroke-width: 64;
+  stroke-miterlimit: 8;
+}
+.setup-logo-seal {
+  fill: var(--accent);
 }
 .setup-points {
   display: grid;

@@ -1,4 +1,4 @@
-import { ArrowLeft, CircleCheck, CircleX, ExternalLink, Info, KeyRound, Lock, LogIn, Mail, ServerCog, ShieldCheck, Sparkles, UserPlus } from "lucide-react";
+import { ArrowLeft, CircleCheck, CircleX, ExternalLink, Info, KeyRound, Lock, LogIn, ServerCog, ShieldCheck, Sparkles, UserPlus } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useT, type TKey } from "../lib/i18n";
 import { api, openExternal } from "../lib/api";
@@ -333,9 +333,11 @@ export function Setup({ welcome, onDone, onCancel }: { welcome: boolean; onDone:
 
   const intro = welcome && (
     <div className="setup-intro">
-      <span className="setup-logo" aria-hidden>
-        <Mail size={22} strokeWidth={1.75} />
-      </span>
+      <svg className="setup-logo" viewBox="0 0 1000 1000" aria-hidden>
+        {/* Arcalo Mail's mark (docs/brand/arcalo-mail-mark.svg). */}
+        <path className="setup-logo-seal" d="M500 412.7 618 551.4 500 690 382 551.4Z" />
+        <path className="setup-logo-ribbon" d="M100 220H900V780H100Z M100 220 500 690 900 220 M382 551.4 500 412.7 618 551.4" />
+      </svg>
       <h1>{t("setup.welcome")}</h1>
       <p className="muted">{t("setup.welcomeText")}</p>
       <ul className="setup-points">

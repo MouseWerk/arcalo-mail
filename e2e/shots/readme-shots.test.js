@@ -25,7 +25,9 @@ for (const k of ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"]) {
   delete process.env[k];
   delete process.env[k.toLowerCase()];
 }
-const ENV = { ARCALO_MAIL_NOW: String(NOW), TZ: "Europe/London" };
+// The unsubscribe addresses of the sample newsletters are the test server on this computer,
+// which mail may not point at otherwise (as in tests/sorting.test.js).
+const ENV = { ARCALO_MAIL_NOW: String(NOW), TZ: "Europe/London", ARCALO_MAIL_TEST_LOOPBACK: "1" };
 
 let work, personal, app, dataDir;
 
