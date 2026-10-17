@@ -61,3 +61,15 @@ with the Google sign-in.
   where available (Sieve via ManageSieve, Microsoft inbox rules through Graph), with the most common
   conditions and actions (from, to, subject, list, has attachment; move, label, mark read, flag, forward,
   delete, skip the inbox), a preview of which mails a rule would catch, and an order the user sets.
+
+## Logo and 1.1 (2026-10-17)
+
+- **Logo:** Arcalo Mail gets its own mark, designed from Arcalo's mark with an envelope in Arcalo's colors, for the
+  opening animation, the app icon and the stores. The opening animation follows Arcalo's: short, calm, skipped with
+  reduced motion, never delays the start, can be switched off.
+- **1.1:** Exchange on premises (EWS), Google sign-in (Gmail, Google Calendar) after Google's verification, the iOS
+  widget, the Microsoft Store and winget; Security: app lock and encryption on the device (as Arcalo), a phishing
+  warning (lookalike domains, a reply address different from the sender, first contact claiming to be a bank),
+  encrypted drafts; Comfort: voice dictation in the compose sheet (Arcalo's local speech recognition), an undo
+  history for every action, Arcalo's themes and a reading mode, quick reply from notifications on desktop and
+  phone, watch apps (Apple Watch, Wear OS).
