@@ -226,10 +226,12 @@ jobs:
           disable-animations: true
           emulator-boot-timeout: 900
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -no-snapshot-save
-          script: cd e2e && ARCALO_MAIL_APK="$GITHUB_WORKSPACE/apk/arcalo-mail-debug.apk" node --test --test-concurrency=1 --test-reporter=spec android/phone.test.js
+          script: cd e2e && ARCALO_MAIL_APK="$GITHUB_WORKSPACE/apk/arcalo-mail-debug.apk" timeout 2400 node --test --test-concurrency=1 --test-timeout=300000 --test-force-exit --test-reporter=spec android/phone.test.js
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: android-screenshots
-          path: e2e/screenshots/android
+          path: |
+            e2e/screenshots/android
+            e2e/screenshots/FAIL-*
           if-no-files-found: warn

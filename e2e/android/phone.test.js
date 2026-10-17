@@ -83,6 +83,17 @@ for (const [W, H] of [
     };
 
     before(async () => {
+      try {
+        await open();
+      } catch (e) {
+        // What the device says, for the artifact and the log.
+        console.error(`could not open the app at ${W}×${H}: ${e?.stack ?? e}`);
+        device.diagnose(path.join(OUT, `android-${W}x${H}-diagnose.txt`));
+        throw e;
+      }
+    });
+
+    const open = async () => {
       device.fresh();
       device.setScreen(W, H, 2);
       const pid = await device.start();
@@ -98,7 +109,8 @@ for (const [W, H] of [
       await page.waitForFunction(() => document.body.classList.contains("ready"), null, { timeout: 60000 });
       await page.evaluate(geo.recordSpinners);
       dpr = await page.evaluate(() => window.devicePixelRatio);
-    });
+      console.log(`connected at ${W}×${H}: ${page.url()}, ${await page.evaluate(() => `${innerWidth}×${innerHeight}`)} at ${dpr}x`);
+    };
 
     after(async () => {
       await browser?.close().catch(() => {});

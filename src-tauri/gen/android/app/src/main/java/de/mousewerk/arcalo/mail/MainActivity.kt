@@ -80,6 +80,11 @@ class MainActivity : TauriActivity() {
   }
 
   companion object {
+    init {
+      // Debug builds only: the WebView's DevTools socket for the emulator tests (e2e/android).
+      if (BuildConfig.DEBUG) WebView.setWebContentsDebuggingEnabled(true)
+    }
+
     const val EXTRA_OPEN = "open_message"
     const val EXTRA_REPLY = "reply"
     const val EXTRA_TOKEN = "token"
@@ -98,8 +103,6 @@ class MainActivity : TauriActivity() {
 
   override fun onWebViewCreate(webView: WebView) {
     super.onWebViewCreate(webView)
-    // Debug builds only: the WebView's DevTools socket for the emulator tests (e2e/android).
-    if (BuildConfig.DEBUG) WebView.setWebContentsDebuggingEnabled(true)
     this.webView = webView
     followFontScale()
   }

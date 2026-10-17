@@ -1,13 +1,13 @@
 // The phone's screens measured, not only looked for: the desktop app in its touch layout
-// (ARCALO_MAIL_TOUCH=1) at two phone sizes (360×800, 412×915, portrait) with the edges a phone
-// reports (--safe-top, --safe-bottom), set up from the first start against a Gmail-like account
+// (ARCALO_MAIL_TOUCH=1) at two phone sizes (360×800, 412×915, portrait), set up from the first
+// start against a Gmail-like account
 // (crates/mail-testserver/src/gmail.rs). Every main screen (setup, inbox, folders, message,
-// compose, settings, calendar) is as wide as the screen with nothing wider and nothing
-// tappable under the status or navigation bar; spinners stay small and round; the compose
+// compose, settings, calendar) is as wide as the screen with nothing wider and nothing cut off
+// above it; spinners stay small and round; the compose
 // button leaves the last row free at the end of the list; every inbox tab can be reached;
 // writing has one bar on top with the send button and one row of tools above the keyboard;
-// folder names keep their brackets. The same checks run in the Android app on an emulator
-// (e2e/android). A screenshot of each screen is kept (e2e/screenshots/phone-*).
+// folder names keep their brackets. The system bars are phone-insets.test.js's (set by hand)
+// and the Android emulator's (e2e/android, the real bars); the same checks run there. A screenshot of each screen is kept (e2e/screenshots/phone-*).
 
 import { describe, test, after, before } from "node:test";
 import assert from "node:assert/strict";
@@ -17,8 +17,8 @@ import { clickText, openMessage, openView } from "../lib/mail.js";
 import * as geo from "../lib/geometry.js";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-/** The edges of an Android phone drawn edge to edge: status bar and gesture bar. */
-const INSETS = { top: 24, bottom: 16, left: 0, right: 0 };
+/** No system bars here (phone-insets.test.js sets them by hand, e2e/android has real ones). */
+const INSETS = { top: 0, bottom: 0, left: 0, right: 0 };
 const TABS = ["people", "newsletters", "notifications", "receipts"];
 
 for (const [W, H] of [
@@ -31,14 +31,8 @@ for (const [W, H] of [
     let fixture;
     const it = guarded(test, () => app);
 
-    /** The edges and the spinner recorder (again after a reload). */
-    const prepare = async () => {
-      await app.browser.execute((t, b) => {
-        document.documentElement.style.setProperty("--safe-top", `${t}px`);
-        document.documentElement.style.setProperty("--safe-bottom", `${b}px`);
-      }, INSETS.top, INSETS.bottom);
-      await app.browser.execute(geo.recordSpinners);
-    };
+    /** The spinner recorder (again after a reload). */
+    const prepare = () => app.browser.execute(geo.recordSpinners);
 
     /** The layout checks of the screen shown now, and its screenshot. */
     const screen = async (name, opts) => {

@@ -81,6 +81,7 @@ export async function connect(pid, timeout = 60000) {
       const sockets = shell("cat /proc/net/unix");
       const name = `webview_devtools_remote_${pid}`;
       if (!sockets.includes(name)) throw new Error(`no ${name} yet (is WebView debugging on in this build?)`);
+      console.log(`DevTools socket ${name} found`);
       adb("forward", `tcp:${port}`, `localabstract:${name}`);
       forwarded = port;
       const browser = await chromium.connectOverCDP(`http://127.0.0.1:${port}`);
@@ -172,4 +173,27 @@ export function insetsCss(dpr) {
 /** Whether the soft keyboard is up. */
 export function keyboardShown() {
   return /mInputShown=true/.test(shell("dumpsys input_method"));
+}
+
+/** What the device says when something went wrong: the app's process, its DevTools sockets,
+ *  the windows and the end of the log. */
+export function diagnose(file) {
+  const parts = [];
+  const run = (label, f) => {
+    try {
+      parts.push(`== ${label}\n${f()}`);
+    } catch (e) {
+      parts.push(`== ${label}\n(failed: ${e.message})`);
+    }
+  };
+  run("pidof", () => shell(`pidof ${PKG}`));
+  run("devtools sockets", () => shell("cat /proc/net/unix").split("\n").filter((l) => l.includes("devtools")).join("\n"));
+  run("forwards", () => adb("forward", "--list"));
+  run("reverse", () => adb("reverse", "--list"));
+  run("focused window", () => shell("dumpsys window windows").split("\n").filter((l) => /mCurrentFocus|mFocusedApp/.test(l)).join("\n"));
+  run("logcat", () => adb("logcat", "-d", "-t", "400"));
+  const text = parts.join("\n\n");
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, text);
+  console.error(text.slice(0, 6000));
 }
