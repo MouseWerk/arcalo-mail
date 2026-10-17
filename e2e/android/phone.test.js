@@ -48,13 +48,12 @@ for (const [W, H] of [
   [412, 915],
 ]) {
   describe(`Android phone ${W}×${H}`, () => {
-    let browser;
     let page;
     let dpr = 2;
     const spinnerLog = [];
 
     const shot = (name) => device.screencap(path.join(OUT, `android-${W}x${H}-${name}.png`));
-    const visible = (sel, timeout = 30000) => page.waitForSelector(sel, { state: "visible", timeout });
+    const visible = (sel, timeout = 30000) => page.waitForSelector(sel, { timeout });
     const keepSpinners = async () => spinnerLog.push(...(await page.evaluate(geo.recordedSpinners).catch(() => [])));
 
     /** The layout checks of the screen shown now, with the bars where they are now. */
@@ -71,7 +70,7 @@ for (const [W, H] of [
     const reload = async () => {
       await keepSpinners();
       await page.reload();
-      await page.waitForFunction(() => document.body.classList.contains("ready"), null, { timeout: 60000 });
+      await page.waitForFunction(() => document.body.classList.contains("ready"), undefined, { timeout: 60000 });
     };
 
     /** Taps an element with a real finger (adb), where it is on the screen. */
@@ -97,23 +96,23 @@ for (const [W, H] of [
       device.fresh();
       device.setScreen(W, H, 2);
       const pid = await device.start();
-      ({ browser, page } = await device.connect(pid));
+      page = await device.connect(pid);
       await page.addInitScript(geo.recordSpinners);
       // The app in German whatever the emulator's language (the labels the steps look for).
-      await page.waitForFunction(() => window.__TAURI_INTERNALS__ != null, null, { timeout: 60000 });
+      await page.waitForFunction(() => window.__TAURI_INTERNALS__ != null, undefined, { timeout: 60000 });
       await page.evaluate(async () => {
         const s = await window.__TAURI_INTERNALS__.invoke("get_settings", {});
         await window.__TAURI_INTERNALS__.invoke("set_settings", { settings: { ...s, language: "de" } });
       });
       await page.reload();
-      await page.waitForFunction(() => document.body.classList.contains("ready"), null, { timeout: 60000 });
+      await page.waitForFunction(() => document.body.classList.contains("ready"), undefined, { timeout: 60000 });
       await page.evaluate(geo.recordSpinners);
       dpr = await page.evaluate(() => window.devicePixelRatio);
       console.log(`connected at ${W}×${H}: ${page.url()}, ${await page.evaluate(() => `${innerWidth}×${innerHeight}`)} at ${dpr}x`);
     };
 
     after(async () => {
-      await browser?.close().catch(() => {});
+      await page?.close();
       device.unforward();
     });
 
@@ -133,7 +132,7 @@ for (const [W, H] of [
         [server.user, server.password, server.transport()],
       );
       await reload();
-      await page.waitForFunction(() => document.querySelectorAll(".row:not(.row-placeholder)").length >= 5, null, { timeout: 90000 });
+      await page.waitForFunction(() => document.querySelectorAll(".row:not(.row-placeholder)").length >= 5, undefined, { timeout: 90000 });
       await page.waitForFunction((n) => document.querySelectorAll(".inbox-tab").length >= n, TABS.length, { timeout: 60000 });
       const problems = await screen("inbox");
       problems.push(...geo.tabProblems(await page.evaluate(geo.measureTabs), TABS));
@@ -152,18 +151,18 @@ for (const [W, H] of [
       await page.evaluate(geo.scrollListToStart);
       await page.click(".folders-btn");
       await visible(".sidebar");
-      await page.waitForFunction(() => document.querySelectorAll(".account .folder-name").length >= 8, null, { timeout: 30000 });
+      await page.waitForFunction(() => document.querySelectorAll(".account .folder-name").length >= 8, undefined, { timeout: 30000 });
       const problems = await screen("folders");
       problems.push(...geo.nameProblems(await page.evaluate(geo.measureNames, ".account .folder-name"), ["[Notion]", "Inbox", "Belege"]));
-      await page.locator(".folder-name", { hasText: /^Posteingang$/ }).first().click();
+      await page.click(".folder-name", { text: /^Posteingang$/ });
       await visible(".list-pane");
       assert.deepEqual(problems, []);
     });
 
     test("shows a message on a screen that fits", async () => {
-      await page.locator(".row", { hasText: fixture.cid }).first().click();
+      await page.click(".row", { text: new RegExp(fixture.cid) });
       await visible(".message-subject");
-      await page.waitForFunction(() => document.querySelectorAll(".message-loading").length === 0, null, { timeout: 30000 });
+      await page.waitForFunction(() => document.querySelectorAll(".message-loading").length === 0, undefined, { timeout: 30000 });
       const problems = await screen("message");
       device.back();
       await visible(".list-pane");
@@ -186,10 +185,10 @@ for (const [W, H] of [
       await sleep(500);
       if (device.keyboardShown()) device.back();
       device.back();
-      await page.waitForFunction(() => !document.querySelector(".compose"), null, { timeout: 15000 }).catch(() => {});
+      await page.waitForFunction(() => !document.querySelector(".compose"), undefined, { timeout: 15000 }).catch(() => {});
       if (await page.$(".compose")) {
         // A draft was kept: discard it.
-        await page.click('.compose-foot [aria-label="Verwerfen"]').catch(() => {});
+        await page.click('.compose-foot [aria-label="Verwerfen"]', { timeout: 3000 }).catch(() => {});
       }
       assert.deepEqual(problems, []);
     });
@@ -199,15 +198,15 @@ for (const [W, H] of [
       await page.click('.sidebar-head [aria-label="Einstellungen"]');
       await visible(".settings-nav");
       const problems = await screen("settings");
-      await page.locator(".settings-nav-item", { hasText: /^Lesen$/ }).click();
+      await page.click(".settings-nav-item", { text: /^Lesen$/ });
       await visible(".settings-main");
       problems.push(...(await screen("settings-reading")));
       device.back();
       await sleep(400);
       device.back();
-      await page.waitForFunction(() => !document.querySelector(".settings"), null, { timeout: 10000 });
+      await page.waitForFunction(() => !document.querySelector(".settings"), undefined, { timeout: 10000 });
       if (!(await page.$(".views .folder"))) await page.click(".folders-btn");
-      await page.locator(".views .folder", { hasText: /^Kalender/ }).first().click();
+      await page.click(".views .folder", { text: /^Kalender/ });
       await visible(".calv-head");
       problems.push(...(await screen("calendar")));
       assert.deepEqual(problems, []);

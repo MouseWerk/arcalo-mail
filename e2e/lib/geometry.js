@@ -1,6 +1,6 @@
 // Geometry of a phone screen, measured in the page: the checks the phone tests share, on the
 // desktop app in its touch layout (WebdriverIO's `execute`) and in the Android app over the
-// WebView's DevTools socket (Playwright's `evaluate`). Every check is a self-contained function
+// WebView's DevTools socket (e2e/android/cdp.js). Every check is a self-contained function
 // (it runs in the page, so it uses nothing from this file) that returns plain data; `problems`
 // turns the data into readable failures, empty when the screen is right.
 //

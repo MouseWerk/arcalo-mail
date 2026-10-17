@@ -1,14 +1,14 @@
 // The Android app on an emulator (or a phone on USB), driven over adb and the WebView's DevTools
 // socket: the screen size and density set with `wm`, the app started fresh, the test server on
 // the host reached through `adb reverse` (the app sees it on 127.0.0.1, so the plain-text
-// connections stay on loopback as the app allows them), and the page controlled with
-// Playwright's `connectOverCDP` after `adb forward tcp:<port> localabstract:webview_devtools_remote_<pid>`.
+// connections stay on loopback as the app allows them), and the page controlled over the
+// DevTools protocol (cdp.js) after `adb forward tcp:<port> localabstract:webview_devtools_remote_<pid>`.
 // Only processes this file started are stopped.
 
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { chromium } from "playwright-core";
+import { Page } from "./cdp.js";
 
 export const PKG = "de.mousewerk.arcalo.mail";
 const ADB = process.env.ADB ?? "adb";
@@ -71,34 +71,21 @@ export async function start(timeout = 60000) {
 
 let forwarded = null;
 
-/** Connects to the app's WebView; returns the browser and the app's page. */
+/** Connects to the app's page in its WebView. */
 export async function connect(pid, timeout = 60000) {
   const port = 9222;
   const t0 = Date.now();
   let last = null;
   while (Date.now() - t0 < timeout) {
     try {
-      const sockets = shell("cat /proc/net/unix");
       const name = `webview_devtools_remote_${pid}`;
-      if (!sockets.includes(name)) throw new Error(`no ${name} yet (is WebView debugging on in this build?)`);
-      console.log(`DevTools socket ${name} found`);
+      if (!shell("cat /proc/net/unix").includes(name)) throw new Error(`no ${name} yet (is WebView debugging on in this build?)`);
       adb("forward", `tcp:${port}`, `localabstract:${name}`);
       forwarded = port;
-      // The WebView names its browser endpoint without a port (ws://localhost/devtools/browser):
-      // the same path on the forwarded port.
       const version = await (await fetch(`http://127.0.0.1:${port}/json/version`)).json();
-      const ws = new URL(version.webSocketDebuggerUrl ?? "ws://localhost/devtools/browser");
-      const endpoint = `ws://127.0.0.1:${port}${ws.pathname}`;
-      console.log(`WebView ${version.Browser ?? "?"}, connecting to ${endpoint}`);
-      const browser = await chromium.connectOverCDP(endpoint);
-      for (let i = 0; i < 50; i++) {
-        const pages = browser.contexts().flatMap((c) => c.pages());
-        const page = pages.find((p) => /tauri\.localhost|^tauri:/.test(p.url()));
-        if (page) return { browser, page };
-        await sleep(200);
-      }
-      await browser.close().catch(() => {});
-      throw new Error("no page of the app in the WebView");
+      const page = await Page.connect(port, /tauri\.localhost|^tauri:/);
+      console.log(`connected to ${page.url()} in WebView ${version.Browser ?? "?"}`);
+      return page;
     } catch (e) {
       last = e;
       await sleep(500);

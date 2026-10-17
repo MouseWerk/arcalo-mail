@@ -9,7 +9,6 @@
     "shots:store": "node --test --test-concurrency=1 --test-reporter=spec shots/store-shots.test.js"
   },
   "dependencies": {
-    "playwright-core": "1.49.1",
     "webdriverio": "^9.32.0"
   }
 }
