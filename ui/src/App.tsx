@@ -1226,8 +1226,6 @@ export function App() {
 
   // ---------------------------------------------------------------- notices
 
-  const changedRef = useRef<{ accounts: Set<number>; list: boolean; timer: number | null }>({ accounts: new Set(), list: false, timer: null });
-
   useEffect(
     () =>
       onNotice((n: Notice) => {
@@ -1235,21 +1233,12 @@ export function App() {
           case "status":
             setAccounts((list) => list?.map((a) => (a.id === n.account_id ? { ...a, status: n } : a)) ?? list);
             break;
-          case "changed": {
-            // A sync tells after each stored part: the lists reload once per moment, not per notice.
-            const due = changedRef.current;
-            due.accounts.add(n.account_id);
-            if (!n.mailboxes.length || placeRef.current.kind !== "folder" || (mailboxId != null && n.mailboxes.includes(mailboxId))) due.list = true;
-            due.timer ??= window.setTimeout(() => {
-              const { accounts, list } = changedRef.current;
-              changedRef.current = { accounts: new Set(), list: false, timer: null };
-              for (const a of accounts) void reloadMailboxes(a);
-              reloadSmart();
-              setSearchRev((v) => v + 1);
-              if (list) refreshList();
-            }, 250);
+          case "changed":
+            void reloadMailboxes(n.account_id);
+            reloadSmart();
+            setSearchRev((v) => v + 1);
+            if (!n.mailboxes.length || placeRef.current.kind !== "folder" || (mailboxId != null && n.mailboxes.includes(mailboxId))) refreshList();
             break;
-          }
           case "new_mail":
             void reloadMailboxes(n.account_id);
             reloadSmart();
