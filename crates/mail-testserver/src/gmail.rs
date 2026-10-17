@@ -390,7 +390,7 @@ pub fn fill(f: &mut FakeImap, count: usize, now: i64, user: &str) -> Summary {
         let mut m = person(k, now - 86_400 * (k as i64 + 2));
         m.from = format!("Maria Muster <{user}>");
         m.subject = subject.into();
-        m.folders = if folder.starts_with("[Gmail]/Gesendet") { vec![folder] } else { vec![folder] };
+        m.folders = vec![folder];
         mails.push((m, format!("own{k}@fixture.gmail.example")));
     }
 
