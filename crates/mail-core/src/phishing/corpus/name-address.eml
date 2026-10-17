@@ -1,0 +1,11 @@
+X-Expect: name_address first_contact
+X-Context: first
+From: "service@paypal.de" <x7@mailer-host.example.ru>
+Subject: Rechnung
+Date: Mon, 6 Oct 2025 10:00:00 +0200
+Message-ID: <name-address@corpus.test>
+To: maria@example.org
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+
+Anbei.

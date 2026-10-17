@@ -4,7 +4,9 @@ import "@fontsource-variable/inter";
 import "./styles/tokens.css";
 import "./styles/base.css";
 import "./styles/app.css";
+import "./styles/security.css";
 import { App } from "./App";
+import { SecurityGate } from "./components/Security";
 import { startSplash } from "./lib/splash";
 import { readSystemBars } from "./lib/viewport";
 
@@ -15,6 +17,8 @@ readSystemBars();
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    <App />
+    <SecurityGate>
+      <App />
+    </SecurityGate>
   </StrictMode>,
 );

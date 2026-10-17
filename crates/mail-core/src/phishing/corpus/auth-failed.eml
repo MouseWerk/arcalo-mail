@@ -1,0 +1,12 @@
+X-Expect: auth_failed
+X-Context: first
+From: PayPal <service@paypal.com>
+Authentication-Results: mx.example.org; spf=fail smtp.mailfrom=paypal.com; dkim=none; dmarc=fail (p=REJECT) header.from=paypal.com
+Subject: Konto
+Date: Mon, 6 Oct 2025 10:00:00 +0200
+Message-ID: <auth-failed@corpus.test>
+To: maria@example.org
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+
+Bitte anmelden.

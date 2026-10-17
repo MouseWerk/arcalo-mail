@@ -39,6 +39,7 @@ import { MailFrame } from "./MailFrame";
 import { Spinner } from "./ui";
 import { Avatar } from "./Avatar";
 import { InvitationCard, JoinButton, ProtectedFiles, ProtectionBadges } from "./Meeting";
+import { PhishingNotice } from "./Phishing";
 import type { Address } from "../lib/types";
 
 export type Loaded = MessageView | "loading" | { error: string };
@@ -254,6 +255,7 @@ function MessageCard({ view, theme, p, onCollapse }: { view: MessageView; theme:
         </h2>
       )}
       <MarkNotes view={view} p={p} />
+      {view.phishing && <PhishingNotice warning={view.phishing} onChanged={() => p.onRetry(m.id)} />}
       {view.protection && <ProtectionBadges p={view.protection} messageId={m.id} onChanged={() => p.onRetry(m.id)} />}
       {view.invitation && <InvitationCard view={view} onAnswered={() => p.onRetry(m.id)} onOpenCalendar={(key, start) => p.onOpenCalendar?.(key, start)} />}
       {!view.invitation && view.meeting && (

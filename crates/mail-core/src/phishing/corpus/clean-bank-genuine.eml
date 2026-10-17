@@ -1,0 +1,12 @@
+X-Expect: none
+X-Context: first
+From: Sparkasse KoelnBonn <service@sparkasse.de>
+Authentication-Results: mx.example.org; spf=pass smtp.mailfrom=sparkasse.de; dkim=pass header.d=sparkasse.de; dmarc=pass header.from=sparkasse.de
+Subject: Ihr neues Online-Banking
+Date: Mon, 6 Oct 2025 10:00:00 +0200
+Message-ID: <clean-bank-genuine@corpus.test>
+To: maria@example.org
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+
+Willkommen.

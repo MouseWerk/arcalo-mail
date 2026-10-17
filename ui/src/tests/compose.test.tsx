@@ -329,3 +329,39 @@ describe("keys in the editor", () => {
     delete (HTMLElement.prototype as { offsetParent?: unknown }).offsetParent;
   });
 });
+
+describe("the protection a recipient asked for", () => {
+  // The answer about the keys arrives while the parent has not rendered the sheet's last change
+  // yet (keys typed in the same moment): the next change must keep the encryption it set.
+  it("survives a change made before the sheet rendered it", async () => {
+    const { createRoot } = await import("react-dom/client");
+    const { ComposeSheet } = await import("../components/ComposeSheet");
+    const { emptyDraft } = await import("../lib/compose");
+    const { demo } = await import("../lib/demo");
+    const { mounted } = await import("./harness");
+    vi.spyOn(api, "cryptoAbilities").mockResolvedValue({
+      pgp_sign: true,
+      pgp_encrypt: true,
+      pgp_missing: [],
+      smime_sign: false,
+      smime_encrypt: false,
+      smime_missing: [],
+      pgp_prefer_encrypt: true,
+    });
+    const account = (await demo.accounts())[0];
+    const draft = { ...emptyDraft(account, false, ["jonas@example.org"]), accountId: account.id };
+    const changes: { protect?: unknown; subject: string }[] = [];
+    const el = document.createElement("div");
+    document.body.appendChild(el);
+    const root = createRoot(el);
+    mounted.push(root);
+    // The parent never renders the changes again: every one must stand on the ones before.
+    const props = { accounts: [account], error: null, sending: false, onSend: () => {}, onSendLater: () => {}, onSaveDraft: () => {}, onClose: () => {}, onDiscard: () => {} };
+    await act(async () => root.render(<ComposeSheet {...props} draft={draft} onChange={(d) => changes.push(d)} />));
+    await flush(400);
+    expect(changes.at(-1)?.protect).toEqual({ method: "pgp", sign: false, encrypt: true });
+    await type(subject(el), "Vertrag");
+    expect(changes.at(-1)?.subject).toBe("Vertrag");
+    expect(changes.at(-1)?.protect).toEqual({ method: "pgp", sign: false, encrypt: true });
+  });
+});

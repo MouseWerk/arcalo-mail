@@ -4,7 +4,8 @@
 //! Rust → Kotlin: static methods of `KeystoreCipher` (the secrets, `secrets.rs`), `AuthTab`
 //! (Custom Tabs for the sign-in), `MailNotifier` (the unread count on the notification),
 //! `MailWidget` (the home-screen widget reads `widget.json` again) and `AppFacts` (version,
-//! signing key and installer of the app, for the update notice). They are called from any
+//! signing key and installer of the app, for the update notice) and `BiometricGate` (the app
+//! lock's fingerprint or face, `security.rs`). They are called from any
 //! thread: the classes come from the app's class loader, kept from the first call on a Java
 //! thread.
 //!
@@ -32,6 +33,7 @@ const AUTH_TAB: &str = "de.mousewerk.arcalo.mail.AuthTab";
 const NOTIFIER: &str = "de.mousewerk.arcalo.mail.MailNotifier";
 const WIDGET: &str = "de.mousewerk.arcalo.mail.MailWidget";
 const FACTS: &str = "de.mousewerk.arcalo.mail.AppFacts";
+const BIOMETRIC: &str = "de.mousewerk.arcalo.mail.BiometricGate";
 
 /// WorkManager gives a worker ten minutes; the check takes at most this.
 const BACKGROUND_BUDGET: Duration = Duration::from_secs(90);
@@ -161,6 +163,43 @@ pub fn open_auth(url: &str) -> Result<(), String> {
         )
         .map_err(|e| failure(env, e))?;
         Ok(())
+    })
+}
+
+/// Whether the phone can confirm the user with a fingerprint, the face or the screen lock
+/// (`BiometricGate.kt`, Android 9 and later).
+pub fn biometric_available() -> bool {
+    let activity = ACTIVITY.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let Some(activity) = activity else { return false };
+    with_env(|env, java| {
+        let c = class(env, java, BIOMETRIC)?;
+        env.call_static_method(&c, "available", "(Landroid/app/Activity;)Z", &[JValue::Object(activity.as_obj())])
+            .and_then(|v| v.z())
+            .map_err(|e| failure(env, e))
+    })
+    .unwrap_or(false)
+}
+
+/// Asks for the fingerprint, the face or the screen lock (`BiometricGate.kt`); waits for the
+/// answer, so never on the main thread.
+pub fn biometric_verify(title: &str) -> bool {
+    let activity = ACTIVITY.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let Some(activity) = activity else { return false };
+    let r = with_env(|env, java| {
+        let c = class(env, java, BIOMETRIC)?;
+        let t = env.new_string(title).map_err(|e| e.to_string())?;
+        env.call_static_method(
+            &c,
+            "verify",
+            "(Landroid/app/Activity;Ljava/lang/String;)Z",
+            &[JValue::Object(activity.as_obj()), JValue::Object(&t)],
+        )
+        .and_then(|v| v.z())
+        .map_err(|e| failure(env, e))
+    });
+    r.unwrap_or_else(|e| {
+        mail_core::diag::log("android", &format!("biometric: {e}"));
+        false
     })
 }
 

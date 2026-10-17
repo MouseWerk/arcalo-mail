@@ -17,3 +17,10 @@ codegen-units = 1
 panic = "abort"
 strip = true
 opt-level = 3
+
+# Argon2id (the app lock's PIN, the password-wrapped database key) is far too slow unoptimized:
+# debug builds and tests would wait seconds per hash (as in Arcalo).
+[profile.dev.package.argon2]
+opt-level = 3
+[profile.dev.package.blake2]
+opt-level = 3

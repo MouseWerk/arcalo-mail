@@ -39,6 +39,9 @@ export type ComposeState = {
   protect?: Protect | null;
   /** A reply to or forward of a decrypted message: the quote stays encrypted, or the sheet warns. */
   fromEncrypted?: Protect["method"] | null;
+  /** An encrypted draft opened again: its files stay in the backend and go along when it is
+   *  saved or sent (`names` for the sheet). */
+  sealed?: { from: number; names: string[] } | null;
 };
 
 export const escapeHtml = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -191,6 +194,7 @@ export function fromComposeDraft(d: ComposeDraft, files: FileInfo[] = [], forwar
     messageId: d.message_id,
     replyToId: d.reply_to_id,
     protect: d.protect ?? null,
+    sealed: d.sealed_from != null ? { from: d.sealed_from, names: d.sealed_files ?? [] } : null,
   };
 }
 
@@ -223,7 +227,7 @@ export function committed(s: ComposeState): ComposeState {
 export function isEmpty(state: ComposeState): boolean {
   const s = committed(state);
   const body = s.rich ? editorHtmlToText(s.html) : s.text;
-  return !s.to.length && !s.cc.length && !s.bcc.length && !s.subject.trim() && !body.replace(/^-- [\s\S]*$/m, "").trim() && !s.attachments.length && !s.forwarded.length;
+  return !s.to.length && !s.cc.length && !s.bcc.length && !s.subject.trim() && !body.replace(/^-- [\s\S]*$/m, "").trim() && !s.attachments.length && !s.forwarded.length && !s.sealed?.names.length;
 }
 
 /** What the backend sends or saves. */
@@ -244,6 +248,7 @@ export function toDraft(state: ComposeState): ComposeDraft {
     reply_to_id: s.replyToId,
     forwarded: s.forwarded.map((a) => a.id),
     protect: s.protect ?? null,
+    sealed_from: s.sealed?.from ?? null,
   };
 }
 

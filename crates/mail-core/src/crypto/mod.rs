@@ -282,9 +282,11 @@ pub fn list(store: &Store) -> Result<Vec<StoredKey>> {
     let mut out = vec![];
     // The address a key is used for (an Autocrypt key's is the one that sent it).
     let mut st = store.conn().prepare(
+        // The key's first address when it serves it, else the first one it serves. (The SQLite
+        // of SQLCipher refuses an outer column in a subquery's ORDER BY.)
         "SELECT k.fingerprint,
-           COALESCE((SELECT e.email FROM pgp_key_emails e WHERE e.fingerprint = k.fingerprint
-                     ORDER BY e.email = k.email DESC, e.email LIMIT 1), k.email) AS addr,
+           COALESCE((SELECT e.email FROM pgp_key_emails e WHERE e.fingerprint = k.fingerprint AND e.email = k.email),
+                    (SELECT min(e.email) FROM pgp_key_emails e WHERE e.fingerprint = k.fingerprint), k.email) AS addr,
            k.name, k.own, k.source
          FROM pgp_keys k ORDER BY k.own DESC, addr",
     )?;

@@ -103,6 +103,15 @@ pub fn notes_for(account: &Account, mut list: Vec<MessageSummary>) -> Vec<Note> 
         .collect()
 }
 
+/// The app lock is on: one notification per account with the count only (no sender, no subject,
+/// no buttons), the group a neutral one, so not even the account shows.
+pub fn private_note(account: &Account, count: usize) -> Option<Note> {
+    (count > 0).then(|| {
+        let (title, body) = mail_core::applock::private_notification(count);
+        Note { key: format!("account-{}", account.id), group: "arcalo-mail".into(), title, body, id: None }
+    })
+}
+
 /// Asks a running [`run`] to stop now.
 pub fn cancel() {
     CANCEL.store(true, Ordering::SeqCst);
@@ -113,8 +122,14 @@ pub fn cancel() {
 /// credential store of `data_dir` itself.
 pub fn run(data_dir: &Path, budget: Duration) -> Report {
     CANCEL.store(false, Ordering::SeqCst);
-    let db = data_dir.join("mail.db");
+    let db = data_dir.join(mail_core::cipher::DB_FILE);
     if !db.exists() {
+        return Report { skipped: true, ..Report::default() };
+    }
+    // An encrypted database opens with its key from the credential store (the Android Keystore,
+    // the iOS Keychain after the first unlock), as in the app.
+    crate::secrets::init(data_dir);
+    if crate::security::prepare(data_dir).blocked.is_some() {
         return Report { skipped: true, ..Report::default() };
     }
     let Ok(store) = Store::open(&db) else { return Report { skipped: true, ..Report::default() } };
@@ -123,7 +138,6 @@ pub fn run(data_dir: &Path, budget: Duration) -> Report {
         return Report { skipped: true, unread: store.unread_in_inboxes().unwrap_or(0), notes: vec![] };
     }
     crate::apply_language(settings.language);
-    crate::secrets::init(data_dir);
     crate::apply_network(&settings.network);
     let accounts = store.accounts().unwrap_or_default();
     let due = mail_core::later::tick(&store, mail_core::store::now()).unwrap_or_default();
@@ -182,6 +196,8 @@ pub fn run(data_dir: &Path, budget: Duration) -> Report {
     }
 
     let mut notes = vec![];
+    // With the app lock on, the notifications say how many and nothing else.
+    let private = crate::security::private(&store);
     if settings.notifications {
         for (id, new) in found {
             let Some(account) = accounts.iter().find(|a| a.id == id) else { continue };
@@ -189,11 +205,15 @@ pub fn run(data_dir: &Path, budget: Duration) -> Report {
             // with Focus or the Screener only what they let through.
             let new = mail_core::triage::worth_telling(&store, id, &new).unwrap_or(new);
             let list: Vec<_> = store.summaries(&new).unwrap_or_default().into_iter().filter(|m| !m.seen).collect();
-            notes.extend(notes_for(account, list));
+            if private {
+                notes.extend(private_note(account, list.len()));
+            } else {
+                notes.extend(notes_for(account, list));
+            }
         }
         for (i, r) in due.reminders.iter().enumerate() {
             let group = accounts.iter().find(|a| a.id == r.account_id).map(|a| a.email.clone()).unwrap_or_default();
-            let (title, body) = reminder_text(r);
+            let (title, body) = if private { mail_core::applock::private_reminder() } else { reminder_text(r) };
             notes.push(Note { key: format!("reminder-{}-{i}", r.account_id), group, title, body, id: None });
         }
     }
@@ -206,7 +226,11 @@ pub fn run(data_dir: &Path, budget: Duration) -> Report {
 /// read in the store of `data_dir`; the next check carries it to the server. Returns the unread
 /// count for the badge.
 pub fn quick_action(data_dir: &Path, message_id: i64, action: &str) -> Option<u32> {
-    let store = Store::open(&data_dir.join("mail.db")).ok()?;
+    crate::secrets::init(data_dir);
+    if crate::security::prepare(data_dir).blocked.is_some() {
+        return None;
+    }
+    let store = Store::open(&data_dir.join(mail_core::cipher::DB_FILE)).ok()?;
     if let Err(e) = mail_core::actions::quick_action(&store, message_id, action) {
         mail_core::diag::log("background", &format!("notification action: {e}"));
     }
@@ -271,6 +295,18 @@ mod tests {
         assert_eq!(notes[0].body, "maria@example.org");
         assert_eq!(notes[0].id, None);
         assert!(notes_for(&a, vec![]).is_empty());
+    }
+
+    #[test]
+    fn with_the_lock_on_a_note_says_how_many_and_nothing_else() {
+        let store = Store::open_in_memory().unwrap();
+        let a = account(&store);
+        let n = private_note(&a, 3).unwrap();
+        assert_eq!(n.title, "Arcalo Mail");
+        assert!(n.body.starts_with('3'), "{}", n.body);
+        assert_eq!(n.id, None, "no buttons");
+        assert!(!n.group.contains("maria"), "not even the account");
+        assert!(private_note(&a, 0).is_none());
     }
 
     #[test]

@@ -1,4 +1,4 @@
-import { Bell, BookUser, CalendarDays, KeyRound, ChevronLeft, ChevronRight, FileText, Inbox, Info, Keyboard, LogIn, Network, Palette, PenLine, Shield, Sparkles, Trash2, UserRound, Workflow, X, Plus } from "lucide-react";
+import { Bell, BookUser, CalendarDays, KeyRound, ChevronLeft, ChevronRight, FileText, Inbox, Info, Keyboard, Lock, LogIn, Network, Palette, PenLine, Shield, Sparkles, Trash2, UserRound, Workflow, X, Plus } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 import { useT, type TKey } from "../lib/i18n";
 import { api, pickSavePath } from "../lib/api";
@@ -8,6 +8,7 @@ import { UpdateSettings } from "./Updates";
 import type { AccountInfo, AppInfo, ImapTransport, LanguageChoice, MicrosoftSignIn, NetworkSettings, Pop3Transport, Prefetch, ProxyMode, ProxyProfile, RouteGroup, Security, Server, Settings as SettingsT, SwipeAction, SystemProxy, ThemeChoice } from "../lib/types";
 import { AiSection, ContactsSection, RulesSection, TemplatesSection } from "./PowerSettings";
 import { CalendarSection, CryptoSection } from "./CalendarSettings";
+import { SecuritySection } from "./Security";
 import { explain } from "../lib/problems";
 import { SHORTCUTS, keyLabel, usesCommand } from "../lib/shortcuts";
 import { ConfirmDialog, Segmented, Select, Spinner, Switch, trapFocus, useSaveOnLeave } from "./ui";
@@ -28,6 +29,7 @@ export type SettingsSection =
   | "ai"
   | "notifications"
   | "privacy"
+  | "security"
   | "network"
   | "shortcuts"
   | "about";
@@ -46,6 +48,7 @@ const SECTIONS: [SettingsSection, TKey, typeof Bell][] = [
   ["ai", "settings.ai", Sparkles],
   ["notifications", "settings.notifications", Bell],
   ["privacy", "settings.privacy", Shield],
+  ["security", "settings.security", Lock],
   ["network", "settings.network", Network],
   ["shortcuts", "settings.shortcuts", Keyboard],
   ["about", "settings.about", Info],
@@ -835,6 +838,7 @@ export function SettingsView({ settings, accounts, info, section, onSection, onC
             {section === "contacts" && <ContactsSection settings={settings} accounts={accounts} onChange={onChange} />}
             {section === "calendar" && <CalendarSection settings={settings} onChange={onChange} />}
             {section === "encryption" && <CryptoSection settings={settings} accounts={accounts} onChange={onChange} />}
+            {section === "security" && <SecuritySection settings={settings} onChange={onChange} />}
             {section === "writing" && (
               <div className="set-card">
                 <Row label={t("settings.richText")} description={t("settings.richTextHint")}>

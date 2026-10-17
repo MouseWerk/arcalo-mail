@@ -29,11 +29,15 @@ pub const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0008_key_trust.sql"),
     include_str!("../migrations/0009_calendar_ai_keys.sql"),
     include_str!("../migrations/0010_large_mailboxes.sql"),
+    include_str!("../migrations/0011_security.sql"),
 ];
 pub const SCHEMA_VERSION: u32 = MIGRATIONS.len() as u32;
 
 pub struct Store {
     conn: Connection,
+    /// A file opened by the app, counted while this connection lives (the switch of the
+    /// encryption waits for every one to close, `cipher`). Dropped after `conn`.
+    _file: Option<crate::cipher::OpenFile>,
     /// Replies without reply headers join a conversation by their subject (the setting
     /// `subject_threads`; the account worker sets it before each round).
     subject_threads: std::cell::Cell<bool>,
@@ -224,19 +228,22 @@ fn attachment(r: &Row<'_>) -> rusqlite::Result<Attachment> {
 }
 
 impl Store {
+    /// Opens the database file; an encrypted one with the key of this process
+    /// ([`crate::cipher::set_key`]). Refused while its encryption is being switched.
     pub fn open(path: &Path) -> Result<Self> {
-        Self::init(Connection::open(path)?)
+        let (conn, file) = crate::cipher::open_counted(path)?;
+        Self::init(conn, Some(file))
     }
 
     pub fn open_in_memory() -> Result<Self> {
-        Self::init(Connection::open_in_memory()?)
+        Self::init(Connection::open_in_memory()?, None)
     }
 
-    fn init(conn: Connection) -> Result<Self> {
+    fn init(conn: Connection, file: Option<crate::cipher::OpenFile>) -> Result<Self> {
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.busy_timeout(std::time::Duration::from_secs(10))?;
-        let mut store = Store { conn, subject_threads: std::cell::Cell::new(true) };
+        let mut store = Store { conn, _file: file, subject_threads: std::cell::Cell::new(true) };
         store.migrate()?;
         Ok(store)
     }
@@ -600,13 +607,21 @@ impl Store {
                 .is_ok_and(|a| crate::avatars::dmarc_passed(auth, &from.email, &crate::avatars::own_authservers(&a))),
             _ => false,
         };
+        // What the provider found failing (the phishing warning reads it).
+        let auth_fail = match (p.list.authentication.as_deref(), p.from.as_ref()) {
+            (Some(auth), Some(from)) => self.account(account_id).ok().and_then(|a| {
+                let failed = crate::phishing::auth_failures(auth, &from.email, &crate::avatars::own_authservers(&a));
+                (!failed.is_empty()).then(|| failed.join(" "))
+            }),
+            _ => None,
+        };
         self.conn.execute(
             "INSERT INTO messages (account_id, mailbox_id, uid, modseq, message_id, in_reply_to, refs, subject,
                from_name, from_email, to_json, cc_json, date, internal_date, size, seen, answered, flagged, draft,
                keywords, has_attachments, snippet, reply_to_json, base_subject, category, list_id, unsubscribe, one_click,
-               dmarc_pass, gm_msgid)
+               dmarc_pass, gm_msgid, auth_fail)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24,
-               ?25, ?26, ?27, ?28, ?29, ?30)",
+               ?25, ?26, ?27, ?28, ?29, ?30, ?31)",
             params![
                 account_id,
                 mailbox_id,
@@ -638,6 +653,7 @@ impl Store {
                 p.list.one_click,
                 dmarc_pass,
                 h.gm_msgid.map(|v| v as i64),
+                auth_fail,
             ],
         )?;
         let id = self.conn.last_insert_rowid();
@@ -1241,7 +1257,7 @@ pub(crate) mod tests {
                VALUES (1, 1, 1, 'Jonas', 'jonas@example.org', 5);",
         )
         .unwrap();
-        let s = Store::init(conn).unwrap();
+        let s = Store::init(conn, None).unwrap();
         assert_eq!(s.schema_version().unwrap(), SCHEMA_VERSION);
         assert_eq!(s.suggest_contacts("jon", 5).unwrap()[0].email, "jonas@example.org", "senders become contacts");
         assert_eq!(s.mailbox(1).unwrap().total, 1);
@@ -1264,7 +1280,7 @@ pub(crate) mod tests {
                ('S2', 'boss@corp.example', '', '', 0, x'00', 0, 0);",
         )
         .unwrap();
-        let s = Store::init(conn).unwrap();
+        let s = Store::init(conn, None).unwrap();
         let mapped: Vec<String> = s
             .conn
             .prepare("SELECT fingerprint FROM pgp_key_emails ORDER BY fingerprint")

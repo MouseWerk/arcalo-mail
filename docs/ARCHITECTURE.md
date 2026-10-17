@@ -65,6 +65,9 @@ Identifier: `de.mousewerk.arcalo.mail`.
 | `calendar` | Calendars and appointments: sources (`local`, `caldav`, `graph`, `jmap`, `ics`), calendars with colors, hidden and writable flags, the default one; objects as the server has them (iCalendar, or Graph's JSON) with ETag or change key, expanded per view window (`ics`: RRULE, RDATE, EXDATE, RECURRENCE-ID, VTIMEZONE and IANA zones through `tz`, DST-safe); `events` with what may be changed (`Editability`: own, organized after a confirmation, received, a series instance, read only, a subscription); `create`, `update`, `delete` and `undo` local first, each queued in `cal_writes` (`pending`, `conflict` with both sides, `refused`) and replayed by `sync::sync_source` before it pulls; `resolve` (server version or mine), `discard`. `caldav`: discovery (well-known, principal, calendar home; RFC 6638 auto-schedule), sync-collection with the sync token or ctag and `calendar-multiget`, `PUT`/`DELETE` with `If-Match` (412 is a conflict), presets for iCloud, Fastmail, mailbox.org, Posteo, Nextcloud, `caldav::fake`. `graph`: `/me/calendars`, `calendarView/delta`, writes with the change key in `If-Match`, `accept`/`tentativelyAccept`/`decline`, `graph::fake`. `jmap`: JMAP Calendars (JSCalendar turned into iCalendar), `jmap::fake`. `ics`: subscriptions fetched with their ETag through `network::client_for(Service::Calendar)` | done |
 | `itip` | Meetings in mail: the `text/calendar` part of a message (`REQUEST`, `CANCEL`, `REPLY`, `COUNTER`), the card (times, attendees and their answers, conflicts in the user's calendars, outdated by a newer sequence), the answer (`reply_ics`, a `METHOD:REPLY` message from the account), `file` and `apply` (an accepted invitation into the default calendar, updates and cancellations applied by `scan` after new mail, only from the organizer and never from Junk or Trash; a message about one instance of a series changes only that instance, a series update keeps the changed and cancelled instances, an update never changes the user's answer; the same SEQUENCE counts by its DTSTAMP; large messages through the calendar part fetched with their text, `calendar_data`), `update_mail` (a meeting the user organizes, for servers that do not send updates themselves), `draft_from` (the assistant's dates as a draft for the calendar's editor) | done |
 | `crypto` | OpenPGP (`pgp`, rPGP: Ed25519 and Curve25519 keys made here, imported armored keys, PGP/MIME sign, encrypt, decrypt, verify, inline cleartext, Autocrypt headers in and out, `wkd`: the Web Key Directory's advanced and direct addresses) and S/MIME (`smime`: PKCS#12 import, CMS SignedData and EnvelopedData with RSA and AES-256-CBC, chains checked against the system's roots with `rustls-webpki`, e-mail protection usage). `protect` wraps a finished message before it is queued; `open` gives the reading pane the inner message and its `Protection`; secrets come through the shell's `Keys` (the credential store); decrypted content is never stored. Keys are used per address (`pgp_key_emails`): an imported key for its user ids, an Autocrypt key only for the address that sent it and only while no newer mail brought another, never before an imported one; protected secret keys need their passphrase (`Keys::pgp_passphrase`); expired and revoked subkeys are skipped, signatures come from a signing subkey; encrypted mail to Bcc recipients goes out as separate copies; S/MIME certificates encrypt only when trusted (a root of the system, or the user trusted it) | done |
+| `cipher` | Encryption on the device, as Arcalo's: the database as a SQLCipher file (AES-256, a random 256-bit key applied raw, `PRAGMA key = "x'…'"`), the key from the credential store (`db-key`) handed over with `set_key`; `file_state` reads plain or encrypted from the file; the recovery key (base32 with a checksum); the key wrapped with a password (`WrappedKey`: Argon2id, cost from the file bounded by `MAX_WRAP_COST`, AES-256-GCM); `switch` while the app runs (new connections refused, waits for the app's to close, `open_count`), `run_pending` at the start for one a crash interrupted: `sqlcipher_export` to `mail.db.cipher-new`, `verify` (integrity, rows per table, schema version, encryption), two renames, every step in `cipher-migration.json`; `secure_delete` of the previous file at the next start | done |
+| `applock` | The app lock: `LockConfig` (off, at start, when idle; minutes; sleep or leaving the app; the system's sign-in) and the wrong attempts in the settings table under their own keys (not the app settings, so „Rückgängig“ never switches the lock), the PIN as an Argon2id hash (PHC string, a hash with a higher cost is not tried), the growing wait after wrong PINs, the private texts of notifications and reminders while the lock is on | done |
+| `phishing` | The phishing warning (`check` for the reading pane, `analyze` on a message's header): look-alike domains by skeleton (Unicode confusables, `rn`/`m`, digits) and edit distance against brands (`BRANDS`) and the domains of people the user wrote to, punycode with mixed scripts, a reply address on another domain, a display name with another address or domain, a first contact claiming to be a bank, payment or parcel service, links whose text shows another domain (redirects followed, mailing services and the sender's own domain skipped), DMARC or SPF failed at the user's provider (`auth_failures`, the provider's own `Authentication-Results` only; stored as `messages.auth_fail`); senders the user called fine (`phishing_ok`); a corpus of examples in `src/phishing/corpus` | done |
 | `arcalo` | „An Arcalo senden“: a message as Markdown with a `mid:` link back, the page title or task text, Arcalo's command line found on the PATH | done |
 | `widget` | What the Android home-screen widget shows: the unread count and the newest three mails of People (`widget.json`, written by the shell) | done |
 | `update`, `update_feed` | Desktop updates without the shell (as Arcalo's): which version is newer, a skipped version and „Später erinnern“, why a copy cannot replace itself (`Manual`: portable, package, macOS translocated or read-only, AppImage not writable), the restart marker and the notes for „Neu in Arcalo Mail“; `latest.json`, the platform entry, a download through `network::client_for(Service::UpdateFeed)` that pauses and continues with `Range`, the minisign check with the version in the trusted comment | done |
@@ -103,6 +106,9 @@ identities); it drops the assistant's answers kept under row ids (they are keyed
 `0010_large_mailboxes.sql` adds `messages.gm_msgid` (Gmail's X-GM-MSGID: the copies of one message in its labels and
 All Mail; search shows one, a body fetched for one serves all) and `mailboxes.backfill_uid`, `backfill_left` (the
 older mail a first sync left on the server); opening an older database sorts its mail into receipts again once.
+`0011_security.sql` adds `messages.auth_fail` (what the provider found failing: `dmarc`, `spf`) and `phishing_ok`
+(senders the user called fine). The app lock's configuration and wrong attempts are rows `applock` and
+`applock.attempts` of `settings`.
 `0002_mail_actions.sql` adds `messages.hidden` (moved or deleted here, not yet on the
 server) and `reply_to_json`, `message_bodies.raw` (small messages kept whole, so their attachments open offline),
 `attachments.section` and `data`, `accounts.signature`, `contacts` (recipient suggestions) and `remote_senders`
@@ -189,7 +195,41 @@ Entry names: service `de.mousewerk.arcalo.mail`, account `account-<id>-password`
 `ai-<provider>-key` (a cloud provider's API key), `carddav-<book>-password`, `calendar-<source>-secret` (a CalDAV
 password or the full address of an ICS subscription), `pgp-<fingerprint>-secret` (an armored secret key) and
 `smime-<fingerprint>-p12` (the PKCS#12 file and its password).
+`db-key` (the database key, hex) and `app-lock-pin` (the PIN's Argon2id hash) belong to Settings → Sicherheit.
 OAuth access tokens are kept in memory only. The vault logic is tested with a fake cipher.
+
+## Security (`src-tauri/src/security.rs`, `mail_core::cipher`, `applock`, `phishing`)
+
+- **Start.** The credential store is opened first, then `security::prepare` reads `db-key`, finishes a switch a
+  crash interrupted and checks that the key opens the file. Without the key (or with a wrong one) the app runs on an
+  empty store in memory and shows the recovery screen; the guard refuses every command but its own until the recovery
+  key or the password opened the database (remembered in the credential store or for this run only); then the
+  workers, the clock and the loops start (`begin`).
+- **Switching.** `cipher_switch` stops the workers, puts an empty store in memory in place of the app's connection,
+  and runs `cipher::switch`, which refuses new connections and waits until the workers' are closed; the guard
+  refuses the app's commands meanwhile. The store opens again either way; after decrypting, the key and its password
+  file are removed. A switch that a crash cut short is finished or rolled back at the next start.
+- **App lock.** `init_lock` locks at the start when the lock is on; a clock thread (`spawn_watch`, every 5 s) locks
+  after the idle time (input reported by the window, `applock_activity`) or after sleep (a jump of the wall clock);
+  on a phone `on_front` locks when the app goes to the background (or after the chosen time away). Every lock first
+  asks the window to save the open message as a draft (`applock-locking`, answered by `applock_flushed`, or after 3
+  s), then the UI unmounts the app (`components/Security.tsx`), the guard refuses all but the lock screen's
+  commands, and the copies of attachments opened in other programs are deleted. Windows Hello (`UserConsentVerifier`
+  for the window), Touch ID and Face ID (`LAContext`, the device's password as fallback) and Android's
+  `BiometricPrompt` (`BiometricGate.kt`, fingerprint, face or the screen lock) only answer yes or no.
+- **What stays readable while locked.** Decided for the phones' background check and the notifications: the check
+  runs as before (the key of an encrypted database comes from the Android Keystore or the iOS Keychain, readable after
+  the first unlock, so new mail still arrives and the badge counts), but while the lock is on the notifications say
+  only „N neue E-Mails – zum Lesen entsperren“ (no sender, subject or account, no buttons, so nothing acts on mail
+  without unlocking), reminders say only that there is one, and `widget.json` carries the unread count without the
+  three newest mails (`private`). The badge count and the window title's count stay. The database encryption is
+  independent of the lock: it protects the files at rest (a lost disk, a copied data folder, a backup), the lock the
+  open app.
+- **Encrypted drafts.** `actions::queue_draft` encrypts the draft of a message that is to be encrypted to the sender's
+  own OpenPGP key or S/MIME certificate only (`seal_draft`) and keeps the wish in `X-Arcalo-Mail-Protect`; the copy in
+  the offline queue, on the server and synced back is that one. `draft_of` decrypts it; the files inside stay in the
+  backend (`Draft::sealed_from`, `sealed_files`) and go along when it is saved or sent. Subject and recipients stay
+  in the header, as in the sent message.
 
 ## Updates and the default mail app (`src-tauri/src/updates.rs`, `installer.rs`, `portable.rs`, `defaultmail.rs`)
 
@@ -261,7 +301,10 @@ layout can be checked without the app.
 | MIME parsing | `mail-parser` 0.11 | as Arcalo; zero-copy, robust with broken mail |
 | MIME building | `mail-builder` (with lettre) | the same author as mail-parser |
 | HTML sanitizing | `ammonia` 4 | allow-list on html5ever |
-| Store | `rusqlite` 0.40 bundled (FTS5) | as Arcalo; `bundled-sqlcipher` once encryption at rest comes |
+| Store | `rusqlite` 0.40 with `bundled-sqlcipher` (FTS5; OpenSSL vendored on Windows, Linux and Android, CommonCrypto on macOS and iOS) | as Arcalo; a plain database opens unchanged |
+| Encryption on the device | `argon2`, `aes-gcm`, `zeroize`, `data-encoding` | as Arcalo: PIN hash, password-wrapped key, recovery key |
+| System sign-in | `windows` (UserConsentVerifier), `objc2-local-authentication`, BiometricPrompt over JNI | Windows Hello, Touch ID, Face ID, Android |
+| Look-alike domains | `idna` | punycode of senders' domains |
 | Secrets | `keyring` 3 | as Arcalo |
 | DNS (SRV, MX) | `hickory-resolver` | system configuration, async |
 | Autoconfig files | `roxmltree` | small, read-only XML |
@@ -294,5 +337,8 @@ All of them were checked on crates.io; only the ones in use are in `Cargo.toml` 
   against the test server's CalDAV calendars (`/caldav`: create, move, delete, undo, hide, the views), meeting
   invitations with the iTIP answer in what was sent, „Beitreten“ and „An Arcalo senden“ (a stand-in `arcalo` on the
   PATH), OpenPGP against the test server's own key (`/pgp`: Jonas opens what the app sent and answers encrypted),
-  and the new views on a phone and a tablet. `e2e/shots` writes the README screenshots from English sample
+  and the new views on a phone and a tablet; the app lock (a PIN, the idle lock through a debug-only seam,
+  commands refused while locked, locked again at the next start), encrypting and decrypting the database while the
+  app runs, the recovery screen without the key, the phishing warning, and an encrypted draft on the server opened
+  again. `e2e/shots` writes the README screenshots from English sample
   mailboxes on a fixed clock (`ARCALO_MAIL_NOW`).

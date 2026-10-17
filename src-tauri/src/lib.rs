@@ -25,6 +25,7 @@ mod mobile;
 #[cfg(desktop)]
 mod portable;
 mod secrets;
+mod security;
 mod tools;
 #[cfg(desktop)]
 mod tray;
@@ -176,7 +177,16 @@ fn notify_new_mail(app: &AppHandle, account_id: i64, messages: &[i64]) {
     let messages = mail_core::triage::worth_telling(&store, account_id, messages).unwrap_or_else(|_| messages.to_vec());
     let list = store.summaries(&messages).unwrap_or_default();
     let account = store.account(account_id).ok();
+    let private = security::private(&store);
     drop(store);
+    // With the app lock on: how many, nothing else, no buttons.
+    if private {
+        if !list.is_empty() {
+            let (title, body) = mail_core::applock::private_notification(list.len());
+            let _ = app.notification().builder().title(title).body(body).show();
+        }
+        return;
+    }
     let Some((title, body)) = background::new_mail_text(&list, account.as_ref()) else { return };
     // One message: its buttons (archive, mark read, reply) where the desktop shows them.
     #[cfg(any(windows, target_os = "linux"))]
@@ -253,7 +263,7 @@ fn tick_interval() -> std::time::Duration {
 /// reminders (`reminders`).
 pub fn tick_now(app: &AppHandle) {
     let Some(state) = app.try_state::<AppState>() else { return };
-    let (tick, notifications) = {
+    let (tick, notifications, private) = {
         let store = state.store();
         let tick = match mail_core::later::tick(&store, mail_core::store::now()) {
             Ok(t) => t,
@@ -262,7 +272,7 @@ pub fn tick_now(app: &AppHandle) {
                 return;
             }
         };
-        (tick, mail_core::settings::load(&store).map(|s| s.notifications).unwrap_or(true))
+        (tick, mail_core::settings::load(&store).map(|s| s.notifications).unwrap_or(true), security::private(&store))
     };
     if !tick.changed() {
         return;
@@ -280,7 +290,8 @@ pub fn tick_now(app: &AppHandle) {
         if notifications && !in_front {
             use tauri_plugin_notification::NotificationExt;
             for r in &tick.reminders {
-                let (title, body) = background::reminder_text(r);
+                let (title, body) =
+                    if private { mail_core::applock::private_reminder() } else { background::reminder_text(r) };
                 let _ = app.notification().builder().title(title).body(body).show();
             }
         }
@@ -477,6 +488,29 @@ pub fn stop_worker(app: &AppHandle, account_id: i64) {
     }
 }
 
+/// The app runs: network profiles, the account workers, the address books, the calendar, the
+/// badge, the network watch and the app lock's clock. At the start, or once the recovery screen
+/// opened the database.
+pub fn begin(app: &AppHandle, settings: mail_core::settings::Settings) {
+    #[cfg(mobile)]
+    let in_front = mobile::in_front();
+    #[cfg(desktop)]
+    let in_front = true;
+    begin_with(app, settings, in_front);
+}
+
+fn begin_with(app: &AppHandle, settings: mail_core::settings::Settings, in_front: bool) {
+    apply_network(&settings.network);
+    if in_front {
+        start_workers(app);
+        tools::sync_all_books(app);
+        calendar::start_loop(app);
+    }
+    update_badge(app);
+    watch_network(app.clone());
+    security::spawn_watch(app);
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     #[cfg(mobile)]
@@ -521,12 +555,20 @@ pub fn run() {
             mobile::setup(app.handle());
             let dir = data_dir(app.handle())?;
             std::fs::create_dir_all(&dir)?;
-            let db = dir.join("mail.db");
-            let store = Store::open(&db)?;
+            let db = dir.join(mail_core::cipher::DB_FILE);
+            // The key of an encrypted database comes from the credential store before the store
+            // opens; without it (or with a wrong one) the recovery screen shows on an empty store.
+            secrets::init(&dir);
+            let prepared = security::prepare(&dir);
+            security::set_notice(prepared.notice);
+            security::set_gate(prepared.blocked);
+            let store = if prepared.blocked.is_some() { Store::open_in_memory()? } else { Store::open(&db)? };
+            if prepared.blocked.is_none() {
+                security::opened(&dir);
+            }
             mail_core::outbox::recover(&store)?;
             let settings = mail_core::settings::load(&store)?;
             apply_language(settings.language);
-            secrets::init(&dir);
             crypto::register();
             app.manage(AppState {
                 store: Mutex::new(store),
@@ -560,22 +602,15 @@ pub fn run() {
             let in_front = mobile::launched_in_front();
             #[cfg(desktop)]
             let in_front = true;
-            let handle = app.handle().clone();
-            let begin = move || {
-                apply_network(&settings.network);
-                if in_front {
-                    start_workers(&handle);
-                    tools::sync_all_books(&handle);
-                    calendar::start_loop(&handle);
-                }
-                update_badge(&handle);
-                watch_network(handle);
-            };
-            // On a phone the credential store must not be asked on the main thread.
-            #[cfg(desktop)]
-            begin();
-            #[cfg(mobile)]
-            std::thread::spawn(begin);
+            if security::gate().is_none() {
+                security::init_lock(app.handle());
+                let handle = app.handle().clone();
+                // On a phone the credential store must not be asked on the main thread.
+                #[cfg(desktop)]
+                begin_with(&handle, settings, in_front);
+                #[cfg(mobile)]
+                std::thread::spawn(move || begin_with(&handle, settings, in_front));
+            }
             // The e2e tests of the phone and tablet layouts size the window like a phone.
             #[cfg(desktop)]
             if std::env::var("ARCALO_MAIL_TOUCH").is_ok_and(|v| v == "1")
@@ -589,7 +624,7 @@ pub fn run() {
             }
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![
+        .invoke_handler(security::guard(tauri::generate_handler![
             commands::app_info,
             commands::get_settings,
             commands::set_settings,
@@ -775,7 +810,26 @@ pub fn run() {
             mobile::apknotice::apk_update_check,
             #[cfg(target_os = "android")]
             mobile::apknotice::apk_whats_new_seen,
-        ])
+            commands::phishing_ok,
+            security::security_state,
+            security::keygate_unlock,
+            security::keygate_quit,
+            security::cipher_status,
+            security::cipher_recovery_key,
+            security::cipher_recovery_save,
+            security::cipher_switch,
+            security::cipher_password,
+            security::cipher_drop_old,
+            security::applock_status,
+            security::applock_configure,
+            security::applock_unlock,
+            security::applock_unlock_biometric,
+            security::applock_reset,
+            security::applock_lock_now,
+            security::applock_flushed,
+            security::applock_activity,
+            security::applock_test_idle,
+        ]))
         .build(tauri::generate_context!())
         .expect("Arcalo Mail failed to start")
         .run(on_run_event);
