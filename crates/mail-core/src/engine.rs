@@ -30,8 +30,8 @@ use crate::oauth::TokenSource;
 use crate::outbox::{self, Op, Queued};
 use crate::store::{Store, now};
 use crate::sync::{
-    Action, Event, IDLE_RENEW, POLL_INTERVAL, State, SyncMachine, fetch_attachment, fetch_body, server_search,
-    sync_folders, sync_mailbox,
+    Action, BACKFILL_PER_ROUND, Event, Gate, IDLE_RENEW, POLL_INTERVAL, State, SyncMachine, SyncOptions, backfill,
+    fetch_attachment, fetch_body, server_search, sync_folders, sync_mailbox_with,
 };
 use crate::{autoconfig, smtp, tr, trf};
 
@@ -45,6 +45,11 @@ pub trait Connector: Send + 'static {
     fn imap_on_demand(&self) -> impl Future<Output = Result<Self::Imap>> {
         self.imap()
     }
+    /// How long one try of an on-demand request may take before its connection counts as dead
+    /// (a phone that changed networks keeps a socket that never answers) and a new one tries.
+    fn on_demand_timeout(&self) -> Duration {
+        ON_DEMAND_TIMEOUT
+    }
     /// Sends a finished message.
     fn send(&self, from: &str, to: &[String], raw: &[u8]) -> impl Future<Output = Result<()>>;
     /// Whether the server files sent mail in Sent itself (Gmail, Microsoft).
@@ -52,6 +57,14 @@ pub trait Connector: Send + 'static {
     /// The user signed in again.
     fn set_password(&self, password: String);
 }
+
+/// See [`Connector::on_demand_timeout`].
+pub const ON_DEMAND_TIMEOUT: Duration = Duration::from_secs(30);
+/// An on-demand connection unused this long is made again before the next request: after a
+/// while on a phone it is more likely dead than alive.
+pub const ON_DEMAND_FRESH: Duration = Duration::from_secs(120);
+/// How soon the next round follows while older mail of a folder waits ([`backfill`]).
+pub const BACKFILL_PAUSE: Duration = Duration::from_secs(1);
 
 /// How a [`NetConnector`] signs in.
 enum Secret {
@@ -330,6 +343,11 @@ struct Ctx<C: Connector> {
     store: Rc<Store>,
     connector: Rc<C>,
     sink: Sink,
+    /// Held while the on-demand connection serves the user: the sync waits at its next step.
+    gate: Rc<Gate>,
+    /// Counts the reconnects (sleep, a network change): the on-demand connection of an older
+    /// one is dropped.
+    network: Rc<Cell<u32>>,
 }
 
 impl<C: Connector> Ctx<C> {
@@ -633,11 +651,20 @@ async fn replay<C: Connector>(ctx: &Ctx<C>, conn: &mut C::Imap) -> Result<Vec<St
 }
 
 /// One round: the queue, then the folders (all of them, or the inbox and what the queue
-/// touched).
-async fn sync_round<C: Connector>(ctx: &Ctx<C>, conn: &mut C::Imap, caps: Capabilities, full: bool) -> Result<()> {
+/// touched), the bodies fetched ahead and, with `older`, a part of the older mail that waits.
+async fn sync_round<C: Connector>(
+    ctx: &Ctx<C>,
+    conn: &mut C::Imap,
+    caps: Capabilities,
+    full: bool,
+    older: bool,
+) -> Result<()> {
     // The settings may have changed since the last round.
     let settings = crate::settings::load(&ctx.store).unwrap_or_default();
     ctx.store.set_subject_threads(settings.subject_threads);
+    // Each stored part of a first sync shows at once: the newest mail within seconds.
+    let shown = |mailbox: i64| ctx.notice(Notice::Changed { account_id: ctx.account_id, mailboxes: vec![mailbox] });
+    let opts = SyncOptions { first_headers: settings.initial_headers, on_chunk: Some(&shown), gate: Some(&ctx.gate) };
     let touched = replay(ctx, conn).await?;
     let mut ids: Vec<i64> = vec![];
     let mut virtual_folders: Vec<i64> = vec![];
@@ -659,8 +686,17 @@ async fn sync_round<C: Connector>(ctx: &Ctx<C>, conn: &mut C::Imap, caps: Capabi
     let at = now();
     ids.retain(|id| ctx.store.mailbox(*id).is_ok_and(|m| m.sync_retry_at.is_none_or(|t| t <= at)));
     let inbox = ctx.inbox().map(|m| m.id);
+    let ahead = async |conn: &mut C::Imap, id: i64| -> Result<()> {
+        match crate::sync::prefetch_bodies_with(conn, &ctx.store, id, settings.prefetch, Some(&ctx.gate)).await {
+            Ok(n) if n > 0 => ctx.notice(Notice::Changed { account_id: ctx.account_id, mailboxes: vec![id] }),
+            Ok(_) => {}
+            Err(e) if is_transient(&e) => return Err(e),
+            Err(e) => crate::diag::log(&format!("account-{}", ctx.account_id), &format!("folder {id}: {e}")),
+        }
+        Ok(())
+    };
     for &id in &ids {
-        let r = match sync_mailbox(conn, &ctx.store, caps, id).await {
+        let r = match sync_mailbox_with(conn, &ctx.store, caps, id, &opts).await {
             Ok(r) => {
                 ctx.store.set_folder_error(id, None)?;
                 r
@@ -714,20 +750,63 @@ async fn sync_round<C: Connector>(ctx: &Ctx<C>, conn: &mut C::Imap, caps: Capabi
         if Some(id) == inbox && !new_unread.is_empty() {
             ctx.notice(Notice::NewMail { account_id: ctx.account_id, messages: new_unread });
         }
+        // The inbox's first lines and texts right away, before the other folders' headers.
+        if Some(id) == inbox {
+            ahead(conn, id).await?;
+        }
     }
-    // The first lines for the list, the text for search, reading offline: the inbox first,
-    // then the other folders of a full round.
-    let mut ahead: Vec<i64> = inbox.into_iter().collect();
-    ahead.extend(ids.iter().copied().filter(|id| Some(*id) != inbox && !virtual_folders.contains(id)));
-    for id in ahead {
-        match crate::sync::prefetch_bodies(conn, &ctx.store, id, settings.prefetch).await {
-            Ok(n) if n > 0 => ctx.notice(Notice::Changed { account_id: ctx.account_id, mailboxes: vec![id] }),
-            Ok(_) => {}
+    // The first lines for the list, the text for search, reading offline: the other folders of
+    // a full round.
+    for &id in ids.iter().filter(|id| Some(**id) != inbox && !virtual_folders.contains(id)) {
+        ahead(conn, id).await?;
+    }
+    if older {
+        backfill_round(ctx, conn, &opts).await?;
+    }
+    Ok(())
+}
+
+/// A part of the older mail that waits ([`BACKFILL_PER_ROUND`] headers): the inbox first, then
+/// the other folders, Gmail's All Mail and the like last.
+async fn backfill_round<C: Connector>(ctx: &Ctx<C>, conn: &mut C::Imap, opts: &SyncOptions<'_>) -> Result<()> {
+    let mut order = backfill_folders(ctx)?;
+    order.sort_by_key(|m| (m.role != Some(Role::Inbox), m.role.is_some_and(Role::is_virtual)));
+    let mut budget = BACKFILL_PER_ROUND;
+    for m in order {
+        if budget == 0 {
+            break;
+        }
+        match backfill(conn, &ctx.store, m.id, budget, opts).await {
+            Ok(n) => budget = budget.saturating_sub(n as u32),
             Err(e) if is_transient(&e) => return Err(e),
-            Err(e) => crate::diag::log(&format!("account-{}", ctx.account_id), &format!("folder {id}: {e}")),
+            Err(e) => {
+                crate::diag::log(&format!("account-{}", ctx.account_id), &format!("folder {}: {e}", m.id));
+                // The server refuses the folder: it waits for its next try, as in a sync.
+                ctx.store.set_folder_error(m.id, Some(&e.to_string()))?;
+            }
         }
     }
     Ok(())
+}
+
+/// The folders whose older mail waits and that the server opens (or whose next try is due).
+fn backfill_folders<C: Connector>(ctx: &Ctx<C>) -> Result<Vec<crate::store::Mailbox>> {
+    let pending = ctx.store.backfill_pending(ctx.account_id)?;
+    if pending.is_empty() {
+        return Ok(vec![]);
+    }
+    let at = now();
+    Ok(ctx
+        .store
+        .mailboxes(ctx.account_id)?
+        .into_iter()
+        .filter(|m| pending.contains(&m.id) && m.sync_retry_at.is_none_or(|t| t <= at))
+        .collect())
+}
+
+/// Whether older mail of the account still waits for [`backfill_round`].
+fn backfill_waits<C: Connector>(ctx: &Ctx<C>) -> bool {
+    backfill_folders(ctx).is_ok_and(|f| !f.is_empty())
 }
 
 /// What the queued commands mean for the machine.
@@ -774,18 +853,35 @@ async fn run<C: Connector>(
     mut rx: mpsc::UnboundedReceiver<Command>,
     sink: Sink,
 ) {
-    let ctx = Rc::new(Ctx { account_id, store: Rc::new(store), connector: Rc::new(connector), sink });
+    let ctx = Rc::new(Ctx {
+        account_id,
+        store: Rc::new(store),
+        connector: Rc::new(connector),
+        sink,
+        gate: Rc::default(),
+        network: Rc::default(),
+    });
     let wake = Rc::new(Notify::new());
     let queue: Rc<RefCell<VecDeque<Command>>> = Rc::default();
     let stop = Rc::new(Cell::new(false));
     let (itx, irx) = mpsc::unbounded_channel::<Command>();
     {
         let (wake, queue, stop) = (wake.clone(), queue.clone(), stop.clone());
+        let (gate, network) = (ctx.gate.clone(), ctx.network.clone());
         tokio::task::spawn_local(async move {
             while let Some(cmd) = rx.recv().await {
                 match cmd {
                     Command::FetchBody { .. } | Command::FetchAttachment { .. } | Command::ServerSearch { .. } => {
-                        let _ = itx.send(cmd);
+                        // The sync steps aside until the user has it (`on_demand` leaves).
+                        gate.enter();
+                        if itx.send(cmd).is_err() {
+                            gate.leave();
+                        }
+                    }
+                    Command::Reconnect | Command::NetworkDown => {
+                        network.set(network.get() + 1);
+                        queue.borrow_mut().push_back(cmd);
+                        wake.notify_one();
                     }
                     Command::Stop => break,
                     other => {
@@ -816,11 +912,19 @@ pub async fn check_once<C: Connector>(account_id: i64, store: Store, connector: 
             into.lock().unwrap_or_else(|e| e.into_inner()).extend(messages);
         }
     });
-    let ctx = Ctx { account_id, store: Rc::new(store), connector: Rc::new(connector), sink };
+    let ctx = Ctx {
+        account_id,
+        store: Rc::new(store),
+        connector: Rc::new(connector),
+        sink,
+        gate: Rc::default(),
+        network: Rc::default(),
+    };
     let mut conn = ctx.connector.imap().await?;
     let caps = conn.capabilities().await.unwrap_or_default();
     let full = ctx.inbox().is_none();
-    let r = sync_round(&ctx, &mut conn, caps, full).await;
+    // The older mail of a large folder waits for the app: a background check stays short.
+    let r = sync_round(&ctx, &mut conn, caps, full, false).await;
     let _ = conn.logout().await;
     r?;
     let mut out = found.lock().unwrap_or_else(|e| e.into_inner()).clone();
@@ -878,7 +982,7 @@ async fn main_loop<C: Connector>(ctx: &Ctx<C>, wake: &Notify, queue: &RefCell<Ve
                 if full {
                     ctx.status(Status::Syncing, None);
                 }
-                match sync_round(ctx, c, caps, full).await {
+                match sync_round(ctx, c, caps, full, true).await {
                     Ok(()) => {
                         if full {
                             last_full = Some(Instant::now());
@@ -902,6 +1006,10 @@ async fn main_loop<C: Connector>(ctx: &Ctx<C>, wake: &Notify, queue: &RefCell<Ve
                 let mut timeout = POLL_INTERVAL.saturating_sub(last_full.map_or(Duration::ZERO, |t| t.elapsed()));
                 if let Ok(Some(due)) = outbox::next_due_at(&ctx.store, ctx.account_id) {
                     timeout = timeout.min(Duration::from_secs((due - now()).max(0) as u64 + 1));
+                }
+                // Older mail waits: the next round (and its part of it) follows soon.
+                if backfill_waits(ctx) {
+                    timeout = timeout.min(BACKFILL_PAUSE);
                 }
                 let timeout = timeout.clamp(Duration::from_secs(1), IDLE_RENEW);
                 let known = ctx.inbox();
@@ -952,6 +1060,9 @@ async fn main_loop<C: Connector>(ctx: &Ctx<C>, wake: &Notify, queue: &RefCell<Ve
                     if let Ok(Some(due)) = outbox::next_due_at(&ctx.store, ctx.account_id) {
                         d = d.min(Duration::from_secs((due - now()).max(0) as u64 + 1));
                     }
+                    if backfill_waits(ctx) {
+                        d = d.min(BACKFILL_PAUSE);
+                    }
                     d.max(Duration::from_secs(1))
                 } else {
                     d
@@ -982,22 +1093,31 @@ async fn main_loop<C: Connector>(ctx: &Ctx<C>, wake: &Notify, queue: &RefCell<Ve
 }
 
 /// The on-demand connection: bodies, attachments and server search, one request at a time, so
-/// the user does not wait for a long sync. Reconnects once when the connection broke.
+/// the user does not wait for a long sync. While it works the sync steps aside ([`Gate`]). A
+/// connection from before a network change or unused for [`ON_DEMAND_FRESH`] is made again; a
+/// body that takes longer than [`Connector::on_demand_timeout`] is tried once more on a new one.
 async fn on_demand<C: Connector>(ctx: Rc<Ctx<C>>, mut rx: mpsc::UnboundedReceiver<Command>) {
     let mut conn: Option<C::Imap> = None;
+    let mut last_used = Instant::now();
+    let mut network = ctx.network.get();
     while let Some(cmd) = rx.recv().await {
+        if network != ctx.network.get() || last_used.elapsed() >= ON_DEMAND_FRESH {
+            // Likely dead: not even a LOGOUT, which would wait for a socket that never answers.
+            conn = None;
+            network = ctx.network.get();
+        }
         match cmd {
             Command::FetchBody { message_id, reply } => {
                 let mut result = Err(WorkerHandle::gone());
                 for _ in 0..2 {
-                    let c = match connected(&ctx, &mut conn).await {
-                        Ok(c) => c,
-                        Err(e) => {
-                            result = Err(e);
-                            break;
-                        }
+                    let attempt = async {
+                        let c = connected(&ctx, &mut conn).await?;
+                        fetch_body(c, &ctx.store, message_id).await
                     };
-                    result = fetch_body(c, &ctx.store, message_id).await;
+                    result = match tokio::time::timeout(ctx.connector.on_demand_timeout(), attempt).await {
+                        Ok(r) => r,
+                        Err(_) => Err(Error::Connection(Problem::Timeout { host: String::new(), port: 0 })),
+                    };
                     if !matches!(&result, Err(e) if is_transient(e)) {
                         break;
                     }
@@ -1043,6 +1163,8 @@ async fn on_demand<C: Connector>(ctx: Rc<Ctx<C>>, mut rx: mpsc::UnboundedReceive
             }
             _ => {}
         }
+        last_used = Instant::now();
+        ctx.gate.leave();
     }
     if let Some(mut c) = conn {
         let _ = c.logout().await;
@@ -1233,6 +1355,8 @@ mod tests {
         lose_answer: Arc<Mutex<bool>>,
         /// The SMTP server goes away once this many messages went out.
         down_after: Arc<Mutex<Option<usize>>>,
+        /// How long one try of an on-demand request may take (the default when not set).
+        on_demand_timeout: Arc<Mutex<Option<Duration>>>,
     }
 
     struct FakeConnector {
@@ -1269,6 +1393,9 @@ mod tests {
         }
         fn files_sent(&self) -> bool {
             *self.mail.files_sent.lock().unwrap()
+        }
+        fn on_demand_timeout(&self) -> Duration {
+            self.mail.on_demand_timeout.lock().unwrap().unwrap_or(ON_DEMAND_TIMEOUT)
         }
         fn set_password(&self, password: String) {
             *self.mail.password.lock().unwrap() = password;
@@ -1887,5 +2014,64 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(300)).await;
             assert_eq!(s.mail.sent.lock().unwrap().len(), 1, "files_sent {files_sent}: sent once");
         }
+    }
+
+    fn count_messages(s: &Setup) -> i64 {
+        s.store.conn().query_row("SELECT COUNT(*) FROM messages", [], |r| r.get(0)).unwrap()
+    }
+
+    /// A large Gmail account on a slow network: the inbox's newest mail shows before the first
+    /// sync is through, and a message opened meanwhile is fetched at once; the sync steps aside
+    /// until the user has it. The older mail follows by itself.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn opening_a_message_does_not_wait_for_the_first_sync() {
+        let mut fake = FakeImap::gmail();
+        fake.latency = Duration::from_millis(3);
+        for i in 1..=2500u32 {
+            let raw = sample(&format!("g{i}@x"), &format!("Mail {i}"), None, "Text");
+            fake.deliver_gmail(&raw, 1_760_000_100 + i as i64 * 60, &["INBOX"]);
+        }
+        let s = setup_with("gmail-demand", fake);
+        let w = s.start();
+        s.until("the newest mail", |s| {
+            s.store.mailbox_by_role(s.account, Role::Inbox).unwrap().is_some_and(|m| {
+                s.store.messages(m.id, 1, 0).unwrap().first().is_some_and(|m| m.subject == "Mail 2500")
+            })
+        })
+        .await;
+        assert_ne!(s.status(), Some(Status::Ready), "shown while the first sync goes on");
+        let oldest = *s.store.uids(s.inbox()).unwrap().first().unwrap();
+        let id = s.store.ids_for_uids(s.inbox(), &[oldest]).unwrap()[0];
+        let before = count_messages(&s);
+        let started = Instant::now();
+        w.fetch_body(id).await.unwrap();
+        let grew = count_messages(&s) - before;
+        assert!(s.store.message(id).unwrap().has_body);
+        assert!(grew <= 2 * crate::sync::STORE_CHUNK as i64, "the sync went on meanwhile: {grew} more messages");
+        assert!(started.elapsed() < Duration::from_secs(3), "{:?}", started.elapsed());
+        // The rest follows: all of the inbox, the newest first.
+        let start = Instant::now();
+        while s.store.uids(s.inbox()).unwrap().len() < 2501 {
+            assert!(start.elapsed() < Duration::from_secs(60), "backfill: {}", s.store.uids(s.inbox()).unwrap().len());
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert_eq!(s.store.backfill(s.inbox()).unwrap(), None);
+        assert_eq!(s.store.messages(s.inbox(), 1, 0).unwrap()[0].subject, "Mail 2500");
+    }
+
+    /// A phone changed networks: the on-demand connection still looks open but never answers.
+    /// The body comes over a new one after a short wait, not after minutes.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_dead_on_demand_connection_is_replaced() {
+        let s = setup("dead-demand");
+        *s.mail.on_demand_timeout.lock().unwrap() = Some(Duration::from_millis(300));
+        let w = s.start();
+        s.until("first sync", |s| s.status() == Some(Status::Ready)).await;
+        let id = s.store.messages(s.inbox(), 1, 0).unwrap()[0].id;
+        s.server.with(|f| f.stall.push("fetch_message".into()));
+        let started = Instant::now();
+        w.fetch_body(id).await.unwrap();
+        assert!(s.store.message(id).unwrap().has_body);
+        assert!(started.elapsed() < Duration::from_secs(3), "{:?}", started.elapsed());
     }
 }

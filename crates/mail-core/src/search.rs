@@ -66,10 +66,20 @@ pub fn search(store: &Store, input: &str, account_id: Option<i64>, limit: u32) -
          WHERE messages_fts MATCH ?1 AND (?2 IS NULL OR m.account_id = ?2)
            -- A copy in Gmail's All Mail, Starred or Important only when there is no other.
            AND NOT (COALESCE(b.role, '') IN ('all', 'flagged', 'important') AND m.message_id IS NOT NULL
+             AND m.gm_msgid IS NULL
              AND EXISTS (SELECT 1 FROM messages o JOIN mailboxes ob ON ob.id = o.mailbox_id
                WHERE o.account_id = m.account_id AND o.message_id = m.message_id AND o.id <> m.id AND o.hidden = 0
                  AND COALESCE(ob.role, '') NOT IN ('all', 'flagged', 'important')))
-         ORDER BY m.internal_date DESC, m.id DESC
+           -- Gmail's copies of one message (its labels, All Mail) by X-GM-MSGID: one hit, the
+           -- inbox's, else a label's, else All Mail's.
+           AND NOT (m.gm_msgid IS NOT NULL
+             AND EXISTS (SELECT 1 FROM messages o JOIN mailboxes ob ON ob.id = o.mailbox_id
+               WHERE o.account_id = m.account_id AND o.gm_msgid = m.gm_msgid AND o.id <> m.id AND o.hidden = 0
+                 AND (CASE WHEN ob.role = 'inbox' THEN 0 WHEN COALESCE(ob.role, '') IN ('all', 'flagged', 'important')
+                        THEN 2 ELSE 1 END, o.id)
+                   < (CASE WHEN b.role = 'inbox' THEN 0 WHEN COALESCE(b.role, '') IN ('all', 'flagged', 'important')
+                        THEN 2 ELSE 1 END, m.id)))
+         ORDER BY m.internal_date DESC, m.uid DESC, m.id DESC
          LIMIT ?3",
     )?;
     let ids =
