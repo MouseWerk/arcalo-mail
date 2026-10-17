@@ -327,7 +327,8 @@ pub fn classify(p: &ParsedMessage) -> Category {
 
 /// The inbox rows with what the lists decide by. `?1`: one account or all (NULL), `?2`: now,
 /// `?3`: since when the Screener holds mail back (NULL: off).
-const BASE: &str = "SELECT m.id, m.mailbox_id, m.uid, m.thread_id, m.subject, m.from_name, m.from_email, m.date,
+pub(crate) const BASE: &str =
+    "SELECT m.id, m.mailbox_id, m.uid, m.thread_id, m.subject, m.from_name, m.from_email, m.date,
        m.internal_date, m.snippet, m.seen, m.flagged, m.answered, m.has_attachments, m.account_id, m.message_id,
        CASE WHEN s.category IS NOT NULL THEN s.category WHEN m.category = 'receipts' THEN 'receipts'
          WHEN COALESCE(c.sent, 0) > 0 THEN 'people' ELSE m.category END AS cat,
@@ -385,11 +386,7 @@ pub fn inbox(store: &Store, q: &InboxQuery, limit: u32, offset: u32) -> Result<(
         format!("WITH base AS ({BASE}), shown AS (SELECT *, {group} AS g FROM base WHERE screened = 0 AND {filter})");
     let since = screener_since(store);
     let tab = q.tab.as_str();
-    let total: u32 = store.conn().query_row(
-        &format!("{shown} SELECT COUNT(DISTINCT g) FROM shown"),
-        params![q.account, now(), since, tab],
-        |r| r.get(0),
-    )?;
+    // The page and the number of rows in one pass over the inbox (the count as a window).
     let sql = format!(
         "{shown}, ranked AS (
            SELECT *, ROW_NUMBER() OVER (PARTITION BY g ORDER BY pin DESC, at DESC, internal_date DESC, uid DESC, id DESC) AS rn,
@@ -398,11 +395,12 @@ pub fn inbox(store: &Store, q: &InboxQuery, limit: u32, offset: u32) -> Result<(
              MAX(pin) OVER (PARTITION BY g) AS any_pin, MAX(at) OVER (PARTITION BY g) AS last_at
            FROM shown)
          SELECT id, mailbox_id, uid, thread_id, subject, from_name, from_email, last_at, snippet, all_seen, any_flag,
-           answered, any_att, account_id, n, cat, any_pin
+           answered, any_att, account_id, n, cat, any_pin, COUNT(*) OVER ()
          FROM ranked WHERE rn = 1 ORDER BY any_pin DESC, last_at DESC, internal_date DESC, uid DESC, id DESC LIMIT ?5 OFFSET ?6"
     );
     let bundles = group == "lower(from_email)";
-    let mut st = store.conn().prepare(&sql)?;
+    let mut st = store.conn().prepare_cached(&sql)?;
+    let mut total = None;
     let rows = st.query_map(params![q.account, now(), since, tab, limit, offset], |r| {
         let mut s = summary(r)?;
         let n: u32 = r.get(14)?;
@@ -413,10 +411,106 @@ pub fn inbox(store: &Store, q: &InboxQuery, limit: u32, offset: u32) -> Result<(
         }
         s.category = r.get(15)?;
         s.pinned = r.get(16)?;
-        Ok(s)
+        Ok((s, r.get::<_, u32>(17)?))
     })?;
-    Ok((total, rows.collect::<rusqlite::Result<_>>()?))
+    let mut items = vec![];
+    for row in rows {
+        let (s, n) = row?;
+        total = Some(n);
+        items.push(s);
+    }
+    // A page past the end has no row to carry the number.
+    let total = match total {
+        Some(n) => n,
+        None => store.conn().query_row(
+            &format!("{shown} SELECT COUNT(DISTINCT g) FROM shown"),
+            params![q.account, now(), since, tab],
+            |r| r.get(0),
+        )?,
+    };
+    Ok((total, items))
 }
+
+/// A page of a tab of the sorted inbox (one account's or all), by keyset: pinned rows first on
+/// the first page, then the newest, `limit` after `after` (see [`crate::unified::Cursor`]). The
+/// rows come from the newest messages walked on the date index, so a page reads about its
+/// own size, not the whole inbox. One row per message: the conversation and bundle views go by
+/// [`inbox`].
+pub fn inbox_page(
+    store: &Store,
+    q: &InboxQuery,
+    after: Option<crate::unified::Cursor>,
+    limit: u32,
+) -> Result<crate::unified::Page> {
+    let filter = if q.focus { "(cat = 'people' OR pin = 1) AND ?4 = ?4" } else { "cat = ?4" };
+    // The candidates: the newest `?7` by date below the cursor (walked on the date index), the
+    // ones back from snoozing (their time is when they came back) and the pinned ones; the
+    // inbox's rules then run on these only.
+    let base = BASE.replacen("FROM messages m\n", "FROM cand CROSS JOIN messages m ON m.id = cand.id\n", 1);
+    let sql = format!(
+        "WITH cand(id) AS (
+           SELECT id FROM (SELECT id FROM messages INDEXED BY messages_by_date
+             WHERE hidden = 0
+               AND mailbox_id IN (SELECT id FROM mailboxes WHERE role = 'inbox' AND (?1 IS NULL OR account_id = ?1))
+               AND (?5 IS NULL OR (COALESCE(date, internal_date), id) < (?5, ?6))
+             ORDER BY COALESCE(date, internal_date) DESC, id DESC LIMIT ?7)
+           UNION SELECT id FROM messages INDEXED BY messages_bumped WHERE bumped_at IS NOT NULL
+           UNION {PINNED}),
+         base AS ({base})
+         SELECT id, mailbox_id, uid, thread_id, subject, from_name, from_email, at, snippet, seen, flagged,
+           answered, has_attachments, account_id, cat, pin
+         FROM base WHERE screened = 0 AND {filter}
+           AND (CASE WHEN ?5 IS NULL THEN 1 ELSE pin = 0 AND (at, id) < (?5, ?6) END)
+         ORDER BY CASE WHEN ?5 IS NULL THEN pin ELSE 0 END DESC, at DESC, id DESC LIMIT ?8"
+    );
+    let since = screener_since(store);
+    let mut st = store.conn().prepare_cached(&sql)?;
+    let mut window = limit * 4 + 200;
+    loop {
+        let rows = st.query_map(
+            params![q.account, now(), since, q.tab.as_str(), after.map(|c| c.date), after.map(|c| c.id), window, limit],
+            |r| {
+                let mut s = summary(r)?;
+                s.category = r.get(14)?;
+                s.pinned = r.get(15)?;
+                Ok(s)
+            },
+        )?;
+        let items: Vec<MessageSummary> = rows.collect::<rusqlite::Result<_>>()?;
+        let unpinned = items.iter().filter(|m| !m.pinned).count() as u32;
+        // Too few of this tab among the newest: look further down, unless the inbox ends.
+        let seen_all = window >= MAX_WINDOW
+            || {
+                let n: u32 = store.conn().query_row(
+                "SELECT COUNT(*) FROM (SELECT 1 FROM messages INDEXED BY messages_by_date
+                   WHERE hidden = 0
+                     AND mailbox_id IN (SELECT id FROM mailboxes WHERE role = 'inbox' AND (?1 IS NULL OR account_id = ?1))
+                     AND (?2 IS NULL OR (COALESCE(date, internal_date), id) < (?2, ?3))
+                   LIMIT ?4)",
+                params![q.account, after.map(|c| c.date), after.map(|c| c.id), window],
+                |r| r.get(0),
+            )?;
+                n < window
+            };
+        if (items.len() as u32) < limit && !seen_all {
+            window = (window * 4).min(MAX_WINDOW);
+            continue;
+        }
+        let next = (items.len() as u32 == limit && unpinned > 0)
+            .then(|| items.iter().rev().find(|m| !m.pinned).map(|m| crate::unified::Cursor { date: m.date, id: m.id }))
+            .flatten();
+        return Ok(crate::unified::Page { items, next });
+    }
+}
+
+/// The ids of the pinned messages (by Message-ID, or `local:` and the id).
+const PINNED: &str =
+    "SELECT m2.id FROM marks k2 JOIN messages m2 ON m2.account_id = k2.account_id AND m2.message_id = k2.message_key
+       WHERE k2.pinned = 1
+     UNION SELECT CAST(substr(message_key, 7) AS INTEGER) FROM marks WHERE pinned = 1 AND message_key LIKE 'local:%'";
+
+/// The most messages a page of [`inbox_page`] looks at.
+const MAX_WINDOW: u32 = 1_000_000;
 
 /// The numbers of one tab.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -437,6 +531,100 @@ pub struct InboxCounts {
 }
 
 pub fn counts(store: &Store, account: Option<i64>) -> Result<InboxCounts> {
+    match screener_since(store) {
+        // Without the Screener nothing depends on more than the sender: the index's numbers per
+        // category, then the senders that are sorted otherwise counted again.
+        None => quick_counts(store, account),
+        Some(_) => full_counts(store, account),
+    }
+}
+
+/// [`counts`] without the Screener: the stored categories counted on the index
+/// (`messages_tabs`), corrected for the senders the user moved, blocked or wrote to and for the
+/// pinned messages: the same numbers as [`full_counts`] without reading every message.
+fn quick_counts(store: &Store, account: Option<i64>) -> Result<InboxCounts> {
+    use std::collections::HashMap;
+    let conn = store.conn();
+    let at = now();
+    let mut tab: HashMap<String, (i64, i64)> = HashMap::new();
+    let add = |tab: &mut HashMap<String, (i64, i64)>, cat: &str, n: i64, unread: i64| {
+        let e = tab.entry(cat.to_string()).or_default();
+        e.0 += n;
+        e.1 += unread;
+    };
+    let mut st = conn.prepare_cached(
+        "SELECT category, COUNT(*), COALESCE(SUM(seen = 0), 0) FROM messages INDEXED BY messages_tabs
+         WHERE mailbox_id IN (SELECT id FROM mailboxes WHERE role = 'inbox' AND (?1 IS NULL OR account_id = ?1))
+           AND hidden = 0 AND (snoozed_until IS NULL OR snoozed_until <= ?2)
+         GROUP BY mailbox_id, category",
+    )?;
+    for row in st.query_map(params![account, at], |r| Ok((r.get::<_, String>(0)?, r.get(1)?, r.get(2)?)))? {
+        let (cat, n, unread) = row?;
+        add(&mut tab, &cat, n, unread);
+    }
+    // The senders whose mail is not where its header put it: moved, blocked, or written to.
+    let mut st = conn.prepare_cached(
+        "WITH e(email) AS (SELECT email FROM senders WHERE category IS NOT NULL OR screener = 'blocked'
+                            UNION SELECT email FROM contacts WHERE sent > 0)
+         SELECT m.category, m.seen, s.category, COALESCE(s.screener, ''), COALESCE(c.sent, 0)
+         FROM e CROSS JOIN messages m INDEXED BY messages_sender ON m.from_email = e.email COLLATE NOCASE
+           LEFT JOIN senders s ON s.email = m.from_email
+           LEFT JOIN contacts c ON c.email = m.from_email
+         WHERE m.mailbox_id IN (SELECT id FROM mailboxes WHERE role = 'inbox' AND (?1 IS NULL OR account_id = ?1))
+           AND m.hidden = 0 AND (m.snoozed_until IS NULL OR m.snoozed_until <= ?2)",
+    )?;
+    let rows = st.query_map(params![account, at], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, bool>(1)?,
+            r.get::<_, Option<String>>(2)?,
+            r.get::<_, String>(3)?,
+            r.get::<_, i64>(4)?,
+        ))
+    })?;
+    for row in rows {
+        let (stored, seen, moved, screener, sent) = row?;
+        add(&mut tab, &stored, -1, -(!seen as i64));
+        if screener == "blocked" {
+            continue;
+        }
+        let cat = match moved {
+            Some(c) => c,
+            None if stored == "receipts" => stored,
+            None if sent > 0 => "people".into(),
+            None => stored,
+        };
+        add(&mut tab, &cat, 1, !seen as i64);
+    }
+    let get = |cat: Category| tab.get(cat.as_str()).copied().unwrap_or_default();
+    let tabs: Vec<TabCount> = Category::ALL
+        .iter()
+        .map(|c| {
+            let (n, unread) = get(*c);
+            TabCount { category: *c, total: n.max(0) as u32, unread: unread.max(0) as u32 }
+        })
+        .collect();
+    // Focus: people, and the pinned messages of the other tabs.
+    let (people, people_unread) = get(Category::People);
+    let base = BASE.replacen("FROM messages m\n", "FROM cand CROSS JOIN messages m ON m.id = cand.id\n", 1);
+    let pinned: (i64, i64) = conn.query_row(
+        &format!(
+            "WITH cand(id) AS ({PINNED}), base AS ({base})
+             SELECT COUNT(*), COALESCE(SUM(seen = 0), 0) FROM base WHERE pin = 1 AND cat <> 'people'"
+        ),
+        params![account, at, Option::<i64>::None],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    let focus = TabCount {
+        category: Category::People,
+        total: (people + pinned.0).max(0) as u32,
+        unread: (people_unread + pinned.1).max(0) as u32,
+    };
+    Ok(InboxCounts { tabs, focus, screener: 0 })
+}
+
+/// [`counts`] with the Screener on: every message of the inbox decided one by one.
+pub(crate) fn full_counts(store: &Store, account: Option<i64>) -> Result<InboxCounts> {
     let since = screener_since(store);
     let mut st = store.conn().prepare(&format!(
         "WITH base AS ({BASE})

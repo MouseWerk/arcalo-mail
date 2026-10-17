@@ -24,3 +24,7 @@ opt-level = 3
 opt-level = 3
 [profile.dev.package.blake2]
 opt-level = 3
+# SQLite unoptimized makes every list and count of a large mailbox several times slower in
+# debug builds and tests, which then measure the C compiler's level instead of the queries.
+[profile.dev.package.libsqlite3-sys]
+opt-level = 3
