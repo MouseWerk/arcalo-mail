@@ -122,7 +122,15 @@ fn picture_type(mime: &str) -> Option<String> {
 /// The `data:` address of an inline picture, `None` for a part that is no picture.
 fn data_uri(mime: &str, data: &[u8]) -> Option<String> {
     use base64::Engine;
-    Some(format!("data:{};base64,{}", picture_type(mime)?, base64::engine::general_purpose::STANDARD.encode(data)))
+    let ty = picture_type(mime).or_else(|| {
+        // A picture labelled `application/octet-stream`: its bytes say which.
+        let m = mime.trim().to_ascii_lowercase();
+        (m == "application/octet-stream" || m.is_empty())
+            .then(|| crate::parse::sniff_image(data))
+            .flatten()
+            .map(String::from)
+    })?;
+    Some(format!("data:{ty};base64,{}", base64::engine::general_purpose::STANDARD.encode(data)))
 }
 
 /// Cleans the HTML of a message and removes its trackers. `allow_remote`: keep remote images
@@ -150,8 +158,11 @@ fn sanitize(html: &str, allow_remote: bool, trackers: bool, images: &[(String, S
     let pixels = if trackers { crate::tracking::pixel_sources(html) } else { HashSet::new() };
     let pixel_count = Arc::new(AtomicUsize::new(0));
     let pixel_counter = pixel_count.clone();
-    let inline: Vec<(String, String)> =
-        images.iter().filter_map(|(cid, mime, data)| Some((format!("cid:{cid}"), data_uri(mime, data)?))).collect();
+    // By their keys: `CID:`, %-escapes and the case of the address do not matter (RFC 2392).
+    let inline: Vec<(String, String)> = images
+        .iter()
+        .filter_map(|(cid, mime, data)| Some((crate::parse::cid_key(cid), data_uri(mime, data)?)))
+        .collect();
     let blocked = Arc::new(AtomicUsize::new(0));
     let counter = blocked.clone();
     let links = Arc::new(AtomicUsize::new(0));
@@ -179,8 +190,11 @@ fn sanitize(html: &str, allow_remote: bool, trackers: bool, images: &[(String, S
             },
             ("img", "src") => {
                 let url = crate::tracking::browser_url(value);
-                if let Some((_, uri)) = inline.iter().find(|(cid, _)| *cid == url) {
-                    return Some(Cow::Owned(uri.clone()));
+                if url.len() >= 4 && url[..4].eq_ignore_ascii_case("cid:") {
+                    let key = crate::parse::cid_key(&url);
+                    if let Some((_, uri)) = inline.iter().find(|(cid, _)| *cid == key) {
+                        return Some(Cow::Owned(uri.clone()));
+                    }
                 }
                 if is_own_picture(&url) {
                     return Some(Cow::Owned(url));
@@ -195,7 +209,15 @@ fn sanitize(html: &str, allow_remote: bool, trackers: bool, images: &[(String, S
                     // Nothing a picture can show (a relative or unknown address).
                     None
                 } else if allow_remote {
-                    Some(Cow::Owned(url))
+                    // Over https, as browsers load the pictures of a secure page: the app's
+                    // pages (and the frame inside them) load no plain http.
+                    Some(Cow::Owned(if lower.starts_with("http:") {
+                        format!("https:{}", &url[5..])
+                    } else if lower.starts_with("//") {
+                        format!("https:{url}")
+                    } else {
+                        url
+                    }))
                 } else {
                     counter.fetch_add(1, Ordering::Relaxed);
                     None

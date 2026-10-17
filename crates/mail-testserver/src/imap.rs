@@ -262,6 +262,7 @@ impl Session {
             (c.uidplus, "UIDPLUS"),
             (c.moves, "MOVE"),
             (c.special_use, "SPECIAL-USE"),
+            (c.gmail, "X-GM-EXT-1"),
         ] {
             if on {
                 v.push(name);
@@ -349,13 +350,29 @@ impl Session {
                     ),
                     "RFC822.SIZE" => out.extend_from_slice(format!(" RFC822.SIZE {}", msg.raw.len()).as_bytes()),
                     "MODSEQ" => out.extend_from_slice(format!(" MODSEQ ({})", msg.modseq).as_bytes()),
+                    "X-GM-MSGID" => {
+                        if let Some(id) = msg.gm_msgid {
+                            out.extend_from_slice(format!(" X-GM-MSGID {id}").as_bytes());
+                        }
+                    }
                     "BODYSTRUCTURE" => {
                         let s = parsed.as_ref().map_or("NIL".into(), |m| body_structure(m, 0));
                         out.extend_from_slice(format!(" BODYSTRUCTURE {s}").as_bytes());
                     }
                     other if other.starts_with("BODY") => {
                         let peek = other.starts_with("BODY.PEEK");
-                        let section = other.split_once('[').map(|(_, r)| r.trim_end_matches(']')).unwrap_or("");
+                        // `BODY.PEEK[TEXT]<0.2048>`: a part of the section (RFC 3501, 6.4.5).
+                        let (item, partial) = match other.split_once("]<") {
+                            Some((item, range)) => {
+                                let (from, len) = range.trim_end_matches('>').split_once('.').unwrap_or(("0", "0"));
+                                (
+                                    format!("{item}]"),
+                                    Some((from.parse::<usize>().unwrap_or(0), len.parse::<usize>().unwrap_or(0))),
+                                )
+                            }
+                            None => (other.to_string(), None),
+                        };
+                        let section = item.split_once('[').map(|(_, r)| r.trim_end_matches(']')).unwrap_or("");
                         let data: Vec<u8> = match section {
                             "" => msg.raw.clone(),
                             "HEADER" => {
@@ -387,8 +404,18 @@ impl Session {
                                     .unwrap_or_default()
                             }
                         };
-                        out.extend_from_slice(format!(" BODY[{section}] ").as_bytes());
-                        literal(&mut out, &data);
+                        match partial {
+                            Some((from, len)) => {
+                                let part =
+                                    data.get(from.min(data.len())..(from + len).min(data.len())).unwrap_or_default();
+                                out.extend_from_slice(format!(" BODY[{section}]<{from}> ").as_bytes());
+                                literal(&mut out, part);
+                            }
+                            None => {
+                                out.extend_from_slice(format!(" BODY[{section}] ").as_bytes());
+                                literal(&mut out, &data);
+                            }
+                        }
                         if !peek && !msg.flags.seen {
                             seen_now = true;
                         }
@@ -661,7 +688,10 @@ impl Session {
                             .map(String::as_str)
                             .filter(|a| special || !a.starts_with('\\') || a.eq_ignore_ascii_case("\\Noselect"))
                             .collect();
-                        let mut all = vec!["\\HasNoChildren"];
+                        let mut all = vec![];
+                        if !attrs.iter().any(|a| a.eq_ignore_ascii_case("\\HasChildren")) {
+                            all.push("\\HasNoChildren");
+                        }
                         all.extend(attrs);
                         out.push_str(&format!(
                             "* {cmd} ({}) \"/\" {}\r\n",

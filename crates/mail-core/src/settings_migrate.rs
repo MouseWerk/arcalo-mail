@@ -12,7 +12,7 @@
 use serde_json::{Map, Value};
 
 /// Version written by this release.
-pub const SETTINGS_VERSION: u32 = 10;
+pub const SETTINGS_VERSION: u32 = 11;
 
 /// One step `from → from + 1`: changes the settings object and says what it did (`None`:
 /// nothing to do for these settings).
@@ -34,6 +34,7 @@ pub const STEPS: [Step; SETTINGS_VERSION as usize] = [
     Step { from: 7, name: "updates", run: updates },
     Step { from: 8, name: "cloud_priority", run: cloud_priority },
     Step { from: 9, name: "startup_animation", run: startup_animation },
+    Step { from: 10, name: "initial_headers", run: initial_headers },
 ];
 
 /// Version 0 is settings written before versions existed (development builds): nothing to
@@ -180,6 +181,16 @@ fn startup_animation(map: &mut Map<String, Value>) -> Option<String> {
     Some("added startup_animation".into())
 }
 
+/// Version 11: a first sync fetches the newest headers of a folder (1000), the older ones follow
+/// in the background.
+fn initial_headers(map: &mut Map<String, Value>) -> Option<String> {
+    if map.contains_key("initial_headers") {
+        return None;
+    }
+    map.insert("initial_headers".into(), Value::from(crate::sync::FIRST_HEADERS));
+    Some("added initial_headers".into())
+}
+
 /// Runs the steps the settings still need; returns what they did.
 pub fn migrate(map: &mut Map<String, Value>) -> Vec<String> {
     let from = map.get("version").and_then(Value::as_u64).unwrap_or(0) as u32;
@@ -212,7 +223,7 @@ mod tests {
         let mut m: Map<String, Value> = serde_json::from_str(r#"{"version":1,"undo_send_secs":10}"#).unwrap();
         let done = migrate(&mut m);
         // mail_basics, fetch_threads_network and the later steps.
-        assert_eq!(done.len(), 8, "{done:?}");
+        assert_eq!(done.len(), 9, "{done:?}");
         assert!(done[0].starts_with("mail_basics: "), "{done:?}");
         assert_eq!(m["undo_send_secs"], 10);
         assert_eq!(m["notifications"], true);
@@ -224,7 +235,7 @@ mod tests {
         let mut m: Map<String, Value> = serde_json::from_str(r#"{"version":2,"prefetch":"none"}"#).unwrap();
         let done = migrate(&mut m);
         assert_eq!(done[0], "fetch_threads_network: added subject_threads, network");
-        assert_eq!(done.len(), 7, "and the later steps: {done:?}");
+        assert_eq!(done.len(), 8, "and the later steps: {done:?}");
         assert_eq!(m["prefetch"], "none", "kept");
         assert_eq!(m["network"]["profiles"][0]["id"], "standard");
         assert!(migrate(&mut m).is_empty(), "idempotent");
@@ -252,7 +263,8 @@ mod tests {
                 "power_tools: added ai, bimi, gravatar",
                 "calendar_crypto: added calendar, autocrypt, sign_by_default, arcalo_target",
                 "updates: added updates",
-                "startup_animation: added startup_animation"
+                "startup_animation: added startup_animation",
+                "initial_headers: added initial_headers"
             ]
         );
         assert_eq!(m["focus"], true, "kept");
@@ -280,7 +292,8 @@ mod tests {
             [
                 "calendar_crypto: added calendar, sign_by_default, arcalo_target",
                 "updates: added updates",
-                "startup_animation: added startup_animation"
+                "startup_animation: added startup_animation",
+                "initial_headers: added initial_headers"
             ]
         );
         assert_eq!(m["autocrypt"], false, "kept");
@@ -292,10 +305,18 @@ mod tests {
     #[test]
     fn version_8_adds_the_update_mode_once() {
         let mut m: Map<String, Value> = serde_json::from_str(r#"{"version":7}"#).unwrap();
-        assert_eq!(migrate(&mut m), ["updates: added updates", "startup_animation: added startup_animation"]);
+        assert_eq!(
+            migrate(&mut m),
+            [
+                "updates: added updates",
+                "startup_animation: added startup_animation",
+                "initial_headers: added initial_headers"
+            ]
+        );
         assert_eq!(m["updates"], "auto");
         let mut kept: Map<String, Value> =
-            serde_json::from_str(r#"{"version":7,"updates":"notify","startup_animation":false}"#).unwrap();
+            serde_json::from_str(r#"{"version":7,"updates":"notify","startup_animation":false,"initial_headers":500}"#)
+                .unwrap();
         assert!(migrate(&mut kept).is_empty());
         assert_eq!(kept["updates"], "notify", "kept");
         assert!(migrate(&mut m).is_empty(), "idempotent");
@@ -307,12 +328,18 @@ mod tests {
             serde_json::from_str(r#"{"version":8,"ai":{"providers":[{"id":"openai"}],"priority":true}}"#).unwrap();
         assert_eq!(
             migrate(&mut m),
-            ["cloud_priority: added ai.cloud_priority", "startup_animation: added startup_animation"]
+            [
+                "cloud_priority: added ai.cloud_priority",
+                "startup_animation: added startup_animation",
+                "initial_headers: added initial_headers"
+            ]
         );
         assert_eq!(m["ai"]["cloud_priority"], false);
         assert_eq!(m["ai"]["priority"], true, "kept for a provider on this computer");
-        let mut chosen: Map<String, Value> =
-            serde_json::from_str(r#"{"version":8,"ai":{"cloud_priority":true},"startup_animation":true}"#).unwrap();
+        let mut chosen: Map<String, Value> = serde_json::from_str(
+            r#"{"version":8,"ai":{"cloud_priority":true},"startup_animation":true,"initial_headers":1000}"#,
+        )
+        .unwrap();
         assert!(migrate(&mut chosen).is_empty());
         assert_eq!(chosen["ai"]["cloud_priority"], true, "kept");
         assert!(migrate(&mut m).is_empty(), "idempotent");
@@ -321,12 +348,29 @@ mod tests {
     #[test]
     fn version_10_switches_the_opening_animation_on_once() {
         let mut m: Map<String, Value> = serde_json::from_str(r#"{"version":9}"#).unwrap();
-        assert_eq!(migrate(&mut m), ["startup_animation: added startup_animation"]);
+        assert_eq!(
+            migrate(&mut m),
+            ["startup_animation: added startup_animation", "initial_headers: added initial_headers"]
+        );
         assert_eq!(m["startup_animation"], true);
-        let mut off: Map<String, Value> = serde_json::from_str(r#"{"version":9,"startup_animation":false}"#).unwrap();
+        let mut off: Map<String, Value> =
+            serde_json::from_str(r#"{"version":9,"startup_animation":false,"initial_headers":1000}"#).unwrap();
         assert!(migrate(&mut off).is_empty());
         assert_eq!(off["startup_animation"], false, "kept");
         assert!(migrate(&mut m).is_empty(), "idempotent");
+    }
+
+    #[test]
+    fn version_11_fetches_the_newest_headers_first_once() {
+        let mut m: Map<String, Value> = serde_json::from_str(r#"{"version":10}"#).unwrap();
+        assert_eq!(migrate(&mut m), ["initial_headers: added initial_headers"]);
+        assert_eq!(m["initial_headers"], 1000);
+        let mut own: Map<String, Value> = serde_json::from_str(r#"{"version":10,"initial_headers":250}"#).unwrap();
+        assert!(migrate(&mut own).is_empty());
+        assert_eq!(own["initial_headers"], 250, "kept");
+        assert!(migrate(&mut m).is_empty(), "idempotent");
+        let s = crate::settings::Settings::default();
+        assert_eq!(s.initial_headers, crate::sync::FIRST_HEADERS);
     }
 
     #[test]

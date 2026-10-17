@@ -150,6 +150,26 @@ pub fn snippet_of(text: &str) -> String {
     }
 }
 
+/// The preview line of a message from its header and the beginning of its body
+/// (`BODY.PEEK[TEXT]<0.2048>`, see [`crate::imap::PREVIEW_BYTES`]). A cut body ends at its last
+/// whole line, so no base64 or quoted-printable line is read half; a cut inside an HTML style
+/// sheet gives no line rather than its rules.
+pub fn preview(header: &[u8], partial: &[u8]) -> String {
+    let cut = if partial.len() >= crate::imap::PREVIEW_BYTES {
+        partial.iter().rposition(|b| *b == b'\n').map_or(partial.len(), |p| p + 1)
+    } else {
+        partial.len()
+    };
+    let body = &partial[..cut];
+    let lower = String::from_utf8_lossy(body).to_ascii_lowercase();
+    if lower.rfind("<style").is_some_and(|open| !lower[open..].contains("</style")) {
+        return String::new();
+    }
+    let mut raw = header.to_vec();
+    raw.extend_from_slice(body);
+    parse(&raw).map(|p| p.snippet).unwrap_or_default()
+}
+
 /// Reads a whole message, or only its header (the list is filled from `BODY.PEEK[HEADER]`).
 pub fn parse(raw: &[u8]) -> Result<ParsedMessage> {
     let m = MessageParser::default()
@@ -223,9 +243,68 @@ pub fn inline_images(raw: &[u8]) -> Vec<(String, String, Vec<u8>)> {
         .filter_map(|p| {
             let cid = p.content_id()?.trim_matches(['<', '>']).to_string();
             let mime = mime_of(p);
-            mime.starts_with("image/").then(|| (cid, mime, p.contents().to_vec()))
+            if mime.starts_with("image/") {
+                return Some((cid, mime, p.contents().to_vec()));
+            }
+            // Some senders label their pictures `application/octet-stream`: the bytes say it.
+            sniff_image(p.contents()).map(|t| (cid, t.to_string(), p.contents().to_vec()))
         })
         .collect()
+}
+
+/// The picture type of some bytes by their signature (PNG, JPEG, GIF, WebP, BMP).
+pub fn sniff_image(data: &[u8]) -> Option<&'static str> {
+    if data.starts_with(b"\x89PNG\r\n\x1a\n") {
+        Some("image/png")
+    } else if data.starts_with(&[0xff, 0xd8, 0xff]) {
+        Some("image/jpeg")
+    } else if data.starts_with(b"GIF87a") || data.starts_with(b"GIF89a") {
+        Some("image/gif")
+    } else if data.len() >= 12 && &data[..4] == b"RIFF" && &data[8..12] == b"WEBP" {
+        Some("image/webp")
+    } else if data.starts_with(b"BM") && data.len() > 26 {
+        Some("image/bmp")
+    } else {
+        None
+    }
+}
+
+/// A Content-ID or a `cid:` address as they are compared: without `cid:`, the angle brackets
+/// and %-escapes (RFC 2392), in lower case.
+pub fn cid_key(s: &str) -> String {
+    let s = s.trim();
+    let s = if s.len() >= 4 && s[..4].eq_ignore_ascii_case("cid:") { &s[4..] } else { s };
+    let s = s.trim().trim_matches(['<', '>']);
+    let mut bytes = Vec::with_capacity(s.len());
+    let mut it = s.bytes();
+    while let Some(b) = it.next() {
+        if b == b'%' {
+            let hex: Vec<u8> = it.clone().take(2).collect();
+            if let Some(v) = std::str::from_utf8(&hex).ok().and_then(|h| u8::from_str_radix(h, 16).ok()) {
+                bytes.push(v);
+                it.nth(1);
+                continue;
+            }
+        }
+        bytes.push(b);
+    }
+    String::from_utf8_lossy(&bytes).to_lowercase()
+}
+
+/// The Content-IDs an HTML body shows as pictures (`src="cid:…"`), as [`cid_key`]s.
+pub fn cid_refs(html: &str) -> std::collections::HashSet<String> {
+    let lower = html.to_ascii_lowercase();
+    let mut out = std::collections::HashSet::new();
+    let mut at = 0;
+    while let Some(i) = lower[at..].find("cid:") {
+        let start = at + i;
+        let end = lower[start..]
+            .find(|c: char| c == '"' || c == '\'' || c == '>' || c.is_whitespace() || c == ')')
+            .map_or(lower.len(), |e| start + e);
+        out.insert(cid_key(&html[start..end]));
+        at = end.max(start + 4);
+    }
+    out
 }
 
 /// The leaves of the MIME tree with their IMAP section numbers (what `BODYSTRUCTURE` says, for

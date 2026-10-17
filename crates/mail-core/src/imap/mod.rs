@@ -260,7 +260,13 @@ pub struct FetchedHeader {
     pub size: u32,
     /// `BODY.PEEK[HEADER]`.
     pub header: Vec<u8>,
+    /// Gmail's `X-GM-MSGID`: one id for the copies of a message in its label folders and in
+    /// All Mail.
+    pub gm_msgid: Option<u64>,
 }
+
+/// How much of a body [`ImapClient::fetch_previews`] fetches: enough for the preview line.
+pub const PREVIEW_BYTES: usize = 2048;
 
 /// A UID range `from:to`; `to: None` is `from:*`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -299,6 +305,12 @@ pub trait ImapClient: Send {
     /// `UID SEARCH ALL` of the selected folder.
     fn uids(&mut self) -> impl Future<Output = Result<Vec<u32>>> + Send;
     fn fetch_headers(&mut self, range: UidRange) -> impl Future<Output = Result<Vec<FetchedHeader>>> + Send;
+    /// The beginning of each body (`BODY.PEEK[TEXT]<0.2048>`, see [`PREVIEW_BYTES`]), for the
+    /// preview line before the body is fetched. A source without it answers with none.
+    fn fetch_previews(&mut self, range: UidRange) -> impl Future<Output = Result<Vec<(u32, Vec<u8>)>>> + Send {
+        let _ = range;
+        async { Ok(vec![]) }
+    }
     /// `UID FETCH range (FLAGS)`, with `(CHANGEDSINCE modseq)` when given.
     fn fetch_flags(
         &mut self,
