@@ -21,6 +21,9 @@ use crate::error::{Error, Result};
 
 /// At most this many instances of one series are generated, and this many events kept per file.
 const MAX_INSTANCES: u16 = 2000;
+/// The STANDARD and DAYLIGHT parts of one `VTIMEZONE` that are worked out (real zones have a
+/// handful; each part with a rule is expanded over 130 years).
+const MAX_ZONE_PARTS: usize = 16;
 const MAX_EVENTS: usize = 20_000;
 /// Prefix of the id given to an event without a UID (derived from its title and start). Never
 /// shown.
@@ -411,11 +414,12 @@ fn rule_until(rule: &str, zone: &Zone) -> Option<NaiveDateTime> {
     Some(if v.ends_with(['Z', 'z']) { zone.to_wall(Utc.from_utc_datetime(&wall)) } else { wall })
 }
 
-/// The rules of a `VTIMEZONE` (transitions from 1970 to 2100).
+/// The rules of a `VTIMEZONE` (transitions from 1970 to 2100), from its first
+/// [`MAX_ZONE_PARTS`] parts.
 fn zone_rules(c: &Component) -> Option<ZoneRules> {
     let mut transitions = vec![];
     let mut initial = None;
-    for part in c.children.iter().filter(|p| p.name == "STANDARD" || p.name == "DAYLIGHT") {
+    for part in c.children.iter().filter(|p| p.name == "STANDARD" || p.name == "DAYLIGHT").take(MAX_ZONE_PARTS) {
         let (Some(from), Some(to)) = (
             part.prop("TZOFFSETFROM").and_then(|p| parse_offset(&p.value)),
             part.prop("TZOFFSETTO").and_then(|p| parse_offset(&p.value)),
@@ -446,8 +450,9 @@ fn zone_rules(c: &Component) -> Option<ZoneRules> {
             }
         }
         for rd in part.all("RDATE") {
-            walls.extend(rd.value.split(',').filter_map(parse_naive));
+            walls.extend(rd.value.split(',').take(MAX_INSTANCES as usize).filter_map(parse_naive));
         }
+        walls.truncate(MAX_INSTANCES as usize);
         for w in walls {
             transitions.push((Utc.from_utc_datetime(&(w - Duration::seconds(from as i64))), to));
         }
@@ -613,9 +618,21 @@ pub fn parse(bytes: &[u8], window: (DateTime<Utc>, DateTime<Utc>), local: &Zone)
     if cals.is_empty() {
         return Err(not_a_calendar(bytes));
     }
+    // Only the zones the appointments name are worked out, each once: a file may carry hundreds.
+    let used: HashSet<String> = cals
+        .iter()
+        .flat_map(|c| c.children.iter())
+        .filter(|c| c.name == "VEVENT")
+        .flat_map(|ev| ev.props.iter())
+        .filter_map(|p| p.param("TZID").map(str::to_owned))
+        .collect();
     let mut defined = HashMap::new();
     for tz in cals.iter().flat_map(|c| c.children.iter()).filter(|c| c.name == "VTIMEZONE") {
-        if let (Some(id), Some(rules)) = (tz.text("TZID"), zone_rules(tz)) {
+        let Some(id) = tz.text("TZID") else { continue };
+        if !used.contains(&id) || defined.contains_key(&id) {
+            continue;
+        }
+        if let Some(rules) = zone_rules(tz) {
             defined.insert(id, Zone::Rules(Arc::new(rules)));
         }
     }
@@ -1209,6 +1226,41 @@ pub fn bounds(data: &str) -> (Option<i64>, Option<i64>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A zone part that changes its offset every year, as a VTIMEZONE writes it.
+    fn zone_part(kind: &str, month: u32) -> String {
+        format!(
+            "BEGIN:{kind}\r\nDTSTART:16010101T020000\r\nTZOFFSETFROM:+0100\r\nTZOFFSETTO:+0200\r\nRRULE:FREQ=YEARLY;BYDAY=-1SU;BYMONTH={month}\r\nEND:{kind}\r\n"
+        )
+    }
+
+    #[test]
+    fn huge_time_zone_parts_cost_little() {
+        // A file with hundreds of zones of many rule parts: only the zones its appointments use
+        // are worked out, and only so many parts of each.
+        let mut zones = String::new();
+        for z in 0..400 {
+            zones.push_str(&format!("BEGIN:VTIMEZONE\r\nTZID:Zone {z}\r\n"));
+            for m in 0..40 {
+                zones.push_str(&zone_part(if m % 2 == 0 { "STANDARD" } else { "DAYLIGHT" }, 1 + m % 12));
+            }
+            zones.push_str("END:VTIMEZONE\r\n");
+        }
+        let ics = format!(
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\n{zones}BEGIN:VEVENT\r\nUID:a\r\nSUMMARY:Termin\r\nDTSTART;TZID=Zone 7:20261103T100000\r\nDTEND;TZID=Zone 7:20261103T110000\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+        );
+        let window =
+            (Utc.with_ymd_and_hms(2026, 11, 1, 0, 0, 0).unwrap(), Utc.with_ymd_and_hms(2026, 11, 30, 0, 0, 0).unwrap());
+        let started = std::time::Instant::now();
+        let got = parse(ics.as_bytes(), window, &Zone::Utc).unwrap();
+        assert_eq!(got.len(), 1);
+        assert!(started.elapsed() < std::time::Duration::from_secs(3), "{:?}", started.elapsed());
+        // One zone of many parts: the parts after the limit are left out.
+        let top = parse_components(ics.as_bytes());
+        let tz = top[0].children.iter().find(|c| c.name == "VTIMEZONE").unwrap();
+        let rules = zone_rules(tz).unwrap();
+        assert!(rules.transitions.len() <= MAX_ZONE_PARTS * 131, "{}", rules.transitions.len());
+    }
 
     fn berlin() -> Zone {
         Zone::named("Europe/Berlin").unwrap()

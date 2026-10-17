@@ -12,7 +12,7 @@
 use serde_json::{Map, Value};
 
 /// Version written by this release.
-pub const SETTINGS_VERSION: u32 = 8;
+pub const SETTINGS_VERSION: u32 = 9;
 
 /// One step `from → from + 1`: changes the settings object and says what it did (`None`:
 /// nothing to do for these settings).
@@ -32,6 +32,7 @@ pub const STEPS: [Step; SETTINGS_VERSION as usize] = [
     Step { from: 5, name: "power_tools", run: power_tools },
     Step { from: 6, name: "calendar_crypto", run: calendar_crypto },
     Step { from: 7, name: "updates", run: updates },
+    Step { from: 8, name: "cloud_priority", run: cloud_priority },
 ];
 
 /// Version 0 is settings written before versions existed (development builds): nothing to
@@ -158,6 +159,17 @@ fn updates(map: &mut Map<String, Value>) -> Option<String> {
     Some("added updates".into())
 }
 
+/// Version 9: „Wichtig“ by a cloud provider needs its own yes; settings from before have it off,
+/// whatever `priority` says (until now a cloud provider of an account judged all its new mail).
+fn cloud_priority(map: &mut Map<String, Value>) -> Option<String> {
+    let ai = map.get_mut("ai")?.as_object_mut()?;
+    if ai.contains_key("cloud_priority") {
+        return None;
+    }
+    ai.insert("cloud_priority".into(), Value::Bool(false));
+    Some("added ai.cloud_priority".into())
+}
+
 /// Runs the steps the settings still need; returns what they did.
 pub fn migrate(map: &mut Map<String, Value>) -> Vec<String> {
     let from = map.get("version").and_then(Value::as_u64).unwrap_or(0) as u32;
@@ -267,6 +279,20 @@ mod tests {
         let mut kept: Map<String, Value> = serde_json::from_str(r#"{"version":7,"updates":"notify"}"#).unwrap();
         assert!(migrate(&mut kept).is_empty());
         assert_eq!(kept["updates"], "notify", "kept");
+        assert!(migrate(&mut m).is_empty(), "idempotent");
+    }
+
+    #[test]
+    fn version_9_takes_wichtig_from_cloud_providers_until_the_user_allows_it() {
+        let mut m: Map<String, Value> =
+            serde_json::from_str(r#"{"version":8,"ai":{"providers":[{"id":"openai"}],"priority":true}}"#).unwrap();
+        assert_eq!(migrate(&mut m), ["cloud_priority: added ai.cloud_priority"]);
+        assert_eq!(m["ai"]["cloud_priority"], false);
+        assert_eq!(m["ai"]["priority"], true, "kept for a provider on this computer");
+        let mut chosen: Map<String, Value> =
+            serde_json::from_str(r#"{"version":8,"ai":{"cloud_priority":true}}"#).unwrap();
+        assert!(migrate(&mut chosen).is_empty());
+        assert_eq!(chosen["ai"]["cloud_priority"], true, "kept");
         assert!(migrate(&mut m).is_empty(), "idempotent");
     }
 

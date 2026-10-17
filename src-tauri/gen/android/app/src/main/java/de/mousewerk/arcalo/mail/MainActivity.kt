@@ -1,5 +1,6 @@
 package de.mousewerk.arcalo.mail
 
+import android.content.Context
 import android.content.Intent
 import android.content.res.Configuration
 import android.net.Uri
@@ -9,6 +10,8 @@ import android.webkit.WebView
 import androidx.activity.enableEdgeToEdge
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
+import java.security.MessageDigest
+import java.security.SecureRandom
 
 class MainActivity : TauriActivity() {
   private var webView: WebView? = null
@@ -60,18 +63,37 @@ class MainActivity : TauriActivity() {
     intent.data = null
   }
 
-  /** A notification or the widget asked to open a message (to read it or to reply): handed to Rust. */
+  /**
+   * A notification or the widget asked to open a message (to read it or to reply): handed to Rust.
+   * The activity is exported (it takes mailto: links), so only intents that carry this install's
+   * token count: the app's own PendingIntents. Another app's „open message 42“ is ignored.
+   */
   private fun takeOpen(intent: Intent?) {
     if (intent == null) return
     val id = intent.getLongExtra(EXTRA_OPEN, -1)
     if (id < 0) return
-    MailNative.openMessage(id, intent.getBooleanExtra(EXTRA_REPLY, false))
+    val given = intent.getStringExtra(EXTRA_TOKEN)
     intent.removeExtra(EXTRA_OPEN)
+    intent.removeExtra(EXTRA_TOKEN)
+    if (given == null || !MessageDigest.isEqual(given.toByteArray(), token(this).toByteArray())) return
+    MailNative.openMessage(id, intent.getBooleanExtra(EXTRA_REPLY, false))
   }
 
   companion object {
     const val EXTRA_OPEN = "open_message"
     const val EXTRA_REPLY = "reply"
+    const val EXTRA_TOKEN = "token"
+
+    /** A random token of this install, in the app's private preferences (no other app reads it). */
+    @JvmStatic
+    fun token(context: Context): String {
+      val prefs = context.getSharedPreferences("intents", Context.MODE_PRIVATE)
+      prefs.getString("token", null)?.let { return it }
+      val bytes = ByteArray(32).also { SecureRandom().nextBytes(it) }
+      val made = bytes.joinToString("") { "%02x".format(it) }
+      prefs.edit().putString("token", made).apply()
+      return made
+    }
   }
 
   override fun onWebViewCreate(webView: WebView) {

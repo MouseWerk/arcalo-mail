@@ -734,6 +734,8 @@ export const en = {
   "ai.autoSummaryHint": "Long conversations get their summary when you open them.",
   "ai.priorityLabel": "Mark important mail",
   "ai.priorityHint": "New mail from people who need something from you is marked “Important”: first by rules on this device, then by the model where the account allows it.",
+  "ai.cloudPriority": "With cloud providers too",
+  "ai.cloudPriorityHint": "Every new message of accounts with a cloud provider then goes to that provider in the background, to judge “Important”. Off: only the rules on this device decide.",
   "ai.tone": "Reply drafts in your tone",
   "ai.toneHint": "Learned on this device from your sent mail: greeting, closing, formal or informal address, a few samples. It goes only to the provider of the account.",
   "ai.toneLearned": { one: "Learned from {n} sent message", other: "Learned from {n} sent messages" },

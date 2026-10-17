@@ -68,15 +68,32 @@ impl FileVault {
     }
 
     fn write(&self, map: &serde_json::Map<String, serde_json::Value>) -> Result<(), String> {
+        use std::io::Write;
         let tmp = self.file.with_extension("json.tmp");
-        std::fs::write(&tmp, serde_json::to_vec_pretty(map).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600)).map_err(|e| e.to_string())?;
-        }
+        let mut f = create_private(&tmp).map_err(|e| e.to_string())?;
+        f.write_all(&serde_json::to_vec_pretty(map).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+        f.sync_all().map_err(|e| e.to_string())?;
+        drop(f);
         std::fs::rename(&tmp, &self.file).map_err(|e| e.to_string())
     }
+}
+
+/// A new file only the user can read and write (0600 on Unix from its creation on, never for a
+/// moment with the umask's rights); a file left at that place before is removed first. Its
+/// folder is closed to other users too (0700).
+fn create_private(path: &Path) -> std::io::Result<std::fs::File> {
+    let _ = std::fs::remove_file(path);
+    let mut o = std::fs::OpenOptions::new();
+    o.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        o.mode(0o600);
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
+        }
+    }
+    o.open(path)
 }
 
 impl Vault for FileVault {
@@ -409,6 +426,24 @@ mod tests {
         assert!(d.join("secrets.json").exists());
         v.delete("proxy-standard-password").unwrap();
         assert_eq!(v.get("proxy-standard-password").unwrap(), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_file_is_private_from_its_creation_on() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = dir("private");
+        let tmp = d.join("secrets.json.tmp");
+        // A file left there by a crash, readable by everyone.
+        std::fs::write(&tmp, "old").unwrap();
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o666)).unwrap();
+        let f = create_private(&tmp).unwrap();
+        assert_eq!(f.metadata().unwrap().permissions().mode() & 0o777, 0o600, "before anything is written");
+        assert_eq!(std::fs::metadata(&d).unwrap().permissions().mode() & 0o777, 0o700);
+        let v = file_vault(&d, None);
+        v.set("a", "geheim").unwrap();
+        assert_eq!(std::fs::metadata(d.join("secrets.json")).unwrap().permissions().mode() & 0o777, 0o600);
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

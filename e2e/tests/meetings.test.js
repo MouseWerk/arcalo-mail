@@ -180,6 +180,7 @@ it("sends a message to Arcalo as a page and as a task", async () => {
   const page = called().find((c) => c.args[0] === "pages");
   assert.deepEqual(page.args.slice(0, 2), ["pages", "create"]);
   assert.ok(page.args.includes("--stdin") && page.args.includes("--json"));
+  assert.equal(page.args[page.args.length - 2], "--", "the title comes after --, never read as an option");
   assert.match(page.stdin, /Kurzer Abgleich|Lea Wagner/);
   assert.match(page.stdin, /mid:/, "a link back to the message");
   await app.click('.reading-pane .toolbar [data-action="more"]');

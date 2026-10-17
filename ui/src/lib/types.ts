@@ -572,6 +572,8 @@ export type AiSettings = {
   accounts: Record<string, string>;
   auto_summary: boolean;
   priority: boolean;
+  /** „Wichtig“ by a cloud provider: every new message of its accounts goes there. Off until switched on. */
+  cloud_priority: boolean;
   tone: boolean;
 };
 

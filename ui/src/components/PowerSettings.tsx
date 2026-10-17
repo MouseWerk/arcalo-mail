@@ -318,6 +318,11 @@ export function AiSection({ settings, accounts, onChange }: { settings: Settings
             <Row label={t("ai.priorityLabel")} description={t("ai.priorityHint")}>
               <Switch label={t("ai.priorityLabel")} checked={ai.priority} onChange={(priority) => set({ priority })} />
             </Row>
+            {ai.priority && ai.providers.some((p) => !isLocal(p.base_url)) && (
+              <Row label={t("ai.cloudPriority")} description={t("ai.cloudPriorityHint")}>
+                <Switch label={t("ai.cloudPriority")} checked={ai.cloud_priority} onChange={(cloud_priority) => set({ cloud_priority })} />
+              </Row>
+            )}
             <Row label={t("ai.tone")} description={t("ai.toneHint")}>
               <Switch label={t("ai.tone")} checked={ai.tone} onChange={(tone) => set({ tone })} />
             </Row>

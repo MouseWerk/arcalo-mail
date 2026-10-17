@@ -41,7 +41,7 @@ class MailWidget : AppWidgetProvider() {
         private fun open(context: Context, id: Long, request: Int): PendingIntent {
             val intent = Intent(context, MainActivity::class.java)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-            if (id >= 0) intent.putExtra(MainActivity.EXTRA_OPEN, id)
+            if (id >= 0) intent.putExtra(MainActivity.EXTRA_OPEN, id).putExtra(MainActivity.EXTRA_TOKEN, MainActivity.token(context))
             return PendingIntent.getActivity(
                 context, request, intent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
             )

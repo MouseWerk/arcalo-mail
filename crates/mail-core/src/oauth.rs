@@ -439,8 +439,9 @@ pub async fn sign_in(cfg: &OAuthConfig, login_hint: &str, open: impl FnOnce(&str
     let pkce = pkce()?;
     let state = b64url(&random(16)?);
     open(&authorize_url(cfg, &redirect_uri, &pkce, &state, login_hint))?;
-    let query =
-        listener.wait(SIGN_IN_TIMEOUT, &|q: &str| done_page(q.split('&').any(|kv| kv.starts_with("code=")))).await?;
+    let query = listener
+        .wait(SIGN_IN_TIMEOUT, &state, &|q: &str| done_page(q.split('&').any(|kv| kv.starts_with("code="))))
+        .await?;
     finish(cfg, &query, &state, &pkce, &redirect_uri).await
 }
 
@@ -689,6 +690,35 @@ mod tests {
         idp.lock().unwrap().revoke_all();
         let e = src.access_token(true).await.unwrap_err();
         assert!(matches!(&e, Error::Connection(p) if p.needs_sign_in()), "{e:?}");
+    }
+
+    /// A page that finds the listener's port while the user signs in and calls it with a code
+    /// of its own (or an error) does not end the sign-in; the real redirect still counts.
+    #[tokio::test]
+    async fn a_redirect_with_another_state_is_ignored() {
+        let (port, _idp) = idp().await;
+        let c = cfg(port);
+        let tokens = sign_in(&c, "maria@example.org", |url| {
+            let url = url.to_string();
+            let redirect = url::Url::parse(&url)
+                .unwrap()
+                .query_pairs()
+                .find(|(k, _)| k == "redirect_uri")
+                .map(|(_, v)| v.into_owned())
+                .unwrap();
+            tokio::spawn(async move {
+                let client = network::client_for(Service::OAuthMicrosoft).unwrap();
+                for probe in ["code=evil&state=guess", "error=access_denied&state=guess", "error=access_denied"] {
+                    let r = client.get(format!("{redirect}/?{probe}")).send().await.unwrap();
+                    assert_eq!(r.status().as_u16(), 404, "{probe}");
+                }
+                let _ = client.get(&url).send().await.unwrap().text().await;
+            });
+            Ok(())
+        })
+        .await
+        .unwrap();
+        assert_eq!(tokens.email.as_deref(), Some("maria@example.org"));
     }
 
     #[tokio::test]

@@ -150,6 +150,17 @@ pub fn find_cli(path: Option<&std::ffi::OsStr>) -> Option<std::path::PathBuf> {
     None
 }
 
+/// The arguments of `arcalo` that make a page titled `title` from the Markdown on stdin. The
+/// title comes after `--`, so a subject such as `--help` or `--db=…` is never read as an option.
+pub fn page_args(title: &str) -> Vec<String> {
+    ["pages", "create", "--stdin", "--json", "--", title].map(str::to_owned).to_vec()
+}
+
+/// The arguments of `arcalo` that add `task` to today's daily note (the text after `--`).
+pub fn task_args(task: &str) -> Vec<String> {
+    ["tasks", "add", "--json", "--", task].map(str::to_owned).to_vec()
+}
+
 /// What Arcalo answered: the page's title or the task's text, for the confirmation.
 pub fn answer(json: &str) -> Option<String> {
     let v: serde_json::Value = serde_json::from_str(json.trim()).ok()?;
@@ -216,6 +227,17 @@ mod tests {
         );
         assert_eq!(answer(r#"{"page_id": 3, "text": "Angebot"}"#).as_deref(), Some("Angebot"));
         assert!(answer("kein json").is_none());
+    }
+
+    #[test]
+    fn a_subject_is_never_an_option() {
+        for subject in ["--help", "--db=/tmp/x.db", "-p", "--version"] {
+            let page = page_args(subject);
+            assert_eq!(page[page.len() - 2..], ["--".to_string(), subject.to_string()], "{page:?}");
+            assert!(page[..page.len() - 2].iter().all(|a| a != subject));
+            let task = task_args(subject);
+            assert_eq!(task[task.len() - 2..], ["--".to_string(), subject.to_string()], "{task:?}");
+        }
     }
 
     #[test]

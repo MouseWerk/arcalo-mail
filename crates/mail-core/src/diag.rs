@@ -59,10 +59,19 @@ fn redact_word(word: &str) -> String {
         return word.to_string();
     }
     let replace = |with: &str| word.replace(trimmed, with);
-    if let Some((before, _)) = trimmed.split_once('?')
-        && trimmed.contains("://")
-    {
-        return replace(&format!("{before}?<query>"));
+    if trimmed.contains("://") {
+        // A user name and password in an address (`socks5://user:pw@host`) and its query.
+        let (scheme, rest) = trimmed.split_once("://").unwrap_or_default();
+        let (authority, path) = rest.split_at(rest.find(['/', '?', '#']).unwrap_or(rest.len()));
+        let authority = match authority.rsplit_once('@') {
+            Some((_, host)) => format!("<user>@{host}"),
+            None => authority.to_string(),
+        };
+        let path = match path.split_once('?') {
+            Some((p, _)) => format!("{p}?<query>"),
+            None => path.to_string(),
+        };
+        return replace(&format!("{scheme}://{authority}{path}"));
     }
     let at = trimmed.find('@');
     if let Some(i) = at
@@ -91,10 +100,48 @@ struct AccountReport {
     messages: u32,
 }
 
+/// The settings as the report shows them: proxy user names gone, user names, passwords and
+/// queries out of proxy and AI provider addresses.
+fn redacted_settings(settings: &crate::settings::Settings) -> Result<serde_json::Value> {
+    let mut v = serde_json::to_value(settings)?;
+    if let Some(profiles) = v.pointer_mut("/network/profiles").and_then(|p| p.as_array_mut()) {
+        for p in profiles {
+            if p["proxy_user"].as_str().is_some_and(|u| !u.is_empty()) {
+                p["proxy_user"] = "<user>".into();
+            }
+            for key in ["http_proxy", "socks_proxy"] {
+                if let Some(url) = p[key].as_str().map(|u| redact_proxy(u)) {
+                    p[key] = url.into();
+                }
+            }
+        }
+    }
+    if let Some(providers) = v.pointer_mut("/ai/providers").and_then(|p| p.as_array_mut()) {
+        for p in providers {
+            if let Some(url) = p["base_url"].as_str().map(redact) {
+                p["base_url"] = url.into();
+            }
+        }
+    }
+    Ok(v)
+}
+
+/// A proxy as `host:port`, `scheme://host:port` or with `user:password@` in it: without the
+/// user name and password.
+fn redact_proxy(proxy: &str) -> String {
+    if proxy.contains("://") {
+        return redact(proxy);
+    }
+    match proxy.rsplit_once('@') {
+        Some((_, host)) => format!("<user>@{host}"),
+        None => proxy.to_string(),
+    }
+}
+
 /// The report: the app, the settings, the accounts' server settings (no addresses, no user
 /// names), the offline queue and the log.
 pub fn report(store: &Store, app: &serde_json::Value) -> Result<String> {
-    let settings = crate::settings::load(store)?;
+    let settings = redacted_settings(&crate::settings::load(store)?)?;
     let mut accounts = vec![];
     for a in store.accounts()? {
         let mailboxes = store.mailboxes(a.id)?;
@@ -173,6 +220,30 @@ mod tests {
         assert!(!t.contains("eyJ0eXAi") && t.contains("<secret>"), "{t}");
         assert!(t.contains("https://api.example.org/jmap?<query>") && !t.contains("abc"), "{t}");
         assert!(t.contains("imap.gmx.net:993") && t.contains("[AUTHENTICATIONFAILED]"), "{t}");
+    }
+
+    #[test]
+    fn proxies_and_providers_lose_their_users_and_passwords() {
+        let (s, _, _) = crate::store::tests::store_with_inbox();
+        let mut settings = crate::settings::load(&s).unwrap();
+        let p = &mut settings.network.profiles[0];
+        p.proxy_user = "corp\\maria".into();
+        p.http_proxy = "http://maria:Geheim123@proxy.corp.example:3128".into();
+        p.socks_proxy = "maria:Geheim123@socks.corp.example:1080".into();
+        settings.ai.providers.push(crate::ai::AiProvider {
+            base_url: "https://key:Geheim123@llm.example/v1?api-key=Geheim123".into(),
+            ..Default::default()
+        });
+        crate::settings::save(&s, &settings).unwrap();
+        let r = report(&s, &serde_json::json!({})).unwrap();
+        assert!(!r.contains("Geheim123") && !r.contains("maria"), "{r}");
+        assert!(
+            r.contains("proxy.corp.example:3128")
+                && r.contains("socks.corp.example:1080")
+                && r.contains("llm.example/v1"),
+            "{r}"
+        );
+        assert_eq!(redact("socks5://u:p@h.example:1080"), "socks5://<user>@h.example:1080");
     }
 
     #[test]

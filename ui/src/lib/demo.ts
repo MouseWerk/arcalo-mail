@@ -155,7 +155,7 @@ let settings: Settings = {
   focus: false,
   unified_inbox: true,
   bundles: true,
-  ai: { providers: [], default_provider: "", accounts: {}, auto_summary: true, priority: true, tone: true },
+  ai: { providers: [], default_provider: "", accounts: {}, auto_summary: true, priority: true, cloud_priority: false, tone: true },
   bimi: true,
   gravatar: false,
   calendar: { default_calendar: null, entry_minutes: 30, workdays: [1, 2, 3, 4, 5] },

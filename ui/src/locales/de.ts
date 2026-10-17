@@ -732,6 +732,8 @@ export const de: Record<TKey, Msg> = {
   "ai.autoSummaryHint": "Lange Unterhaltungen bekommen ihre Zusammenfassung, sobald du sie öffnest.",
   "ai.priorityLabel": "Wichtige Mails markieren",
   "ai.priorityHint": "Neue Mails von Menschen, die etwas von dir brauchen, werden „Wichtig“: zuerst nach Regeln auf diesem Gerät, dann vom Modell, wo das Konto es erlaubt.",
+  "ai.cloudPriority": "Auch mit Cloud-Anbieter",
+  "ai.cloudPriorityHint": "Dann geht jede neue Mail der Konten mit Cloud-Anbieter im Hintergrund an diesen Anbieter, damit er „Wichtig“ beurteilt. Aus: Nur die Regeln auf diesem Gerät entscheiden.",
   "ai.tone": "Antwortentwürfe in deinem Ton",
   "ai.toneHint": "Auf diesem Gerät aus deinen gesendeten Mails gelernt: Anrede, Gruß, förmlich oder locker, ein paar Beispiele. Geht nur an den Anbieter des Kontos.",
   "ai.toneLearned": { one: "Aus {n} gesendeten Nachricht gelernt", other: "Aus {n} gesendeten Nachrichten gelernt" },

@@ -27,7 +27,7 @@ use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{ClientConfig, DigitallySignedStruct, SignatureScheme};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader, ReadBuf};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader, ReadBuf};
 use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
 use tokio_rustls::client::TlsStream;
@@ -1527,13 +1527,15 @@ impl RedirectListener {
         format!("http://127.0.0.1:{}", self.port)
     }
 
-    /// Waits for the browser's redirect and answers it with `page(query)` (HTML); returns the query
-    /// string (`code=…&state=…` or `error=…`). Other requests (a favicon) get a 404.
-    pub async fn wait(self, timeout: Duration, page: &(dyn Fn(&str) -> String + Sync)) -> Result<String> {
+    /// Waits for the browser's redirect with the sign-in's `state` and answers it with
+    /// `page(query)` (HTML); returns the query string (`code=…&state=…` or `error=…`). Other
+    /// requests (a favicon, a page probing the port, a redirect with another state) get a 404
+    /// and the listener goes on waiting; a request is read up to 16 KB.
+    pub async fn wait(self, timeout: Duration, state: &str, page: &(dyn Fn(&str) -> String + Sync)) -> Result<String> {
         let accept = async {
             loop {
-                let (stream, _) = self.listener.accept().await.map_err(|e| Error::Network(e.to_string()))?;
-                let mut r = BufReader::new(stream);
+                let (mut stream, _) = self.listener.accept().await.map_err(|e| Error::Network(e.to_string()))?;
+                let mut r = BufReader::new((&mut stream).take(16 * 1024));
                 let mut first = String::new();
                 if tokio::time::timeout(IO_TIMEOUT, r.read_line(&mut first)).await.is_err() {
                     continue;
@@ -1545,10 +1547,12 @@ impl RedirectListener {
                         _ => break,
                     }
                 }
+                drop(r);
                 let target = first.split_whitespace().nth(1).unwrap_or("/").to_string();
                 let query = target.split_once('?').map(|(_, q)| q.to_string()).unwrap_or_default();
-                let hit = query.split('&').any(|kv| kv.starts_with("code=") || kv.starts_with("error="));
-                let mut stream = r.into_inner();
+                let answer = query.split('&').any(|kv| kv.starts_with("code=") || kv.starts_with("error="));
+                let ours = query.split('&').any(|kv| kv.strip_prefix("state=").is_some_and(|v| v == state));
+                let hit = answer && ours;
                 let (status, body) = if hit { ("200 OK", page(&query)) } else { ("404 Not Found", String::new()) };
                 let resp = format!(
                     "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{body}",

@@ -82,6 +82,10 @@ fn run(program: &std::path::Path, args: &[&str], input: Option<&str>) -> Res<Str
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
+fn as_strs(v: &[String]) -> Vec<&str> {
+    v.iter().map(String::as_str).collect()
+}
+
 /// The mail as a page or a task in Arcalo; without Arcalo the page for a Markdown file.
 #[tauri::command]
 pub async fn send_to_arcalo(state: State<'_, AppState>, message_id: i64, target: Option<ArcaloTarget>) -> Res<Sent> {
@@ -106,13 +110,15 @@ pub async fn send_to_arcalo(state: State<'_, AppState>, message_id: i64, target:
             file_name: Some(export.file_name),
         });
     };
-    let answer = tauri::async_runtime::spawn_blocking(move || match target {
-        ArcaloTarget::Page => {
-            run(&program, &["pages", "create", &export.title, "--stdin", "--json"], Some(&export.markdown))
-                .map(|a| arcalo::answer(&a).unwrap_or(export.title.clone()))
-        }
-        ArcaloTarget::Task => run(&program, &["tasks", "add", &export.task, "--json"], None)
-            .map(|a| arcalo::answer(&a).unwrap_or(export.title.clone())),
+    let answer = tauri::async_runtime::spawn_blocking(move || {
+        let out = match target {
+            ArcaloTarget::Page => run(&program, &as_strs(&arcalo::page_args(&export.title)), Some(&export.markdown)),
+            ArcaloTarget::Task => run(&program, &as_strs(&arcalo::task_args(&export.task)), None),
+        }?;
+        // Done only when Arcalo says what it made.
+        arcalo::answer(&out).ok_or_else(|| {
+            Error::Invalid(mail_core::tr!("Arcalo hat nichts angelegt.", "Arcalo did not create anything.").into())
+        })
     })
     .await
     .map_err(|e| Error::Invalid(e.to_string()))??;

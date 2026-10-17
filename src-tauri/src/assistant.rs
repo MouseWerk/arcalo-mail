@@ -193,9 +193,8 @@ pub fn ai_calendar(state: State<'_, AppState>, message_id: i64, item: Item) -> R
 /// messages at a time, in the background). The local heuristics ran in the worker already.
 pub fn judge_new_mail(app: &AppHandle, account_id: i64, messages: &[i64]) {
     let Some(state) = app.try_state::<AppState>() else { return };
-    let on = mail_core::settings::load(&state.store())
-        .map(|s| s.ai.on() && s.ai.priority && s.ai.for_account(account_id).is_some())
-        .unwrap_or(false);
+    let on =
+        mail_core::settings::load(&state.store()).map(|s| s.ai.for_priority(account_id).is_some()).unwrap_or(false);
     if !on || messages.is_empty() {
         return;
     }

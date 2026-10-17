@@ -55,6 +55,9 @@ pub struct AiSettings {
     /// New mail is checked for „Wichtig“ (the local heuristics always; the model when the
     /// account has a provider).
     pub priority: bool,
+    /// „Wichtig“ by a cloud provider: every new message of its accounts goes to it in the
+    /// background. Off until the user switches it on; a provider on this computer needs nothing.
+    pub cloud_priority: bool,
     /// Reply drafts follow the user's tone, learned on this device from sent mail.
     pub tone: bool,
 }
@@ -67,6 +70,7 @@ impl Default for AiSettings {
             accounts: BTreeMap::new(),
             auto_summary: true,
             priority: true,
+            cloud_priority: false,
             tone: true,
         }
     }
@@ -105,6 +109,16 @@ impl AiSettings {
                 .or_else(|| self.providers.iter().find(|p| p.local()))
                 .filter(|p| p.local()),
         }
+    }
+
+    /// The provider that judges new mail of `account_id` for „Wichtig“ in the background: the
+    /// account's provider when it runs on this computer, a cloud provider only when the user
+    /// allowed that ([`AiSettings::cloud_priority`]).
+    pub fn for_priority(&self, account_id: i64) -> Option<&AiProvider> {
+        if !self.on() || !self.priority {
+            return None;
+        }
+        self.for_account(account_id).filter(|p| p.local() || self.cloud_priority)
     }
 
     pub fn destination(&self, account_id: i64) -> Destination {
@@ -227,6 +241,18 @@ mod tests {
         };
         s.normalize().unwrap();
         s
+    }
+
+    #[test]
+    fn wichtig_goes_to_a_cloud_provider_only_when_allowed() {
+        let mut s = settings();
+        s.accounts.insert("2".into(), "openai".into());
+        assert_eq!(s.for_priority(1).map(|p| p.id.as_str()), Some("ollama"), "on this computer: as before");
+        assert!(s.for_account(2).is_some() && s.for_priority(2).is_none(), "the cloud only with its own yes");
+        s.cloud_priority = true;
+        assert_eq!(s.for_priority(2).map(|p| p.id.as_str()), Some("openai"));
+        s.priority = false;
+        assert!(s.for_priority(1).is_none() && s.for_priority(2).is_none());
     }
 
     #[test]
