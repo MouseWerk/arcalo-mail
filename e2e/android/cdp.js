@@ -125,6 +125,21 @@ export class Page {
     }
   }
 
+  /** A key pressed and released (`Escape`, `Enter`). */
+  async key(key) {
+    const codes = { Escape: 27, Enter: 13, Tab: 9 };
+    for (const type of ["keyDown", "keyUp"]) {
+      await this.send("Input.dispatchKeyEvent", { type, key, code: key, windowsVirtualKeyCode: codes[key] ?? 0 });
+    }
+  }
+
+  /** A mouse click at a point of the page. */
+  async clickAt(x, y) {
+    for (const type of ["mouseMoved", "mousePressed", "mouseReleased"]) {
+      await this.send("Input.dispatchMouseEvent", { type, x, y, button: "left", clickCount: type === "mouseMoved" ? 0 : 1 });
+    }
+  }
+
   async close() {
     try {
       this.ws.close();

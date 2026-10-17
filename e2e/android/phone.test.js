@@ -6,7 +6,10 @@
 // button leaves the last row free at the end of the list; every inbox tab can be reached;
 // writing has one bar on top with the send button and, with the keyboard up (a real tap into
 // the text), one row of tools above it; folder names keep their brackets. The checks are the
-// desktop phone test's (e2e/lib/geometry.js). Screenshots of the whole screen land in
+// desktop phone test's (e2e/lib/geometry.js). No stock Android UI shows on any screen
+// (lib/stockui.js: platform form controls and pickers, alert/confirm/prompt, tap highlight,
+// selectable chrome, focus rings after a tap, overscroll stretch, scrollbars, search and e-mail
+// fields' keyboards), and with the system's font size at 130 % no label is cut off. Screenshots of the whole screen land in
 // e2e/screenshots/android.
 //
 //   cd e2e && ARCALO_MAIL_APK=path/to/app-debug.apk node --test android/phone.test.js
@@ -16,6 +19,7 @@ import assert from "node:assert/strict";
 import path from "node:path";
 import { startServer } from "../lib/server.js";
 import * as geo from "../lib/geometry.js";
+import * as stock from "../lib/stockui.js";
 import * as device from "./device.js";
 
 const OUT = path.resolve(import.meta.dirname, "../screenshots/android");
@@ -51,6 +55,8 @@ for (const [W, H] of [
     let page;
     let dpr = 2;
     const spinnerLog = [];
+    /** The platform's own UI found on the screens so far. */
+    const stockFound = [];
 
     const shot = (name) => device.screencap(path.join(OUT, `android-${W}x${H}-${name}.png`));
     const visible = (sel, timeout = 30000) => page.waitForSelector(sel, { timeout });
@@ -63,6 +69,7 @@ for (const [W, H] of [
       const where = device.insetsCss(dpr);
       const m = await page.evaluate(geo.measureLayout, where.insets);
       const out = geo.layoutProblems(m, opts);
+      stockFound.push(...(await page.evaluate(stock.measureStockUi)).map((f) => `${name}: ${f}`));
       if (Math.abs(m.viewport.w - W) > 1) out.push(`the page is ${m.viewport.w} px wide on a ${W} dp screen`);
       return out.map((p) => `${name}: ${p}`);
     };
@@ -98,6 +105,7 @@ for (const [W, H] of [
       const pid = await device.start();
       page = await device.connect(pid);
       await page.addInitScript(geo.recordSpinners);
+      await page.addInitScript(stock.stubDialogs);
       // The app in German whatever the emulator's language (the labels the steps look for).
       await page.waitForFunction(() => window.__TAURI_INTERNALS__ != null, undefined, { timeout: 60000 });
       await page.evaluate(async () => {
@@ -210,6 +218,40 @@ for (const [W, H] of [
       await visible(".calv-head");
       problems.push(...(await screen("calendar")));
       assert.deepEqual(problems, []);
+    });
+
+    test("shows no stock Android UI", async () => {
+      const dialogs = await page.evaluate(stock.nativeDialogs);
+      assert.deepEqual([...new Set(stockFound)], [], "the platform's own UI");
+      assert.deepEqual(dialogs, [], "alert, confirm or prompt called");
+    });
+
+    test("keeps every label whole with the system's font at 130 %", async () => {
+      device.shell("settings put system font_scale 1.3");
+      try {
+        await sleep(1500);
+        const cut = [];
+        const look = async (name) => {
+          await sleep(800);
+          shot(`font-130-${name}`);
+          cut.push(...(await page.evaluate(stock.measureStockUi)).filter((f) => f.startsWith("text cut off")).map((f) => `${name}: ${f}`));
+        };
+        if (!(await page.$(".list-pane .row"))) await page.click(".folders-btn").catch(() => {});
+        if (await page.$(".folder-name")) await page.click(".folder-name", { text: /^Posteingang$/, timeout: 5000 }).catch(() => {});
+        await look("inbox");
+        await page.click(".folders-btn");
+        await look("folders");
+        await page.click('.sidebar-head [aria-label="Einstellungen"]');
+        await visible(".settings-nav");
+        await look("settings");
+        device.back();
+        await sleep(500);
+        await page.click(".compose-fab").catch(() => {});
+        if (await page.$(".compose")) await look("compose");
+        assert.deepEqual(cut, []);
+      } finally {
+        device.shell("settings put system font_scale 1.0");
+      }
     });
 
     test("draws every spinner small and round", async () => {

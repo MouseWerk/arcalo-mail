@@ -187,14 +187,16 @@ jobs:
 
   # The Android app on an emulator (e2e/android): the debug APK of the Android job against the
   # Gmail-like test server on the runner (reached through adb reverse), measured at 360x800 and
-  # 412x915 dp over the WebView's DevTools socket. The screenshots of every screen are kept.
+  # 412x915 dp over the WebView's DevTools socket (android/phone.test.js), and a screenshot tour
+  # of every screen, menu, sheet and dialog in light and dark (android/tour.test.js) with the
+  # stock Android UI found on them. The screenshots and the findings are kept.
   android-e2e:
     name: Android emulator (phone screens)
     needs: android
     # Also when a test of the checks failed (the Android build ran anyway).
     if: ${{ !cancelled() && needs.android.result == 'success' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 100
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.94.1
@@ -226,7 +228,7 @@ jobs:
           disable-animations: true
           emulator-boot-timeout: 900
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -no-snapshot-save
-          script: cd e2e && ARCALO_MAIL_APK="$GITHUB_WORKSPACE/apk/arcalo-mail-debug.apk" timeout 2400 node --test --test-concurrency=1 --test-timeout=300000 --test-force-exit --test-reporter=spec android/phone.test.js
+          script: cd e2e && ARCALO_MAIL_APK="$GITHUB_WORKSPACE/apk/arcalo-mail-debug.apk" timeout 4800 node --test --test-concurrency=1 --test-timeout=300000 --test-force-exit --test-reporter=spec android/phone.test.js android/tour.test.js
       - uses: actions/upload-artifact@v4
         if: always()
         with:
