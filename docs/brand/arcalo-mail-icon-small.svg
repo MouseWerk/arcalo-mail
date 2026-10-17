@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <!-- The app icon for 16 to 32 pixels: the same mark larger on the tile, with a heavier ribbon
+       and seal, so it stays an envelope at that size. -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#23252d"/>
+      <stop offset="1" stop-color="#0e0f12"/>
+    </linearGradient>
+  </defs>
+  <rect width="1024" height="1024" rx="228" fill="url(#bg)"/>
+  <g transform="translate(112 112) scale(0.8)">
+    <path fill="#818cf8" d="M500 342.7 640 496.3 500 650 360 496.3Z"/>
+    <path fill="none" stroke="#ffffff" stroke-width="112" stroke-miterlimit="8" d="M90 200H910V800H90Z M90 200 500 650 910 200 M360 496.3 500 342.7 640 496.3"/>
+  </g>
+</svg>

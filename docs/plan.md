@@ -67,7 +67,7 @@ conformance job against Dovecot and GreenMail. The signed update feed came with 
 - **Builds**: the Android project is committed; CI builds a signed APK and AAB once the keystore secrets exist and an
   iOS IPA (TestFlight for a tag) once the Apple secrets exist. Owner steps: [release-mobile.md](release-mobile.md).
 - Done for 1.0.0: store screenshots at the stores' sizes (docs/store), the update notice of the GitHub APK (Google
-  Play updates the Play install). Open: a mail-specific app icon (Arcalo's icon is the placeholder), the share sheet
+  Play updates the Play install). The app icon is Arcalo Mail's own (docs/brand). Open: the share sheet
   for attachments and opening attachments in other apps on the phones, a Play service account for uploads from CI. To verify on
   devices: everything native (see release-mobile.md, "What only a device or CI can show").
 
@@ -263,7 +263,8 @@ Goal: daily use with one IMAP/SMTP account on Windows, macOS and Linux.
    on its own.
 7. **Website**: a section on arcalo.mousewerk.de or an own page/domain; when it is mentioned at all.
 8. **Encryption at rest**: off by default as in Arcalo, or on by default for mail (more sensitive than notes).
-9. **App icon and brand**: the icons are Arcalo's for now; a mail variant is needed before the first release.
+9. **App icon and brand**: decided (decisions.md, „Logo and 1.1“): Arcalo Mail's own mark in docs/brand, made from
+   Arcalo's with an envelope, with an opening animation as Arcalo's.
 10. **Windows signing**: unsigned NSIS plus the Microsoft Store (MSIX, signed by the Store) as Arcalo, and winget.
 
 ## Owner to-dos outside the code

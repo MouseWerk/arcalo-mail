@@ -83,6 +83,8 @@ jobs:
           cargo tauri ios init --ci
           cargo tauri icon icons/icon.png
           git checkout -- icons
+          # The App Store's icons without transparency, 16 to 32 points from the heavier small mark.
+          cp icons/ios/AppIcon-*.png gen/apple/Assets.xcassets/AppIcon.appiconset/
           app_dir=$(find gen/apple -maxdepth 1 -type d -name '*_iOS' | head -n 1)
           test -n "$app_dir"
           cp ios/PrivacyInfo.xcprivacy "$app_dir/"

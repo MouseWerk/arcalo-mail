@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000">
+  <!-- Arcalo Mail: an envelope drawn as one ribbon of Arcalo's mark; its flap is Arcalo's A
+       turned over, sealed with the A's diamond. The ribbon takes the text color, the seal the
+       accent (#6366f1 on light, #818cf8 on dark). -->
+  <path fill="#6366f1" d="M500 412.7 618 551.4 500 690 382 551.4Z"/>
+  <path fill="none" stroke="currentColor" stroke-width="64" stroke-miterlimit="8" d="M100 220H900V780H100Z M100 220 500 690 900 220 M382 551.4 500 412.7 618 551.4"/>
+</svg>

@@ -1,0 +1,50 @@
+/* Opening animation (markup in index.html, lib/splash.ts): Arcalo Mail's mark draws itself while
+   the app loads, as Arcalo's does. It never holds the app back: once the app is ready the splash
+   fades out at once, and it lets clicks through all the time. A file, not a <style> block in
+   index.html (the CSP; lib/html.test.ts). The colors are those of the dark and light themes;
+   lib/splash.ts sets --splash-bg/-ink/-seal from the theme of the last start. */
+#splash {
+  --splash-bg: #f4f4f5;
+  --splash-ink: #18181b;
+  --splash-seal: #6366f1;
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  display: grid;
+  place-items: center;
+  background: var(--splash-bg);
+  pointer-events: none;
+  transition: opacity 180ms ease;
+  font-family: "Inter Variable", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  #splash { --splash-bg: #0e0f11; --splash-ink: #ececef; --splash-seal: #818cf8; }
+}
+#splash[data-theme="light"] { --splash-bg: #f4f4f5; --splash-ink: #18181b; --splash-seal: #6366f1; }
+#splash[data-theme="dark"] { --splash-bg: #0e0f11; --splash-ink: #ececef; --splash-seal: #818cf8; }
+#splash.out { opacity: 0; }
+.splash-inner { display: grid; justify-items: center; gap: 16px; }
+.splash-mark { width: 104px; height: 104px; overflow: visible; animation: splash-rise 420ms cubic-bezier(0.22, 1, 0.36, 1) both; }
+.splash-mark .ribbon {
+  fill: none;
+  stroke: var(--splash-ink);
+  stroke-width: 64;
+  stroke-miterlimit: 8;
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+  animation: splash-draw 420ms cubic-bezier(0.65, 0, 0.35, 1) forwards;
+}
+.splash-mark .ribbon.flap { animation-delay: 140ms; animation-duration: 360ms; }
+.splash-mark .ribbon.fold { animation-delay: 300ms; animation-duration: 240ms; }
+.splash-mark .seal { fill: var(--splash-seal); opacity: 0; transform-origin: 500px 551px; transform: scale(0.4); animation: splash-seal 220ms cubic-bezier(0.22, 1, 0.36, 1) 440ms forwards; }
+.splash-word { color: var(--splash-ink); font-size: 22px; font-weight: 600; letter-spacing: -0.01em; opacity: 0; transform: translateY(4px); animation: splash-word 300ms cubic-bezier(0.22, 1, 0.36, 1) 360ms forwards; }
+@keyframes splash-draw { to { stroke-dashoffset: 0; } }
+@keyframes splash-seal { to { opacity: 1; transform: none; } }
+@keyframes splash-rise { from { opacity: 0; transform: scale(0.92); } to { opacity: 1; transform: none; } }
+@keyframes splash-word { to { opacity: 1; transform: none; } }
+/* Reduced motion (the system's setting): the finished mark, no movement. */
+@media (prefers-reduced-motion: reduce) {
+  #splash, #splash * { animation: none !important; transition: none !important; }
+  .splash-mark .ribbon { stroke-dashoffset: 0; }
+  .splash-mark .seal, .splash-word { opacity: 1; transform: none; }
+}

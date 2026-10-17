@@ -69,8 +69,8 @@ Losing the key means the GitHub APK can never be updated again, and Play needs a
      signature and update each other. Optionally register a separate upload key afterwards.
 3. **Store listing** (Grow → Store presence → Main store listing):
    - Short description and full description: [store/google-play.md](store/google-play.md).
-   - App icon 512 × 512 (`src-tauri/icons/icon.png` until the mail icon exists – it is a placeholder: Arcalo's
-     icon), feature graphic 1024 × 500.
+   - App icon 512 × 512 (`docs/brand/png/icon-512.png`), feature graphic 1024 × 500
+     (`docs/brand/png/play-feature-graphic-1024x500.png`).
    - Phone screenshots: 2 to 8, each side 320–3840 px and the long side at most twice the short side:
      `docs/store/screenshots/play-phone` (1080 × 1920, made by `cd e2e && npm run shots:store`). Tablet screenshots
      are optional (`docs/store/screenshots/ipad-13`).

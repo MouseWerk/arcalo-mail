@@ -9,8 +9,9 @@ The other steps (app access, content rating, data safety, testing tracks) are in
 - **Category:** Communication · **Tags:** Email, Calendar, Productivity
 - **Contact:** the MouseWerk support address · **Website:** https://arcalo.mousewerk.de/mail/
 - **Privacy policy:** https://arcalo.mousewerk.de/mail/privacy ([privacy-policy.md](privacy-policy.md))
-- **App icon:** 512 × 512, from `src-tauri/icons/icon.png` (Arcalo's icon is still the placeholder, docs/plan.md)
-- **Feature graphic:** 1024 × 500, not made yet (the icon on the app's background color with the name)
+- **App icon:** 512 × 512, `docs/brand/png/icon-512.png` (the same as `src-tauri/icons/icon.png`)
+- **Feature graphic:** 1024 × 500, `docs/brand/png/play-feature-graphic-1024x500.png` (the icon on the app's dark
+  background with the name)
 - **Phone screenshots:** `screenshots/play-phone/*.png`, 1080 × 1920 (9:16, inside Play's 2:1 limit). The sample
   mailboxes are English; the same pictures serve the German listing.
 - **Tablet screenshots (optional):** `screenshots/ipad-13/` as they are (2064 × 2752; Play takes up to 3840 px on the

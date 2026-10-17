@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <!-- The app icon: Arcalo's graphite tile with the mark (arcalo-mail-mark.svg) in white and the
+       seal in the dark theme's accent. -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#23252d"/>
+      <stop offset="1" stop-color="#0e0f12"/>
+    </linearGradient>
+  </defs>
+  <rect width="1024" height="1024" rx="228" fill="url(#bg)"/>
+  <rect x="1.5" y="1.5" width="1021" height="1021" rx="227" fill="none" stroke="#ffffff" stroke-opacity="0.08" stroke-width="3"/>
+  <g transform="translate(172 172) scale(0.68)">
+    <path fill="#818cf8" d="M500 412.7 618 551.4 500 690 382 551.4Z"/>
+    <path fill="none" stroke="#ffffff" stroke-width="64" stroke-miterlimit="8" d="M100 220H900V780H100Z M100 220 500 690 900 220 M382 551.4 500 412.7 618 551.4"/>
+  </g>
+</svg>
