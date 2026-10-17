@@ -461,11 +461,21 @@ export function App() {
 
   // ---------------------------------------------------------------- the list
 
-  const fetchPage = useCallback(async (key: string, page: number) => {
+  // Pages on their way: each is asked for once while the list scrolls over it.
+  const inflight = useRef(new Set<string>());
+  const fetchPage = useCallback(async (key: string, page: number, again = false) => {
     const src = sourceRef.current;
     if (!src || src.key !== key) return;
-    const r = await src.page(page * PAGE, PAGE);
-    setList((l) => (l.key === key ? { ...l, total: r.total, pages: { ...l.pages, [page]: r.items }, loading: false } : l));
+    const id = `${key}#${page}`;
+    // `again`: after a change the page is asked for anew, also while an older answer is on its way.
+    if (inflight.current.has(id) && !again) return;
+    if (!again) inflight.current.add(id);
+    try {
+      const r = await src.page(page * PAGE, PAGE);
+      setList((l) => (l.key === key ? { ...l, total: r.total, pages: { ...l.pages, [page]: r.items }, loading: false } : l));
+    } finally {
+      if (!again) inflight.current.delete(id);
+    }
   }, []);
 
   /** Loads list pages now (into the list too) and returns them. */
@@ -481,12 +491,13 @@ export function App() {
   const refreshList = useCallback(() => {
     setList((l) => {
       const pages = Object.keys(l.pages).map(Number);
-      for (const p of pages.length ? pages : [0]) void fetchPage(l.key, p);
+      for (const p of pages.length ? pages : [0]) void fetchPage(l.key, p, true);
       return l;
     });
   }, [fetchPage]);
 
-  useEffect(() => {
+  // Before the paint: a list seen before shows in the same frame as the click that asked for it.
+  useLayoutEffect(() => {
     // A place without a list (Dateien, Frag dein Postfach, Neue Absender, Abos, Geplant): the
     // last folder's rows go, so no key works on a list that is not shown.
     if (!listKey) {
@@ -502,7 +513,7 @@ export function App() {
     setCurrent(null);
     setThread([]);
     setStream(null);
-    for (const p of seen ? Object.keys(seen.pages).map(Number) : [0]) void fetchPage(listKey, p);
+    for (const p of seen ? Object.keys(seen.pages).map(Number) : [0]) void fetchPage(listKey, p, !!seen);
   }, [listKey]);
 
   // The lists seen last, their first pages: for switching back without waiting.
@@ -519,7 +530,8 @@ export function App() {
   const onRange = useCallback(
     (start: number, end: number) => {
       if (results || !listKey) return;
-      for (const p of pagesFor(start, end, PAGE)) if (!list.pages[p]) void fetchPage(list.key, p);
+      // Half a page ahead and behind: the next rows are there before the list reaches them.
+      for (const p of pagesFor(Math.max(0, start - PAGE / 2), Math.min(list.total || end, end + PAGE / 2), PAGE)) if (!list.pages[p]) void fetchPage(list.key, p);
     },
     [results, listKey, list.pages, list.key, fetchPage],
   );

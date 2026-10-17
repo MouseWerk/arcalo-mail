@@ -17,7 +17,8 @@ const BUDGET = {
   frameP95: 120,
   frameMean: 50,
   openMessage: 1500,
-  switchBack: 250,
+  jumpFill: 1000,
+  switchBack: 100,
 };
 
 let app;
@@ -55,7 +56,7 @@ async function firstRows() {
 
 it("draws the first rows soon after a start, cold and warm", async () => {
   app = await launch();
-  await addAccount(app, big, { name: "Groß" });
+  await addAccount(app, big, { name: "Gross" });
   await addAccount(app, small, { name: "Klein" });
   // Cold: the first start with these accounts (the store fills while the rows come).
   await app.browser.refresh();
@@ -79,7 +80,7 @@ it("draws the first rows soon after a start, cold and warm", async () => {
 });
 
 it("scrolls 10,000 rows with short frames, few rows in the page and steady heights", async () => {
-  await openFolder(app, "Groß", "Posteingang");
+  await openFolder(app, "Gross", "Posteingang");
   await app.waitUntil(async () => Number(await app.browser.execute(() => document.querySelector(".messages-inner")?.style.height.replace("px", "") ?? 0)) > 0, 15000, "the list");
   const r = await app.browser.executeAsync((done) => {
     const el = document.querySelector(".messages");
@@ -92,11 +93,12 @@ it("scrolls 10,000 rows with short frames, few rows in the page and steady heigh
       const t = performance.now();
       frames.push(t - last);
       last = t;
-      el.scrollTop += 900;
+      // A quick fling: about 7,000 px a second.
+      el.scrollTop += 120;
       const rows = el.querySelectorAll(".row");
       maxRows = Math.max(maxRows, rows.length);
       for (const row of rows) heights.add(row.style.height);
-      if (++n < 150 && el.scrollTop + el.clientHeight < el.scrollHeight) requestAnimationFrame(step);
+      if (++n < 180 && el.scrollTop + el.clientHeight < el.scrollHeight) requestAnimationFrame(step);
       else done({ frames: frames.slice(1), maxRows, heights: [...heights], end: el.scrollTop, height: el.scrollHeight });
     };
     requestAnimationFrame(step);
@@ -111,6 +113,23 @@ it("scrolls 10,000 rows with short frames, few rows in the page and steady heigh
   assert.equal(r.heights.length, 1, `row heights: ${r.heights}`);
   assert.ok(mean < BUDGET.frameMean, `mean frame ${mean} ms`);
   assert.ok(p95 < BUDGET.frameP95, `p95 frame ${p95} ms`);
+});
+
+it("fills the list at once after a jump into the middle of 10,000 rows", async () => {
+  const ms = await app.browser.executeAsync((done) => {
+    const el = document.querySelector(".messages");
+    const t0 = performance.now();
+    el.scrollTop = el.scrollHeight / 2;
+    el.dispatchEvent(new Event("scroll"));
+    const check = () => {
+      const rows = [...el.querySelectorAll(".row")];
+      if (rows.length && rows.every((r) => r.dataset.id)) done(performance.now() - t0);
+      else requestAnimationFrame(check);
+    };
+    requestAnimationFrame(check);
+  });
+  perf("jump-fill", ms);
+  assert.ok(ms < BUDGET.jumpFill, `jump ${ms} ms`);
 });
 
 it("opens a message quickly", async () => {
@@ -128,15 +147,25 @@ it("opens a message quickly", async () => {
   assert.ok(ms < BUDGET.openMessage, `open ${ms} ms`);
 });
 
-/** Milliseconds from a click on `sel` until the list shows rows of `key` (a subject's start). */
-async function switchTo(sel, key) {
-  const t0 = await app.browser.execute(() => performance.now());
-  await app.click(sel);
-  await app.browser.waitUntil(async () => (await app.browser.execute((k) => [...document.querySelectorAll(".row[data-id] .row-subject")].some((x) => x.textContent.includes(k)), key)) === true, { timeout: 10000, interval: 5 });
-  const ms = (await app.browser.execute(() => performance.now())) - t0;
-  const spinner = await app.browser.execute(() => !!document.querySelector(".messages .spinner"));
-  return { ms, spinner };
-}
+/** Milliseconds from a click on `sel` until the list shows rows of `key` (a subject's start),
+ *  measured in the page (a WebDriver round trip would add its own time), and whether a spinner
+ *  showed meanwhile. */
+const switchTo = (sel, key) =>
+  app.browser.executeAsync(
+    (s, k, done) => {
+      const t0 = performance.now();
+      let spinner = false;
+      document.querySelector(s).click();
+      const check = () => {
+        spinner ||= !!document.querySelector(".messages .spinner");
+        if ([...document.querySelectorAll(".row[data-id] .row-subject")].some((x) => x.textContent.includes(k))) done({ ms: performance.now() - t0, spinner });
+        else requestAnimationFrame(check);
+      };
+      check();
+    },
+    sel,
+    key,
+  );
 
 /** Marks the inbox of the account `name` in the folders, for a click without a search. */
 const markInbox = (name) =>
@@ -150,12 +179,12 @@ it("switches accounts back and forth without waiting", async () => {
   // The first visit of each loads; the way back comes from what was seen.
   await markInbox("Klein");
   await switchTo(".folder[data-perf]", "Klein");
-  await markInbox("Groß");
+  await markInbox("Gross");
   await switchTo(".folder[data-perf]", "Nachricht");
   await markInbox("Klein");
   const back = await switchTo(".folder[data-perf]", "Klein");
   perf("switch-account-back", back.ms);
-  await markInbox("Groß");
+  await markInbox("Gross");
   const forth = await switchTo(".folder[data-perf]", "Nachricht");
   perf("switch-account-forth", forth.ms);
   assert.ok(back.ms < BUDGET.switchBack && forth.ms < BUDGET.switchBack, `switch ${back.ms} / ${forth.ms} ms`);
