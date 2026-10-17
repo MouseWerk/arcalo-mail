@@ -123,7 +123,9 @@ export const back = () => shell("input keyevent 4");
 export function systemBars() {
   const out = shell("dumpsys window");
   const frame = (type) => {
-    const re = new RegExp(`type=${type}[^\\n]*?frame=\\[(\\d+),(\\d+)\\]\\[(\\d+),(\\d+)\\][^\\n]*?visible=(true|false)`, "g");
+    // `type=statusBars frame=[…] visible=true` (Android 11, 12) or `mType=statusBars,
+    // mFrame=[…], mVisible=true` (13 and later).
+    const re = new RegExp(`type=${type}\\b[^\\n]*?frame=\\[(\\d+),(\\d+)\\]\\[(\\d+),(\\d+)\\][^\\n]*?visible=(true|false)`, "gi");
     const all = [...out.matchAll(re)].map((m) => ({ left: +m[1], top: +m[2], right: +m[3], bottom: +m[4], visible: m[5] === "true" }));
     return all.find((f) => f.visible && f.bottom > f.top) ?? null;
   };
