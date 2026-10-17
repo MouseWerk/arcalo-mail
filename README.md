@@ -204,6 +204,36 @@ the system's credential store.
   <img src="docs/screenshots/encrypted-mail.png" alt="An encrypted and signed message: a lock with Encrypted (OpenPGP) and a check with the signer above the text" width="100%">
 </p>
 
+### Security: app lock, encryption on the device, phishing warning
+
+Settings → Security, everything off by default except the phishing warning:
+
+- **App lock.** A PIN (4 to 64 characters, kept only as an Argon2id hash in the credential store) locks the app at
+  the start, after minutes without input, after the computer slept, or on a phone when it leaves the app. Windows
+  Hello, Touch ID, Face ID or the Android fingerprint and face unlock it when you switch that on. While locked the
+  window shows nothing of your mail (the app behind the lock screen is closed), every command but the lock screen's
+  is refused, and wrong PINs make the next try wait longer. While the lock is on, notifications, reminders and the
+  Android widget say only how many new e-mails there are: no sender, no subject, no buttons. A forgotten PIN is reset
+  with the system's sign-in or the recovery key of the encrypted database; where neither exists (Linux without
+  encryption), quit the app and run `sqlite3 mail.db "DELETE FROM settings WHERE key LIKE 'applock%'"` in its data
+  folder: the lock never protected more than the open app there.
+- **Encryption on the device.** The database (messages, attachments, drafts, the offline queue, the search index)
+  becomes a SQLCipher file (AES-256) with a random key in the system's credential store. Switching runs while the app
+  is open and survives a crash at any step; the previous file is overwritten and deleted at the next start. The
+  recovery key (shown before encrypting, with "Copy" and "Save as file") opens the database on another device or
+  after a reinstall; the key can also be kept in the data folder protected by a password (Argon2id, for a portable
+  copy). Without the key and the recovery key the mail on the device cannot be read, by anyone. Attachments you
+  open in other programs are deleted when the app locks and at the next start. The phones' background check opens
+  the database with the key of the Android Keystore or the iOS Keychain, as before.
+- **Phishing warning.** A calm note above a message whose sender looks like a known one but is not (look-alike
+  letters, punycode, one letter off a brand or someone you wrote to), whose answers go to another domain, whose name
+  shows another address, that calls itself a bank, a payment or a parcel service on first contact, whose links show
+  another domain than they open, or that failed DMARC or SPF at your provider. Nothing is blocked; "This is fine"
+  silences it for the sender.
+- **Encrypted drafts.** The draft of an encrypted message is encrypted to your own OpenPGP key or S/MIME certificate
+  before it goes to the Drafts folder (subject and recipients stay readable, as in the sent message) and decrypted when
+  you open it again.
+
 ### Send to Arcalo
 
 "Send to Arcalo" in a message's menu makes it a page or a task in [Arcalo](https://arcalo.mousewerk.de), with its
@@ -380,6 +410,8 @@ Windows and Linux), and on Android a home-screen widget shows the unread count a
   updates and cancellations applied, "Join" for Teams, Zoom, Webex, Google Meet and Jitsi.
 - **Signed and encrypted mail:** OpenPGP (keys made or imported, Autocrypt, Web Key Directory) and S/MIME (.p12),
   lock and check badges, no remote content in decrypted mail.
+- **Security:** an app lock with a PIN and the system's sign-in, encryption of the database on the device
+  (SQLCipher) with a recovery key, a phishing warning, encrypted drafts of encrypted messages.
 - **Send to Arcalo:** a message as an Arcalo page or task through its command line, or as a Markdown file.
 - **Templates and snippets** with placeholders and `;;` shortcuts.
 - **Contacts:** CardDAV address books and Microsoft contacts, address completion, contact cards, pictures from the
@@ -394,7 +426,10 @@ Windows and Linux), and on Android a home-screen widget shows the unread count a
 
 ## Privacy
 
-- **Local-first.** Your mail is stored in one SQLite database in your user folder and searched there.
+- **Local-first.** Your mail is stored in one SQLite database in your user folder and searched there; with
+  Settings → Security it is encrypted (SQLCipher, the key in the credential store).
+- **Phishing warning.** It is worked out on the device from the message's header, its links and what your provider
+  wrote in `Authentication-Results`; no address or link is looked up anywhere.
 - **No telemetry.** The app connects only to the mail servers you set up, Microsoft's sign-in (and Microsoft Graph
   for server rules and contacts) for Microsoft accounts, while you add an account to the lookups that find their
   addresses, to a newsletter's unsubscribe address when you ask for it, and to what is listed below: the AI

@@ -137,8 +137,7 @@ conformance job against Dovecot and GreenMail. The signed update feed came with 
 - **Notifications and widget**: Archive, Mark read and Reply on new-mail notifications (Linux actions, Windows toast
   buttons, Android actions, an iOS category); an Android home-screen widget with the unread count and the newest
   three mails of People.
-- Open: drafts of encrypted messages are saved unencrypted on the server (as most clients do; encrypting drafts to
-  the own key is next); the `mid:` link back needs Arcalo Mail registered as the handler of `mid:` addresses
+- Open: the `mid:` link back needs Arcalo Mail registered as the handler of `mid:` addresses
   (desktop deep links); notification buttons on macOS (notify-rust has no actions there; the plain notification
   shows); iOS WidgetKit (the widget needs a Swift extension target in the Xcode project, planned for 1.1); JMAP
   Calendars has no per-event ETag, so a write there goes over what the server has (the next sync shows the
@@ -159,6 +158,56 @@ conformance job against Dovecot and GreenMail. The signed update feed came with 
   allows it (Windows' settings, macOS, Linux; Android asks at the first link; iOS needs Apple's entitlement).
 - **Store listings**: [store/](store/) (texts, privacy policy text, data safety answers, screenshots).
 - Open: the Microsoft Store (MSIX) and winget, as Arcalo; the mail client entitlement for iOS.
+
+## 1.1 (the first release, 1.1.0): what is done on the `next` branch
+
+The first public release is 1.1.0 with the 1.0.0 scope and the 1.1 scope of decisions.md („Logo and 1.1“). Work on
+1.1 happens on the branch `next`, merged into `main` when the owner says so.
+
+### Security (done)
+
+- **App lock**, as Arcalo's: a PIN (Argon2id hash in the credential store), at the start, after minutes without input
+  or after sleep on the desktop, after leaving the app or a time away on the phones; Windows Hello, Touch ID, Face ID
+  and Android's BiometricPrompt as an option; wrong PINs wait longer; „PIN vergessen?“ with the system's sign-in or
+  the recovery key. The app is unmounted behind the lock screen and its commands are refused.
+- **Encryption on the device**, as Arcalo's: SQLCipher with a random key in the credential store, switched on and
+  off while the app runs, crash-safe (`cipher-migration.json`, tested at every step), the recovery key, the key
+  wrapped with a password (Argon2id with a bounded cost), the recovery screen when the key is missing. Mail,
+  attachments, drafts, the queue and the index are all in the database; copies of attachments opened in other
+  programs are deleted on lock and at the start.
+- **What stays readable while locked** (decided here, ARCHITECTURE.md „Security“): the background check runs as
+  before; notifications and reminders say only how many, without sender, subject, account or buttons; the widget
+  shows the count only; the badge stays.
+- **Phishing warning**: look-alike domains (confusables, punycode, edit distance to brands and correspondents), reply
+  address on another domain, an address in the display name, a first contact claiming to be a bank, payment or parcel
+  service, misleading links, failed DMARC or SPF; a calm banner, never a block; „Das ist in Ordnung“ per sender; a
+  corpus of examples in the tests.
+- **Encrypted drafts**: the draft of an encrypted message goes to Drafts encrypted to the own OpenPGP key or S/MIME
+  certificate and is decrypted when opened; its files stay in the backend.
+- Open: Windows Hello, Touch ID, Face ID and BiometricPrompt are compile-checked in CI only and need a check on
+  devices (release checklist); locking the screen of the computer is not detected (idle time and sleep are);
+  protected headers (the subject inside the encrypted part, as Autocrypt's „Memory Hole“) for encrypted drafts and
+  messages; the brand list of the phishing warning is compiled in (no updates without a release); changing the
+  database key („Schlüssel wechseln“, Arcalo has it) is not offered yet.
+
+### Open in 1.1
+
+Exchange on premises (EWS), Google sign-in after Google's verification, the iOS widget, the Microsoft Store and
+winget; Comfort: voice dictation, an undo history, Arcalo's themes and a reading mode, quick reply from notifications,
+watch apps.
+
+### Release notes, draft for 1.1.0 (user-facing lines)
+
+- App lock: lock Arcalo Mail with a PIN at the start, after a few minutes without input or after sleep, and on a phone
+  when you leave it; unlock with Windows Hello, Touch ID, Face ID or your fingerprint. While it is locked,
+  notifications and the widget only say how many new e-mails there are.
+- Encryption on your device: encrypt all mail, attachments and drafts on this device with one switch, with a
+  recovery key for a new device; the switch runs while the app is open.
+- Phishing warning: a calm note above messages from look-alike addresses, with answers going elsewhere, misleading
+  links or failed sender checks; „Das ist in Ordnung“ silences it for a sender.
+- Drafts of encrypted messages are stored encrypted on the server and open again with your key.
+- Checklist for Windows (manual): Windows Hello unlocks the app lock; encrypting and decrypting the database with mail
+  in it; the recovery screen after removing the key from the Credential Manager.
 
 ## Milestone 1 – desktop, one IMAP/SMTP account
 
@@ -240,7 +289,6 @@ Goal: daily use with one IMAP/SMTP account on Windows, macOS and Linux.
 
 - Smart folders (unread, flagged, today).
 - Send later through the server's FUTURERELEASE where offered (the computer may be off then).
-- Encryption at rest (SQLCipher, as Arcalo; off by default) and app lock.
 - **Arcalo integration**, beyond „An Arcalo senden“ (round 3): meeting notes from invitations, Arcalo's
   `arcalo-mail://` links opening the message here.
 - Microsoft Store (MSIX) and winget for Windows, as Arcalo.
@@ -262,7 +310,7 @@ Goal: daily use with one IMAP/SMTP account on Windows, macOS and Linux.
 6. **Versioning**: 0.x until milestone 1, then 1.0 (Arcalo is 1.x); and whether Arcalo Mail releases with Arcalo or
    on its own.
 7. **Website**: a section on arcalo.mousewerk.de or an own page/domain; when it is mentioned at all.
-8. **Encryption at rest**: off by default as in Arcalo, or on by default for mail (more sensitive than notes).
+8. **Encryption at rest**: off by default as in Arcalo (CLAUDE.md, standing decision); built for 1.1, see above.
 9. **App icon and brand**: decided (decisions.md, „Logo and 1.1“): Arcalo Mail's own mark in docs/brand, made from
    Arcalo's with an envelope, with an opening animation as Arcalo's.
 10. **Windows signing**: unsigned NSIS plus the Microsoft Store (MSIX, signed by the Store) as Arcalo, and winget.
