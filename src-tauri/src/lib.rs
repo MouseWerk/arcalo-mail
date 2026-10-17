@@ -645,6 +645,7 @@ pub fn run() {
             commands::list_accounts,
             commands::list_mailboxes,
             commands::list_messages,
+            commands::list_role,
             commands::list_thread,
             commands::get_message,
             commands::allow_remote_content,

@@ -22,6 +22,7 @@ import type {
   OutboxEntry,
   SystemProxy,
   Page,
+  Role,
   Queued,
   Settings,
   Transport,
@@ -125,6 +126,9 @@ export const api = {
   mailboxes: (accountId: number) => call<Mailbox[]>("list_mailboxes", { accountId }, () => demo.mailboxes(accountId)),
   messages: (mailboxId: number, offset: number, limit: number, threads: boolean) =>
     call<Page>("list_messages", { mailboxId, offset, limit, threads }, () => demo.messages(mailboxId, offset, limit, threads)),
+  /** One folder of every account at once („Alle Entwürfe“), newest first. */
+  roleList: (role: Role, offset: number, limit: number, threads: boolean) =>
+    call<Page>("list_role", { role, offset, limit, threads }, () => demo.roleList(role, offset, limit)),
   thread: (threadId: number) => call<MessageSummary[]>("list_thread", { threadId }, () => demo.thread(threadId)),
   message: (id: number) => call<MessageView>("get_message", { id }, () => demo.message(id)),
   allowRemote: (id: number) => call<void>("allow_remote_content", { id }, () => demo.allowRemote(id)),

@@ -470,6 +470,32 @@ pub fn list_messages(state: State<'_, AppState>, mailbox_id: i64, offset: u32, l
     Ok(Page { total: store.list_len(mailbox_id, threads)?, offset, items })
 }
 
+/// One folder of every account at once: „Alle Entwürfe“, „Alle gesendeten“, „Alle archivierten“
+/// (`role` as `Role::as_str`), newest first. Each account's folder gives its first
+/// `offset + limit` rows, merged by date: the pages stay exact without a query across folders.
+#[tauri::command]
+pub fn list_role(state: State<'_, AppState>, role: String, offset: u32, limit: u32, threads: bool) -> Res<Page> {
+    let store = state.store();
+    let Some(role) = mail_core::imap::Role::parse(&role) else { return Ok(Page { total: 0, offset, items: vec![] }) };
+    let limit = limit.min(500);
+    let want = offset.saturating_add(limit);
+    let (mut total, mut items) = (0u32, Vec::new());
+    for a in store.accounts()? {
+        for m in store.mailboxes(a.id)?.into_iter().filter(|m| m.role == Some(role) && m.selectable) {
+            total += store.list_len(m.id, threads)?;
+            let rows = if threads { store.threads(m.id, want, 0)? } else { store.messages(m.id, want, 0)? };
+            items.extend(rows.into_iter().map(|mut r| {
+                r.account_id = m.account_id;
+                r
+            }));
+        }
+    }
+    items.sort_by(|a, b| b.date.cmp(&a.date).then(b.id.cmp(&a.id)));
+    let mut items: Vec<_> = items.into_iter().skip(offset as usize).take(limit as usize).collect();
+    crate::tools::annotate(&store, &mut items);
+    Ok(Page { total, offset, items })
+}
+
 #[tauri::command]
 pub fn list_thread(state: State<'_, AppState>, thread_id: i64) -> Res<Vec<MessageSummary>> {
     let store = state.store();

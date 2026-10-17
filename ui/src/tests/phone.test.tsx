@@ -188,3 +188,14 @@ describe("a phone", () => {
     expect(labels[labels.length - 1]).toBe("Verwerfen");
   });
 });
+
+describe("the account switcher", () => {
+  it("steps round all accounts and „Alle“", async () => {
+    const { stepAccount } = await import("../components/AccountSwitcher");
+    expect(stepAccount([4, 7], null, 1)).toBe(4);
+    expect(stepAccount([4, 7], 4, 1)).toBe(7);
+    expect(stepAccount([4, 7], 7, 1)).toBe(null);
+    expect(stepAccount([4, 7], null, -1)).toBe(7);
+    expect(stepAccount([4, 7], 99, 1)).toBe(4);
+  });
+});

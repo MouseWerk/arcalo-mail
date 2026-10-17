@@ -25,6 +25,8 @@ type Props = {
   showSnippets: boolean;
   /** The sender's picture or initials at the start of each row (phones). */
   avatars?: boolean;
+  /** A phone: a swipe sideways over the header goes to the next (1) or previous (-1) account. */
+  onSwipeAccount?: (dir: 1 | -1) => void;
   loading: boolean;
   emptyText: string;
   onQuery: (q: string) => void;
@@ -110,6 +112,7 @@ export function MessageList(p: Props) {
   // Touch screens: scrolling down folds the compose button to its icon, scrolling up opens it.
   const [folded, setFolded] = useState(false);
   const lastTop = useRef(0);
+  const headSwipe = useRef<{ x: number; y: number } | null>(null);
   const measure = () => {
     const el = scroller.current;
     if (!el) return;
@@ -316,7 +319,24 @@ export function MessageList(p: Props) {
 
   return (
     <section className="list-pane" aria-label={t("list.label")} data-folded={folded || undefined}>
-      <header className="list-head">
+      <header
+        className="list-head"
+        onTouchStart={(e) => {
+          const f = e.touches[0];
+          // Rows that scroll sideways (accounts, tabs) and the search field keep their own moves.
+          const own = (e.target as Element).closest?.(".acct-switch, .inbox-chips, .inbox-tabs, input");
+          headSwipe.current = f && !own ? { x: f.clientX, y: f.clientY } : null;
+        }}
+        onTouchEnd={(e) => {
+          const s = headSwipe.current;
+          const f = e.changedTouches[0];
+          headSwipe.current = null;
+          if (!s || !f || !p.onSwipeAccount) return;
+          const dx = f.clientX - s.x;
+          const dy = f.clientY - s.y;
+          if (Math.abs(dx) > 64 && Math.abs(dx) > Math.abs(dy) * 1.5) p.onSwipeAccount(dx < 0 ? 1 : -1);
+        }}
+      >
         <div className="list-title">
           <button type="button" className="icon-btn folders-btn" onClick={p.onShowFolders} aria-label={t("nav.label")}>
             <MenuIcon size={18} strokeWidth={1.75} aria-hidden />
