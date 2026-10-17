@@ -344,8 +344,12 @@ export function ComposeSheet({ draft, accounts, error, sending, onChange, onSend
   };
 
   const insertTemplate = async (tpl: Template) => {
-    const [subject, body] = await render([tpl.subject, tpl.body]);
+    const [subject, filled] = await render([tpl.subject, tpl.body]);
     const d = latest.current;
+    // The account's signature is already below the text: a template's {signatur} adds it once only.
+    const sig = accounts.find((a) => a.id === d.accountId)?.signature.trim() ?? "";
+    const firstLine = sig.split("\n")[0];
+    const body = sig && firstLine && (d.rich ? d.html : d.text).includes(firstLine) ? filled.replace(sig, "").trimEnd() : filled;
     const own = ownText(d);
     const text = own ? `${body}\n\n${own}` : body;
     onChange({ ...replaceOwnText(d, text), subject: d.subject.trim() ? d.subject : subject });
@@ -731,10 +735,11 @@ export function ComposeSheet({ draft, accounts, error, sending, onChange, onSend
         {aiOn && (
           <button
             type="button"
-            className="btn btn-quiet compose-help-btn"
+            className="icon-btn"
             data-compose="help"
             aria-haspopup="menu"
             disabled={!dest?.provider}
+            aria-label={t("compose.writingHelp")}
             title={dest?.provider ? t("compose.writingHelp") : t("ai.notAllowed")}
             onClick={(e) =>
               setMenu({
@@ -743,8 +748,7 @@ export function ComposeSheet({ draft, accounts, error, sending, onChange, onSend
               })
             }
           >
-            <Sparkles size={15} strokeWidth={1.75} aria-hidden />
-            <span>{t("compose.writingHelp")}</span>
+            <Sparkles size={16} strokeWidth={1.75} aria-hidden />
           </button>
         )}
         <span className="toolbar-gap" />

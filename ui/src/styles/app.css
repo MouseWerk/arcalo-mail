@@ -2732,7 +2732,7 @@
   flex: 1;
   min-height: calc(var(--ctl-lg) * 1.6);
   padding-right: calc(var(--ctl-md) + var(--sp-3));
-  resize: vertical;
+  resize: none;
   line-height: 1.5;
 }
 .ask-send {
@@ -2808,17 +2808,13 @@ button.cite:hover {
 
 /* ---- attachments */
 
-.hub-search {
-  margin-top: var(--sp-2);
-}
 .hub-filters {
   display: flex;
   flex-wrap: wrap;
   gap: var(--sp-2);
-  margin-top: var(--sp-2);
 }
 .hub-filters .select {
-  flex: 1 1 0;
+  flex: 1 1 8em;
   min-width: 0;
 }
 .select-sm {
@@ -3166,6 +3162,7 @@ button.rule-text:hover {
 }
 .rule-block {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--sp-2);
   min-width: 0;
   margin: 0;
@@ -3261,13 +3258,17 @@ button.rule-text:hover {
   max-height: 40%;
   overflow: auto;
 }
-.compose-help-btn {
-  gap: var(--sp-1);
-}
 
 @media (max-width: 720px) {
   .rule-account {
     display: none;
+  }
+  .rule-line .select,
+  .rule-line .input {
+    flex: 1 1 100%;
+  }
+  .rule-line > .icon-btn {
+    margin-left: auto;
   }
   .rule-tools .select {
     flex: 1 1 100%;
@@ -3276,8 +3277,8 @@ button.rule-text:hover {
   .ask-body {
     padding: var(--sp-3);
   }
-  .hub-filters .select {
-    flex-basis: calc(50% - var(--sp-1));
+  .assistant-icon {
+    display: none;
   }
   .contact-head .btn {
     width: 100%;
@@ -3285,5 +3286,31 @@ button.rule-text:hover {
   }
   .writing-help {
     max-height: 50%;
+  }
+}
+
+/* Touch: the new rows and the attachments' buttons for a finger. */
+.app[data-touch] .hub-main,
+.app[data-touch] .contact-row,
+.app[data-touch] .rule-text,
+.app[data-touch] .snippet-pick .suggestion {
+  min-height: var(--touch-min);
+}
+.app[data-touch] .hub-actions {
+  opacity: 1;
+}
+.app[data-touch] button.cite {
+  min-width: var(--ctl-sm);
+  height: var(--ctl-sm);
+}
+.sieve-server {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) auto;
+  align-items: end;
+  gap: var(--sp-2) var(--sp-3);
+}
+@media (max-width: 720px) {
+  .sieve-server {
+    grid-template-columns: minmax(0, 1fr);
   }
 }

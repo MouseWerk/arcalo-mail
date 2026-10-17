@@ -45,7 +45,7 @@ export function ContactCardDialog({
   const shown = card?.name || name || email;
   const to = shown && shown !== email ? `${/[,;"]/.test(shown) ? `"${shown.replace(/"/g, "")}"` : shown} <${email}>` : email;
   return (
-    <Dialog title={shown} onClose={onClose} wide className="contact-card">
+    <Dialog title={t("contact.title")} onClose={onClose} wide className="contact-card">
       <div className="contact-head">
         <Avatar who={{ name: shown, email }} size="lg" />
         <div className="contact-who">

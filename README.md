@@ -24,10 +24,12 @@
 Arcalo Mail keeps a copy of your mailboxes on your computer and works on that copy: the list opens at once, search
 answers while you type, and reading, archiving, flagging and writing go on without a connection. Changes reach the
 server in the background, in order, as soon as it can be reached. The app talks to your mail provider and nothing
-else (except a newsletter's unsubscribe address, when you click Unsubscribe).
+else, except what you set up yourself (an address book, an AI model) and a few lookups listed under
+[Privacy](#privacy).
 
 It works with any IMAP/SMTP provider, signs in to Microsoft 365 and Outlook.com with Microsoft (no password in the
-app), guides you to a Gmail app password, and speaks JMAP where the provider offers it (Fastmail and others).
+app), guides you to a Gmail app password, speaks JMAP where the provider offers it (Fastmail and others), and
+keeps POP3 accounts in folders on your computer.
 
 It speaks English and German and follows your system's language unless you choose one.
 
@@ -126,6 +128,73 @@ server" asks the server and adds what it finds.
   <img src="docs/screenshots/search.png" alt="Search results for the word launch: three messages of one conversation" width="100%">
 </p>
 
+### The assistant
+
+An assistant that you switch on by setting up a model: one on your computer (Ollama, LM Studio, or any server that
+speaks the OpenAI chat protocol), or a cloud provider you add yourself (OpenAI, Anthropic, Mistral, Azure OpenAI).
+Until then it is off, and nothing about it shows. Every account chooses which provider may see its mail; a cloud
+provider is never chosen for you, and a line under the buttons always says where the text goes ("Stays on this
+device · Ollama" or the cloud provider's address).
+
+Above a message: a summary of the conversation (by itself for long ones), a reply draft in your own tone (learned on
+your computer from your sent mail: greeting, closing, formal or informal, a few short samples) that opens in the
+compose sheet, a translation, and the tasks and dates in it, each one a reminder or an entry for your calendar app.
+In the compose sheet the writing help makes your text shorter, friendlier, more formal (in German the "Sie" form)
+or fixes spelling and grammar, and you apply or discard the result. "Ask your mail" answers questions from your
+mail: the local search finds the messages, the model reads them, and every answer links to its sources. New mail
+from people who need something from you can be marked "Important". Answers stream in as they are written, can be
+stopped at any time, and come in your language; when a model is not reachable or refuses a key, the app says so.
+
+<p align="center">
+  <img src="docs/screenshots/ai-summary.png" alt="A conversation of three messages with its summary above it, made by a model on this computer" width="100%">
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/writing-help.png" alt="The compose sheet's writing help: a reply with its spelling and grammar fixed, ready to apply" width="100%">
+</p>
+
+### Rules
+
+Rules sort new mail: conditions on sender, recipients, subject, mailing list, attachments, size, age and the
+inbox tab; actions that move, label, mark read, flag, pin, forward, delete, skip the inbox or set the tab. They run
+in a set order and can be switched off one by one. A preview shows which messages on your computer match, and
+"Run now" applies a rule to a folder. A rule runs in the app, or on the server so it works while the app is
+closed: as a Sieve script over ManageSieve (RFC 5804) for IMAP providers that offer it, and as an inbox rule of
+Microsoft 365 and Outlook.com. Your own Sieve rules on the server stay as they are.
+
+<p align="center">
+  <img src="docs/screenshots/rules.png" alt="The rule editor: invoices from one sender moved to Archive and labeled, with the preview of the matching message" width="100%">
+</p>
+
+### Templates and snippets
+
+Templates fill a new message with a subject and a text; snippets come in while you write: type `;;` and the start of
+a shortcut, and pick one. Both know placeholders for the recipient's name and first name, the date, the time, your
+name, the subject and the account's signature (which never ends up twice).
+
+### Contacts and pictures
+
+Address books over CardDAV (iCloud, Fastmail, mailbox.org, Posteo, Nextcloud and other servers) and the contacts of
+Microsoft accounts are kept on your computer and complete addresses as you type, next to everyone you have written
+with. Senders show their picture from your address book, or the logo a company publishes for its domain (BIMI),
+otherwise their initials; Gravatar is there to switch on. Pictures never come from inside a message. A click on a
+sender opens the contact card: addresses, phone and company, the recent mail with them, the files they sent, and
+"New message".
+
+<p align="center">
+  <img src="docs/screenshots/contact-card.png" alt="A contact card with the picture from the address book, the recent mail with this person and a button for a new message" width="100%">
+</p>
+
+### Attachments
+
+"Attachments" lists every file of your mail in one place, newest first, filtered by kind, sender, time and name.
+Pictures and text files open in a preview, everything else in its program; each one saves with a click and leads to
+its message.
+
+<p align="center">
+  <img src="docs/screenshots/attachments.png" alt="All attachments of the work account, with the message of the selected photo open beside them" width="100%">
+</p>
+
 ### Adding an account
 
 Enter your name, address and password. Arcalo Mail looks up the servers itself: presets for common providers (GMX,
@@ -133,7 +202,9 @@ WEB.DE, T-Online, mailbox.org, Posteo, iCloud, IONOS, STRATO, Gmail, Fastmail, Y
 own autoconfig file, the Thunderbird provider database, DNS records and JMAP at the provider's well-known address.
 Then it signs in and says plainly what went wrong if something did: a wrong password, a provider that wants an app
 password or IMAP switched on first, an unknown certificate (with its fingerprint to compare and trust), a server
-that does not answer. Everything can also be set up by hand, IMAP/SMTP or JMAP.
+that does not answer. Everything can also be set up by hand: IMAP/SMTP, JMAP, or POP3/SMTP. A POP3 account keeps
+its folders on your computer and leaves the mail on the server (for a number of days, or until you delete it
+there) unless you choose otherwise.
 
 <p align="center">
   <img src="docs/screenshots/setup.png" alt="The first start: adding an account while the servers found in the provider's autoconfig file are checked" width="100%">
@@ -220,8 +291,9 @@ tells you, without a server of ours in between.
 ## Features
 
 - **Accounts:** any IMAP/SMTP provider with TLS or STARTTLS; Microsoft 365 and Outlook.com with Microsoft sign-in
-  (OAuth 2.0 with PKCE, XOAUTH2); Gmail and Google Workspace with an app password; JMAP with push. Several accounts
-  side by side, each with its own connection.
+  (OAuth 2.0 with PKCE, XOAUTH2); Gmail and Google Workspace with an app password; JMAP with push; POP3 (RFC 1939,
+  with TLS or STLS and UIDL) with local folders and SMTP. Several accounts side by side, each with its own
+  connection.
 - **Sync:** new mail through IMAP IDLE or JMAP push; only what changed since the last visit where the server supports
   QRESYNC, CONDSTORE or JMAP changes; folder roles from the server (Inbox, Drafts, Sent, Archive, Spam, Trash);
   reconnects at once after sleep or a network change, and with growing pauses while the network is gone.
@@ -239,6 +311,14 @@ tells you, without a server of ours in between.
   done and inbox zero.
 - **Tracker protection:** tracking pixels and link trackers removed from every message, counted per message.
 - **Folders:** create, rename and delete folders; move messages by menu or key; spam and archive with one key.
+- **Assistant (optional):** summaries, reply drafts in your tone, writing help, translation, tasks and dates, questions
+  to your mail with sources, "Important"; local models (Ollama, LM Studio, OpenAI-compatible) or a cloud provider
+  per account; streamed, stoppable, off until set up.
+- **Rules:** in the app or on the server (Sieve over ManageSieve, Microsoft inbox rules), with preview and "Run now".
+- **Templates and snippets** with placeholders and `;;` shortcuts.
+- **Contacts:** CardDAV address books and Microsoft contacts, address completion, contact cards, pictures from the
+  address book or BIMI (Gravatar optional).
+- **Attachments:** all files of your mail in one list, filtered, previewed, saved or opened.
 - **Notifications:** a desktop notification for new mail, the unread count on the app icon and in the tray, with
   quick actions there.
 - **Diagnostics:** Settings → About exports a text file for a support request: versions, settings, servers and the
@@ -249,12 +329,40 @@ tells you, without a server of ours in between.
 ## Privacy
 
 - **Local-first.** Your mail is stored in one SQLite database in your user folder and searched there.
-- **No telemetry.** The app connects only to the mail servers you set up, Microsoft's sign-in for Microsoft
-  accounts, while you add an account to the lookups that find their addresses, and to a newsletter's unsubscribe
-  address when you ask for it. No analytics, no crash upload, no server of ours in between. Sorting, the Screener
+- **No telemetry.** The app connects only to the mail servers you set up, Microsoft's sign-in (and Microsoft Graph
+  for server rules and contacts) for Microsoft accounts, while you add an account to the lookups that find their
+  addresses, to a newsletter's unsubscribe address when you ask for it, and to what is listed below: the AI
+  provider and address books you set up, and the BIMI logos of senders' domains. No analytics, no crash upload, no server of ours in between. Sorting, the Screener
   and the time tools run on the device.
 - **Remote content blocked.** Images from the internet load only when you say so, for one message or one sender.
   Tracking pixels never load, and links lose their trackers.
+- **The assistant** is off until you set up a provider, and each account decides which provider may see its mail
+  (a provider on your computer is used for accounts without a choice of their own; a cloud provider only for the
+  accounts you choose it for, and never for "Ask your mail" across other accounts). What goes to the provider, and
+  only when you ask for it, except where noted:
+  - *Summary:* sender, date, subject and text of each message of the conversation (up to 4,000 characters each,
+    16,000 in all), without quoted text and signatures. Long conversations (four messages or more, or 3,000
+    characters) are summarized when you open them unless you switch "Summaries by themselves" off.
+  - *Reply draft:* the same, plus your notes for the reply and your tone: greeting, closing, formal or informal, and
+    up to three short samples (280 characters each) of your sent mail.
+  - *Writing help:* only the text you wrote, without the quote and the signature.
+  - *Translation, tasks and dates:* one message (sender, date, subject, text, without quote and signature); for
+    tasks also today's date.
+  - *Ask your mail:* your question and up to eight messages the local search found (sender, date, subject, up to 900
+    characters of text), only from accounts that provider may see.
+  - *Important:* with "Mark important mail" on (the default once a provider is set up), up to five new messages per
+    check (sender, date, subject, up to 2,000 characters of text) go to the account's provider in the background.
+  - Nothing else: no address book, no settings, no other messages. Answers are kept in the local database so
+    nothing is asked twice (Settings → AI → "Kept answers" forgets them); the tone is learned and kept on your computer.
+    Over plain HTTP the app only talks to a model on your own computer; anything else takes HTTPS. API keys are kept
+    in the credential store.
+- **Contacts and pictures.** Address books are read from the servers you add (CardDAV) or from Microsoft (Microsoft
+  Graph, with the sign-in's permission to read contacts). For a sender's logo the app looks up the domain's BIMI
+  record in the DNS once, and if the domain enforces DMARC fetches the logo from the address in that record, checks
+  that it is a plain SVG Tiny picture and keeps it; switch this off in Settings → Contacts. Gravatar is off by
+  default; when on, it receives a hash of the sender's address. Pictures in a message are never used.
+- **Server rules** go to your mail provider only: as a Sieve script over ManageSieve, or as inbox rules over
+  Microsoft Graph for Microsoft accounts (with the sign-in's permission to change mailbox settings).
 - **Unsubscribing** is the one request to a sender's web address, and only when you click "Unsubscribe": a single
   POST that says nothing about you but the unsubscribe itself (RFC 8058).
 - **Passwords and sign-in tokens** are kept in your system's credential store (Windows Credential Manager, the

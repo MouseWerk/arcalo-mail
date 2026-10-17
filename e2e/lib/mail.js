@@ -133,3 +133,23 @@ export function localTime(secondsAhead) {
   const p = (n) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 }
+
+/** Chooses `value` in a `<select>` (an element or a selector) the way a person does. */
+export async function choose(app, select, value) {
+  const el = typeof select === "string" ? await app.waitFor(select) : select;
+  await app.browser.execute(
+    (e, v) => {
+      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value").set.call(e, v);
+      e.dispatchEvent(new Event("change", { bubbles: true }));
+    },
+    el,
+    value,
+  );
+}
+
+/** Opens the settings at a section of their navigation. */
+export async function openSettings(app, section) {
+  await app.click('.sidebar-head [aria-label="Einstellungen"]');
+  await app.waitFor(".settings-nav");
+  await clickText(app, ".settings-nav-item", section);
+}

@@ -86,8 +86,33 @@ conformance job against Dovecot and GreenMail. Still open: the signed update fee
 - **Time tools**: snooze (a „Snoozed“ folder on the server, local for messages without Message-ID), send later
   (desktop while the app runs and at its next start, phones in the background check), follow-up reminders on send
   and on a message, pin, read later.
-- Open: rules (local and Sieve) and the AI assistant of the owner decisions; snooze by keyword for servers that
-  refuse new folders; IMAP keywords for pins so other devices see them.
+- Open: snooze by keyword for servers that refuse new folders; IMAP keywords for pins so other devices see them.
+
+## Where we are (feature round 2: assistant, rules, templates, contacts, POP3, attachments)
+
+- **AI assistant** (off until a provider is set up): providers on this computer (Ollama, LM Studio, any
+  OpenAI-compatible server) and cloud providers the user adds (OpenAI, Anthropic, Mistral, Azure OpenAI); a
+  provider per account, a cloud provider never by default; the privacy line under every action. Summary (button,
+  and by itself for long conversations), reply drafts in the user's tone learned from Sent, writing help in the
+  compose sheet (shorter, friendlier, formal, spelling and grammar), translation, tasks and dates (a reminder or an
+  .ics entry), „Postfach fragen“ (local FTS retrieval, answers with links), „Wichtig“ (heuristics, then the model).
+  Streaming, stop, readable errors, answers kept per message. Tested against a fake OpenAI-compatible server.
+- **Rules**: in the app (run on new mail, preview, run now on a folder) or on the server: Sieve over ManageSieve
+  (merged into the active script between markers) and Microsoft inbox rules over Graph (`MailboxSettings.ReadWrite`,
+  asked for at sign-in, docs/microsoft.md).
+- **Templates and snippets** with placeholders and `;;` shortcuts; the signature never twice.
+- **Contacts**: CardDAV address books (presets for iCloud, Fastmail, mailbox.org, Posteo, Nextcloud) and Microsoft
+  contacts (`Contacts.Read`); address completion; contact card; pictures from the address book, BIMI (once per
+  domain, SVG Tiny PS checked) or Gravatar (off by default); initials otherwise.
+- **POP3** accounts (TLS or STLS, UIDL, leave on the server, delete after N days) with local folders and SMTP; set
+  up by hand or with presets.
+- **Attachments**: all files in one list, filtered by kind, sender, time and name, with preview, save, open and the
+  way to the message.
+- Open: BIMI's Verified Mark Certificates are not checked (the record, DMARC enforcement and the SVG profile are);
+  the ManageSieve server is looked for on the IMAP host's port 4190 (another one can be entered in the rule editor;
+  no discovery through DNS SRV `_sieve._tcp` yet); Graph rules for Microsoft accounts and Microsoft contacts are tested against a
+  fake Graph only; the calendar entry is an .ics file for the system's calendar app (no calendar of our own); a
+  thumbnail column for pictures in „Anhänge“.
 
 ## Milestone 1 – desktop, one IMAP/SMTP account
 
@@ -168,7 +193,6 @@ Goal: daily use with one IMAP/SMTP account on Windows, macOS and Linux.
 ## Later
 
 - Smart folders (unread, flagged, today).
-- Rules (local, run on new mail; Sieve upload where the server has ManageSieve).
 - Send later through the server's FUTURERELEASE where offered (the computer may be off then).
 - PGP (Autocrypt, rPGP or Sequoia) and S/MIME (certificates from the system store), signing and encryption.
 - Encryption at rest (SQLCipher, as Arcalo; off by default) and app lock.

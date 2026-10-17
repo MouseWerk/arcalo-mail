@@ -1,5 +1,5 @@
 // Small PNG pictures for attachments in tests and screenshots, drawn here (no files in the
-// repository): a soft landscape of sky, hills and water in the given colors.
+// repository): a soft landscape of sky, hills and water in the given colors, and a portrait.
 
 import zlib from "node:zlib";
 
@@ -36,6 +36,36 @@ export function landscape(width = 480, height = 320, palette = [[156, 190, 222],
   const head = Buffer.alloc(13);
   head.writeUInt32BE(width, 0);
   head.writeUInt32BE(height, 4);
+  head[8] = 8;
+  head[9] = 2;
+  return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk("IHDR", head), chunk("IDAT", zlib.deflateSync(raw)), chunk("IEND", Buffer.alloc(0))]);
+}
+
+/** A profile picture, `size` x `size`: a head and shoulders in soft shapes on a gradient;
+ *  `palette`: background top, background bottom, skin, clothes. */
+export function portrait(size = 128, palette = [[196, 210, 228], [150, 170, 200], [222, 184, 156], [70, 92, 120]]) {
+  const [top, bottom, skin, clothes] = palette;
+  const raw = Buffer.alloc((size * 3 + 1) * size);
+  const soft = (d) => Math.max(0, Math.min(1, d)); // edge smoothing over one pixel
+  for (let y = 0; y < size; y++) {
+    raw[y * (size * 3 + 1)] = 0;
+    for (let x = 0; x < size; x++) {
+      let c = mix(top, bottom, y / size);
+      const sx = (x - size / 2) / (size * 0.38);
+      const sy = (y - size * 1.02) / (size * 0.36);
+      c = mix(c, clothes, soft((1 - Math.hypot(sx, sy)) * size * 0.3));
+      const hx = x - size / 2;
+      const hy = y - size * 0.42;
+      c = mix(c, skin, soft(size * 0.2 - Math.hypot(hx, hy * 0.88)));
+      const o = y * (size * 3 + 1) + 1 + x * 3;
+      raw[o] = c[0];
+      raw[o + 1] = c[1];
+      raw[o + 2] = c[2];
+    }
+  }
+  const head = Buffer.alloc(13);
+  head.writeUInt32BE(size, 0);
+  head.writeUInt32BE(size, 4);
   head[8] = 8;
   head[9] = 2;
   return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk("IHDR", head), chunk("IDAT", zlib.deflateSync(raw)), chunk("IEND", Buffer.alloc(0))]);

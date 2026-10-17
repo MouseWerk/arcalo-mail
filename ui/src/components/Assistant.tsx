@@ -190,7 +190,7 @@ export function AssistantBar({ messageId, latestId, accountId, on, autoSummary, 
         <div className="assistant-out" data-task={task}>
           <header className="assistant-out-head">
             <span className="assistant-out-title">{t(TITLE[task])}</span>
-            {s.outcome?.cached && <span className="muted assistant-kept">{t("ai.kept")}</span>}
+            {s.outcome?.cached && <span className="muted assistant-kept">{t("ai.keptBadge")}</span>}
             <span className="toolbar-gap" />
             {s.busy ? (
               <button type="button" className="btn btn-sm btn-quiet" onClick={ai.cancel}>

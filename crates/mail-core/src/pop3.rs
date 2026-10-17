@@ -478,7 +478,8 @@ fn message_id_of(raw: &[u8]) -> Option<String> {
 
 impl ImapClient for Pop3Session {
     async fn capabilities(&mut self) -> Result<Capabilities> {
-        Ok(Capabilities { uidplus: true, moves: true, special_use: true, ..Default::default() })
+        // `idle`: the session waits in [`Self::idle`], which visits the server now and then and on a wake.
+        Ok(Capabilities { uidplus: true, moves: true, special_use: true, idle: true, ..Default::default() })
     }
 
     async fn list(&mut self) -> Result<Vec<MailboxEntry>> {
@@ -572,12 +573,17 @@ impl ImapClient for Pop3Session {
 
     async fn idle(&mut self, timeout: Duration, wake: &Notify) -> Result<IdleOutcome> {
         let wait = timeout.min(self.poll);
-        tokio::select! {
-            _ = tokio::time::sleep(wait) => {}
-            _ = wake.notified() => return Ok(IdleOutcome::Interrupted),
-        }
+        let woken = tokio::select! {
+            _ = tokio::time::sleep(wait) => false,
+            _ = wake.notified() => true,
+        };
+        // A wake („Abrufen“, a queued change) visits the server too: new mail shows at once.
         let v = self.refresh().await?;
-        Ok(if v.downloaded > 0 { IdleOutcome::Changed } else { IdleOutcome::Timeout })
+        Ok(match (v.downloaded > 0, woken) {
+            (true, _) => IdleOutcome::Changed,
+            (false, true) => IdleOutcome::Interrupted,
+            (false, false) => IdleOutcome::Timeout,
+        })
     }
 
     async fn store(&mut self, uids: &[u32], flags: &[&str], add: bool) -> Result<()> {

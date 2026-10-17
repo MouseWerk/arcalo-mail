@@ -22,6 +22,8 @@ import type {
   RuleField,
   RuleOp,
   RuleServer,
+  Security,
+  Server,
   Settings,
   Template,
   Tone,
@@ -454,6 +456,45 @@ export function ruleSummary(r: Rule, t: ReturnType<typeof useT>): string {
   return `${cond} → ${act}`;
 }
 
+/** Where the account's ManageSieve server is, when it is not the mail server on port 4190. */
+function SieveServerForm({ initial, onCheck }: { initial: Server; onCheck: (s: Server) => void }) {
+  const t = useT();
+  const [address, setAddress] = useState(`${initial.host}:${initial.port}`);
+  const [security, setSecurity] = useState<Security>(initial.security);
+  const parsed = (): Server | null => {
+    const m = address.trim().match(/^\[?([^\]\s]+?)\]?(?::(\d{1,5}))?$/);
+    if (!m) return null;
+    const port = m[2] ? Number(m[2]) : 4190;
+    return port > 0 && port < 65536 ? { host: m[1], port, security, trusted_cert: null } : null;
+  };
+  return (
+    <form
+      className="sieve-server"
+      onSubmit={(e) => {
+        e.preventDefault();
+        const s = parsed();
+        if (s) onCheck(s);
+      }}
+    >
+      <label className="stack-field">
+        <span className="field-label">{t("rules.sieveServer")}</span>
+        <input className="input" value={address} spellCheck={false} placeholder="imap.example.org:4190" onChange={(e) => setAddress(e.target.value)} />
+      </label>
+      <label className="stack-field">
+        <span className="field-label">{t("setup.security")}</span>
+        <select className="select" value={security} onChange={(e) => setSecurity(e.target.value as Security)}>
+          <option value="start_tls">{t("setup.starttls")}</option>
+          <option value="tls">{t("setup.tls")}</option>
+          <option value="plain">{t("setup.plain")}</option>
+        </select>
+      </label>
+      <button type="submit" className="btn" disabled={!parsed()}>
+        {t("rules.sieveCheck")}
+      </button>
+    </form>
+  );
+}
+
 function RuleEditor({ rule, accounts, onSaved, onClose }: { rule: Rule; accounts: AccountInfo[]; onSaved: () => void; onClose: () => void }) {
   const t = useT();
   const lang = currentLang();
@@ -585,6 +626,20 @@ function RuleEditor({ rule, accounts, onSaved, onClose }: { rule: Rule; accounts
           <TriangleAlert size={16} strokeWidth={1.75} aria-hidden />
           <span>{server.error}</span>
         </div>
+      )}
+      {r.place === "server" && r.account_id != null && !checking && server?.kind === "none" && server.server && (
+        <SieveServerForm
+          initial={server.server}
+          onCheck={(s) => {
+            if (r.account_id == null) return;
+            setChecking(true);
+            void api
+              .rulesServer(r.account_id, s)
+              .then(setServer)
+              .catch((e) => setServer({ kind: "none", server: s, error: String(e), checked: true }))
+              .finally(() => setChecking(false));
+          }}
+        />
       )}
       {unsupported && (
         <div className="notice notice-warning" role="status">
@@ -845,7 +900,7 @@ export function RulesSection({ accounts }: { accounts: AccountInfo[] }) {
                 <span className="set-badge" data-where={r.place}>
                   {r.place === "server" ? t("rules.onServer") : t("rules.inApp")}
                 </span>
-                <span className="muted rule-account">{a ? accountLabel(a) : t("rules.allAccounts")}</span>
+                {accounts.length > 1 && <span className="muted rule-account">{a ? accountLabel(a) : t("rules.allAccounts")}</span>}
                 <button type="button" className="icon-btn icon-btn-sm" aria-label={t("rules.editNamed", { name: r.name })} onClick={() => setEditing(r)}>
                   <Pencil size={14} strokeWidth={1.75} aria-hidden />
                 </button>
@@ -1139,6 +1194,7 @@ export function ContactsSection({ settings, accounts, onChange }: { settings: Se
       .catch((e) => showToast({ title: t("contacts.syncFailed"), detail: String(e), tone: "danger" }))
       .finally(() => {
         setBusy(null);
+        forgetPictureCache();
         load();
       });
   };
@@ -1242,7 +1298,15 @@ export function ContactsSection({ settings, accounts, onChange }: { settings: Se
           </button>
         </Row>
       </div>
-      {adding && <CardDavDialog onAdded={load} onClose={() => setAdding(false)} />}
+      {adding && (
+        <CardDavDialog
+          onAdded={() => {
+            forgetPictureCache();
+            load();
+          }}
+          onClose={() => setAdding(false)}
+        />
+      )}
     </div>
   );
 }

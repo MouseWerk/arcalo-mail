@@ -13,6 +13,7 @@ import { launch } from "../lib/harness.js";
 import { addAccount, startServer } from "../lib/server.js";
 import * as mail from "../lib/mail.js";
 import { NOW, PERSONAL, WORK, fill, personalMail, workMail } from "./mailbox.js";
+import { portrait } from "../lib/png.js";
 
 const OUT = process.env.ARCALO_MAIL_SHOTS ?? path.resolve(import.meta.dirname, "../../docs/screenshots");
 const ONLY = process.env.ARCALO_MAIL_SCENES?.split(",") ?? null;
@@ -247,6 +248,145 @@ scene("network", async () => {
   await clickText(".settings-nav-item", "Network");
   await shot("network");
   await app.keys("Escape");
+});
+
+/** The assistant with a model on this computer (the work server's fake OpenAI-compatible
+ *  provider stands in for Ollama). */
+async function assistantOn() {
+  const s = await app.invoke("get_settings");
+  if (s.ai.providers.length) return;
+  s.ai.providers = [{ id: "ollama", name: "Ollama", kind: "ollama", base_url: `http://127.0.0.1:${work.control}/ai`, model: "llama3.2", api_version: "" }];
+  s.ai.default_provider = "ollama";
+  await app.invoke("set_settings", { settings: s });
+  await app.browser.refresh();
+  await app.waitUntil(async () => (await app.browser.execute(() => document.body.classList.contains("ready"))) === true, 20000, "ready after reload");
+}
+
+const answer = (task, text) => fetch(`http://127.0.0.1:${work.control}/ai-answer?task=${task}`, { method: "POST", body: text });
+
+scene("ai-summary", async () => {
+  await answer(
+    "summary",
+    [
+      "- Daniel shared the first Q2 launch plan: beta of the onboarding flow from 1 April, public launch with the pricing page on 6 May.",
+      "- You agreed if the onboarding screens are frozen by 20 March, after one more round with two beta teams.",
+      "- Priya booked those sessions for Tuesday and Wednesday and brings the empty states and the welcome copy to Friday's review.",
+      "- Open: confirm the freeze date before the review on Friday.",
+    ].join("\n"),
+  );
+  await assistantOn();
+  await openFolder("Work", "Inbox");
+  await openMessage("Q2 launch plan");
+  await app.click('[data-ai="summary"]');
+  await app.waitText(".assistant-out .ai-text", /Open: confirm the freeze date/, 20000);
+  await app.waitUntil(async () => (await app.$$(".assistant-out .ai-caret")).length === 0, 10000, "the stream ends");
+  await app.browser.execute(() => document.activeElement?.blur());
+  await shot("ai-summary");
+});
+
+scene("writing-help", async () => {
+  await assistantOn();
+  await answer("rewrite", "Hi Priya,\n\nthe onboarding screens won't be ready by Friday. Could we move the review to Monday? I will send the updated empty states on Thursday evening.");
+  await openFolder("Work", "Inbox");
+  await openMessage("Q2 launch plan");
+  await app.keys("r");
+  await app.waitFor(".compose");
+  await app.browser.execute(() => {
+    const ed = document.querySelector(".compose .editor");
+    ed.focus();
+    const r = document.createRange();
+    r.setStart(ed.firstChild ?? ed, 0);
+    r.collapse(true);
+    getSelection().removeAllRanges();
+    getSelection().addRange(r);
+  });
+  await app.type("hi priya, the onboarding screens wont be ready by friday, can we move the review to monday? ill send the updated empty states thursday evening");
+  await app.click('[data-compose="help"]');
+  await mail.menuItem(app, "Fix spelling and grammar");
+  await app.waitText(".writing-help .ai-text", /Thursday evening\./, 20000);
+  await app.waitUntil(async () => (await app.$$(".writing-help .ai-caret")).length === 0, 10000, "the stream ends");
+  await shot("writing-help");
+  await app.click('.compose-foot [aria-label="Discard"]');
+  await app.waitUntil(async () => (await app.$$(".compose")).length === 0, 8000, "compose closed");
+});
+
+scene("rules", async () => {
+  await app.click(".sidebar-head .icon-btn");
+  await app.waitFor(".settings-nav");
+  await clickText(".settings-nav-item", "Rules");
+  await clickText(".set-actions .btn span", "Add a rule");
+  await app.waitFor(".rule-editor");
+  const set = (el, v) =>
+    app.browser.execute(
+      (e, value) => {
+        const proto = e.tagName === "SELECT" ? HTMLSelectElement.prototype : HTMLInputElement.prototype;
+        Object.getOwnPropertyDescriptor(proto, "value").set.call(e, value);
+        e.dispatchEvent(new Event(e.tagName === "SELECT" ? "change" : "input", { bubbles: true }));
+      },
+      el,
+      v,
+    );
+  const accounts = await app.invoke("list_accounts");
+  await set(await app.$(".rule-editor .rule-grid .input"), "Invoices to Archive");
+  await set(await app.$(".rule-editor .rule-grid .select"), String(accounts.find((a) => a.email === WORK).id));
+  let [cond, act] = await app.$$(".rule-editor .rule-block");
+  await set(await cond.$(".rule-line .input"), "accounts@example.com");
+  await clickText(".rule-editor .rule-block .btn span", "Add a condition");
+  [cond, act] = await app.$$(".rule-editor .rule-block");
+  const second = (await cond.$$(".rule-line"))[1];
+  await set(await second.$('select[aria-label="Field"]'), "subject");
+  await set(await second.$(".input"), "Invoice");
+  await app.waitUntil(async () => (await act.$$('select[aria-label="Folder"] option')).length > 2, 10000, "the folders");
+  await set(await act.$('select[aria-label="Folder"]'), "Archive");
+  await clickText(".rule-editor .rule-block .btn span", "Add an action");
+  [cond, act] = await app.$$(".rule-editor .rule-block");
+  await set((await act.$$('select[aria-label="Action"]'))[1], "label");
+  await set(await (await act.$$(".rule-line"))[1].$(".input"), "$Invoice");
+  await clickText(".rule-tools .btn span", "Which mails match?");
+  await app.waitFor(".rule-preview");
+  await app.browser.execute(() => document.activeElement?.blur());
+  await shot("rules");
+  await app.click('.rule-editor [aria-label="Close"]');
+  await app.click('.settings-head [aria-label="Close"]');
+  await app.waitUntil(async () => (await app.$$(".settings")).length === 0, 5000, "settings closed");
+});
+
+scene("contact-card", async () => {
+  const card = [
+    "BEGIN:VCARD",
+    "VERSION:3.0",
+    "FN:Daniel Okafor",
+    "N:Okafor;Daniel;;;",
+    "EMAIL;TYPE=WORK:daniel@example.com",
+    "TEL;TYPE=WORK:+44 20 7946 0321",
+    "ORG:Northwind Studio;Product",
+    `PHOTO;ENCODING=b;TYPE=PNG:${portrait(128, [[206, 216, 232], [160, 178, 206], [168, 120, 92], [64, 84, 112]]).toString("base64")}`,
+    "END:VCARD",
+    "",
+  ].join("\r\n");
+  await fetch(`http://127.0.0.1:${work.control}/dav-card?name=daniel`, { method: "POST", body: card });
+  await app.invoke("carddav_add", { name: "Northwind", url: `http://127.0.0.1:${work.control}/dav`, username: WORK, password: "sample-password" });
+  await app.browser.refresh();
+  await app.waitUntil(async () => (await app.browser.execute(() => document.body.classList.contains("ready"))) === true, 20000, "ready after reload");
+  await openFolder("Work", "Inbox");
+  await openMessage("Customer interviews: notes");
+  await app.waitFor(".message-card .avatar-picture img", 10000);
+  await app.click(".message-card .avatar-btn");
+  await app.waitText(".contact-card .contact-row-subject", /Q2 launch plan/);
+  await app.browser.execute(() => document.activeElement?.blur());
+  await shot("contact-card");
+  await app.click('.contact-card [aria-label="Close"]');
+});
+
+scene("attachments", async () => {
+  await mail.openView(app, "Attachments");
+  await app.waitText(".hub-item .hub-name", /lake-morning\.png/, 15000);
+  for (const item of await app.$$(".hub-item")) {
+    if ((await app.textOf(item)).includes("lake-morning.png")) await (await item.$('[title="Open the message"]')).click();
+  }
+  await app.waitText(".message-subject", /Photos from the offsite/);
+  await app.browser.execute(() => document.activeElement?.blur());
+  await shot("attachments");
 });
 
 scene("narrow", async () => {

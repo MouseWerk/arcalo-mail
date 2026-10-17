@@ -90,8 +90,8 @@ export function AttachmentHub({
           {items && <span className="muted list-count">{total}</span>}
         </div>
         <div className="search hub-search">
-          <Search size={14} strokeWidth={1.75} aria-hidden className="search-icon" />
-          <input className="search-input" value={query} placeholder={t("hub.search")} aria-label={t("hub.search")} onChange={(e) => setQuery(e.target.value)} />
+          <Search size={16} strokeWidth={1.75} aria-hidden className="search-icon" />
+          <input className="input search-input" type="search" value={query} placeholder={t("hub.search")} aria-label={t("hub.search")} onChange={(e) => setQuery(e.target.value)} />
           {query && (
             <button type="button" className="icon-btn icon-btn-xs search-clear" onClick={() => setQuery("")} aria-label={t("common.close")}>
               <X size={12} strokeWidth={2} aria-hidden />

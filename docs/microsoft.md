@@ -18,6 +18,7 @@ Everything works without an app registration except the sign-in itself: a build 
 |---|---|
 | Authority | `https://login.microsoftonline.com/common/oauth2/v2.0` (work, school and personal accounts) |
 | Scopes | `offline_access`, `https://outlook.office.com/IMAP.AccessAsUser.All`, `https://outlook.office.com/SMTP.Send`, `openid`, `email`, `profile` |
+| Consent asked along (Microsoft Graph) | `https://graph.microsoft.com/MailboxSettings.ReadWrite` (server rules), `https://graph.microsoft.com/Contacts.Read` (contacts) |
 | Redirect on the desktop | `http://127.0.0.1:<port>` (any port; no path) |
 | Redirect on Android and iOS | `de.mousewerk.arcalo.mail://oauth` (see below) |
 | Client id | compiled in from the build environment variable `ARCALO_MAIL_MS_CLIENT_ID` |
@@ -46,7 +47,8 @@ applications.
 3. **API permissions → Add a permission → Microsoft Graph → Delegated permissions**: `IMAP.AccessAsUser.All`,
    `SMTP.Send`, `offline_access`, `openid`, `email`, `profile` (the app requests them with the full scope
    strings above, `https://outlook.office.com/…`, as Microsoft's IMAP/SMTP OAuth guide asks; listing them
-   here shows them on the consent screen and lets administrators consent ahead). No application
+   here shows them on the consent screen and lets administrators consent ahead), and
+   `MailboxSettings.ReadWrite` and `Contacts.Read` (Microsoft Graph). Neither needs admin consent. No application
    permissions (`…AccessAsApp`): those are for services, not for a mail app. Do not grant admin consent in
    MouseWerk's tenant on behalf of others; every organization consents for itself (see below).
 4. **Branding & properties.** Publisher domain `mousewerk.de` (verify it with the DNS TXT record Entra
@@ -56,6 +58,28 @@ applications.
    Partner Program (formerly MPN) ID – free – whose account is verified and tied to the same verified
    domain. Without it users see "unverified" on the consent screen and tenants with the default user
    consent settings block the app (users then get the admin consent error below).
+
+## Microsoft Graph: server rules and contacts
+
+Rules that run on the server become inbox rules of the mailbox (`/me/mailFolders/inbox/messageRules`), and the
+contacts of a Microsoft account are read from `/me/contacts` (with their photos). Both go to Microsoft Graph,
+which takes its own access token: a token is for one resource, and the IMAP/SMTP token is for
+`outlook.office.com`.
+
+- At sign-in the app asks for consent to the Graph permissions along with the mail ones (in the authorization
+  request's `scope`, as MSAL's `extraScopesToConsent` does), so one consent screen covers both. The token
+  request still names only the mail scopes.
+- When a Graph call needs a token, the app redeems the same refresh token for
+  `offline_access MailboxSettings.ReadWrite Contacts.Read` on `graph.microsoft.com` (`oauth::graph_config`).
+  Microsoft returns a Graph token for the consented permissions; nothing is stored besides the refresh token.
+- Accounts signed in before this version have not consented yet: Microsoft refuses the Graph token (consent
+  missing, `AADSTS65001`). The app then says that rules and contacts need the account signed in again in Settings,
+  and that sign-in asks for the new permissions. Mail keeps working meanwhile.
+- `MailboxSettings.ReadWrite` lets the app create, change and delete inbox rules; it reads and writes nothing
+  else of the mailbox settings. `Contacts.Read` is read-only. An organization that blocks user consent approves
+  them together with the mail permissions (see below).
+- Inbox rules cannot do everything a rule in the app can (no "pin", no inbox tab); the rule editor says which
+  parts would not work on the server before it saves (`graph::unsupported`).
 
 ## Owner steps: put the client id into the builds
 
@@ -101,4 +125,6 @@ check, rotating refresh tokens, admin consent and cancel). The core tests run th
 loopback; the test server (`crates/mail-testserver`) serves it on its control port and accepts its access
 tokens for XOAUTH2 on IMAP and SMTP (`POST /smtp-auth?disabled=1` imitates `535 5.7.139`). The e2e test
 `e2e/tests/providers.test.js` signs in through the app with `ARCALO_MAIL_MS_AUTHORITY` pointing at the test
-server; the app accepts such an authority, and a client id from the environment, only on 127.0.0.1.
+server; the app accepts such an authority, and a client id from the environment, only on 127.0.0.1. The Graph calls
+are tested in `crates/mail-core/src/graph.rs` against a fake Graph on loopback (`ARCALO_MAIL_GRAPH_URL`, accepted
+only on 127.0.0.1).
