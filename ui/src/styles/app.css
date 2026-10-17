@@ -4278,3 +4278,25 @@ button.rule-text:hover {
   flex: 1 0 auto;
   min-height: calc(var(--app-h, 100dvh) - var(--toolbar-h) - var(--safe-top));
 }
+/* Recipients: the label stays on the first row of chips; the field types on beside them. */
+.compose[data-phone] .field {
+  align-items: start;
+}
+.compose[data-phone] .field > label {
+  line-height: var(--touch-row);
+}
+.compose[data-phone] .field .chips {
+  min-height: var(--touch-row);
+}
+.compose[data-phone] .field .chip-input {
+  min-width: var(--sp-12);
+}
+.compose[data-phone] .field-extra {
+  align-self: start;
+  margin-top: var(--sp-1-5);
+}
+.compose[data-phone] .field .input,
+.compose[data-phone] .field .select {
+  align-self: center;
+  min-height: var(--touch-row);
+}

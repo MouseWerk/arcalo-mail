@@ -354,7 +354,8 @@ export function CalendarView({ settings, onSettings, onShowFolders, request, onR
       .catch((e) => showToast({ title: t("common.notSaved"), detail: String(e), tone: "danger" }));
 
   const errors = overview?.sources.filter((x) => x.error) ?? [];
-  const title = rangeTitle(view, range, anchor);
+  // A phone names the month over a day, as the day's own head shows its date.
+  const title = rangeTitle(phone && view === "day" ? "month" : view, range, anchor);
   const viewOptions = ((phone ? ["day", "agenda", "month"] : ["day", "workweek", "week", "month", "agenda"]) as CalView[]).map((v) => [v, t(VIEW_LABELS[v])] as [CalView, string]);
   const writable = calendars.filter((c) => c.writable && c.kind !== "ics" && !c.hidden);
 
