@@ -1,7 +1,7 @@
 // The assistant against a fake OpenAI-compatible provider on this computer (the test server's
 // `/ai/v1`): off until a provider is set up, a summary streamed into the reading pane, a reply
 // draft that opens in the compose sheet, stopping an answer, a clear error, tasks and dates
-// with a reminder and a calendar entry, writing help in the compose sheet, questions to the
+// with a reminder and a draft in the app's calendar, writing help in the compose sheet, questions to the
 // mailbox with links to the messages, and an account whose mail no provider may see.
 
 import { test, after, before } from "node:test";
@@ -126,10 +126,18 @@ it("finds tasks and dates, sets a reminder and opens a calendar entry", async ()
   await clickText(app, ".assistant-out .ai-item:nth-child(2) .btn span", "Erinnern");
   await app.waitText(".toast-title", /Du wirst erinnert/);
   await app.waitText(".assistant-out .ai-item:nth-child(2) .btn span", /Erinnerung gestellt/);
-  await clickText(app, ".assistant-out .ai-item:nth-child(1) .btn span", "In den Kalender");
-  await app.waitText(".toast-title", /Kalender-App/);
-  await app.waitUntil(async () => app.opened().some((l) => l.endsWith(".ics")), 5000, "the .ics went to the calendar app");
   await app.shot("ai-tasks");
+  // The date goes to the calendar here as a draft: the editor opens with it, nothing is written
+  // before „Erstellen“, and no file is handed to another app.
+  await clickText(app, ".assistant-out .ai-item:nth-child(1) .btn span", "In den Kalender");
+  const title = await app.waitFor(".calv-entry-editor .calv-entry-name");
+  assert.match(await title.getValue(), /Angebot Website/);
+  assert.deepEqual(await app.invoke("calendar_events", { from: new Date(Date.now() - 400 * 86400e3).toISOString(), to: new Date(Date.now() + 400 * 86400e3).toISOString() }), []);
+  await clickText(app, ".calv-entry-editor .btn-primary span", "Erstellen");
+  await app.waitText(".calv-ev .calv-ev-title, .calv-chip .calv-ev-title", /Angebot Website/);
+  assert.ok(!app.opened().some((l) => l.endsWith(".ics")), "no calendar file");
+  await openFolder(app, "maria@example.org", "Posteingang");
+  await openMessage(app, "Angebot Website");
 });
 
 it("helps with writing in the compose sheet", async () => {

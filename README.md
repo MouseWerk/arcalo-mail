@@ -138,7 +138,8 @@ device · Ollama" or the cloud provider's address).
 
 Above a message: a summary of the conversation (by itself for long ones), a reply draft in your own tone (learned on
 your computer from your sent mail: greeting, closing, formal or informal, a few short samples) that opens in the
-compose sheet, a translation, and the tasks and dates in it, each one a reminder or an entry for your calendar app.
+compose sheet, a translation, and the tasks and dates in it, each one a reminder or a new appointment that opens in
+the calendar's editor (nothing is written before you create it).
 In the compose sheet the writing help makes your text shorter, friendlier, more formal (in German the "Sie" form)
 or fixes spelling and grammar, and you apply or discard the result. "Ask your mail" answers questions from your
 mail: the local search finds the messages, the model reads them, and every answer links to its sources. New mail
@@ -152,6 +153,62 @@ stopped at any time, and come in your language; when a model is not reachable or
 <p align="center">
   <img src="docs/screenshots/writing-help.png" alt="The compose sheet's writing help: a reply with its spelling and grammar fixed, ready to apply" width="100%">
 </p>
+
+### Calendar
+
+The calendar sits next to your mail, in the design of Arcalo's Kalender: day, work week, week, month and a list, a
+time grid with an all-day row and a line for now, appointments as quiet fills of their calendar's color, and a side
+panel with the details and "Join" for online meetings (Teams, Zoom, Webex, Google Meet, Jitsi). A new appointment
+is a drag over a free stretch, a double click or N; your own appointments move and change their length with the
+mouse or the arrow keys, and every change, rename or delete can be taken back with "Undo". A meeting you organize
+changes only after "Send the update to 3 attendees?".
+
+Calendars come from CalDAV servers (iCloud, Fastmail, mailbox.org, Posteo, Nextcloud and others, found from the
+server's address, synced by sync token or ctag), from Microsoft 365 and Outlook.com accounts (Microsoft Graph), from
+JMAP accounts whose server offers calendars, and from ICS addresses you subscribe to (read only); without any, a
+calendar on this device is there. Each calendar has its color, can be hidden in the legend, and one takes new
+appointments. Series, exceptions and time zones are read as the server writes them. Changes made offline wait,
+shown quietly, and go out when the server is back; when someone changed the same appointment meanwhile, you choose
+"Use the server version" or "Keep my change".
+
+<p align="center">
+  <img src="docs/screenshots/calendar-week-light.png" alt="The calendar's week with work and personal appointments, a series of stand-ups, the line for now and the panel of a meeting with its Join button" width="100%">
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/calendar-week-dark.png" alt="The same week in the dark theme" width="100%">
+</p>
+
+### Meetings
+
+An invitation shows as a card above its message: when and where, who is invited and who answered, and what else is
+in your calendar at that time. "Accept", "Tentative" and "Decline" answer the organizer (an iTIP reply by mail, or
+through Microsoft for Microsoft accounts) and put the meeting into your calendar; updates and cancellations from the
+organizer change or remove it. A link to Teams, Zoom, Webex, Google Meet or Jitsi in a message or an appointment
+becomes "Join".
+
+<p align="center">
+  <img src="docs/screenshots/invitation-card.png" alt="An invitation as a card: the time, the Teams link, the attendees with their answers, an appointment at the same time, and Accept, Tentative, Decline and Join" width="100%">
+</p>
+
+### Signed and encrypted mail
+
+OpenPGP and S/MIME: make an OpenPGP key for an account or import one, import an S/MIME certificate (a .p12 file),
+and sign or encrypt a message from the compose sheet when the recipients' keys are there. Keys of others come with
+their signed mail (Autocrypt), from an import, or from the Web Key Directory of their domain. Received mail shows a
+lock and a check: encrypted, signed by whom, and whether the signature is good; an encrypted message never loads
+remote images, and its attachments are decrypted only when you save them. Secret keys and certificate files stay in
+the system's credential store.
+
+<p align="center">
+  <img src="docs/screenshots/encrypted-mail.png" alt="An encrypted and signed message: a lock with Encrypted (OpenPGP) and a check with the signer above the text" width="100%">
+</p>
+
+### Send to Arcalo
+
+"Send to Arcalo" in a message's menu makes it a page or a task in [Arcalo](https://arcalo.mousewerk.de), with its
+text as Markdown and a link back to the message, through Arcalo's command line when it is installed; otherwise the
+page is saved as a Markdown file for Arcalo to open.
 
 ### Rules
 
@@ -276,7 +333,8 @@ message sit side by side and the folders slide in. A swipe over a message archiv
 what each side does), pulling the list down checks for mail, and the message's actions sit at the bottom, in reach
 of the thumb. Microsoft accounts sign in through the system's browser. New mail arrives while the app is open; in
 the background the phone checks now and then (Android about every 15 minutes, iOS when the system allows) and
-tells you, without a server of ours in between.
+tells you, without a server of ours in between. Notifications carry Archive, Mark read and Reply (on Android, iOS,
+Windows and Linux), and on Android a home-screen widget shows the unread count and the newest mail from people.
 
 <p align="center">
   <img src="docs/screenshots/mobile/phone-list-light.png" alt="The inbox on a phone" width="30%">
@@ -315,12 +373,20 @@ tells you, without a server of ours in between.
   to your mail with sources, "Important"; local models (Ollama, LM Studio, OpenAI-compatible) or a cloud provider
   per account; streamed, stoppable, off until set up.
 - **Rules:** in the app or on the server (Sieve over ManageSieve, Microsoft inbox rules), with preview and "Run now".
+- **Calendar:** day, work week, week, month and list; CalDAV (iCloud, Fastmail, mailbox.org, Posteo, Nextcloud),
+  Microsoft Graph, JMAP and ICS subscriptions; create, move, resize, rename and delete with undo; offline changes
+  with a conflict choice; colors, hidden calendars and a default one.
+- **Meetings:** invitation cards with conflicts, Accept / Tentative / Decline as iTIP replies or through Microsoft,
+  updates and cancellations applied, "Join" for Teams, Zoom, Webex, Google Meet and Jitsi.
+- **Signed and encrypted mail:** OpenPGP (keys made or imported, Autocrypt, Web Key Directory) and S/MIME (.p12),
+  lock and check badges, no remote content in decrypted mail.
+- **Send to Arcalo:** a message as an Arcalo page or task through its command line, or as a Markdown file.
 - **Templates and snippets** with placeholders and `;;` shortcuts.
 - **Contacts:** CardDAV address books and Microsoft contacts, address completion, contact cards, pictures from the
   address book or BIMI (Gravatar optional).
 - **Attachments:** all files of your mail in one list, filtered, previewed, saved or opened.
-- **Notifications:** a desktop notification for new mail, the unread count on the app icon and in the tray, with
-  quick actions there.
+- **Notifications:** a notification for new mail with Archive, Mark read and Reply, the unread count on the app icon
+  and in the tray, and an Android home-screen widget.
 - **Diagnostics:** Settings → About exports a text file for a support request: versions, settings, servers and the
   recent connection log, without addresses, messages or passwords.
 - **Keyboard and screen readers:** the whole app works with the keyboard, focus stays visible, controls are
@@ -361,6 +427,16 @@ tells you, without a server of ours in between.
   record in the DNS once, and if the domain enforces DMARC fetches the logo from the address in that record, checks
   that it is a plain SVG Tiny picture and keeps it; switch this off in Settings → Contacts. Gravatar is off by
   default; when on, it receives a hash of the sender's address. Pictures in a message are never used.
+- **Calendars** sync only with the servers you add: CalDAV servers with your user name and app password, Microsoft
+  Graph for Microsoft accounts (with the sign-in's permission to read and write calendars), the JMAP server of a JMAP
+  account, and the ICS addresses you subscribe to (the full address stays in the credential store; the settings show
+  its server only). Appointments are kept in the local database. Answers to invitations go to the organizer by mail
+  from your account, or through Microsoft for Microsoft accounts.
+- **Encryption keys.** Your secret OpenPGP keys and S/MIME certificate files with their passwords are kept in the
+  credential store; public keys of others in the database. The Web Key Directory lookup asks the recipient's domain
+  for a key only when you press "Look up". Decrypted text is never stored; it is decrypted again each time you open
+  the message.
+- **Send to Arcalo** runs Arcalo's command line on your computer; nothing goes over the network.
 - **Server rules** go to your mail provider only: as a Sieve script over ManageSieve, or as inbox rules over
   Microsoft Graph for Microsoft accounts (with the sign-in's permission to change mailbox settings).
 - **Unsubscribing** is the one request to a sender's web address, and only when you click "Unsubscribe": a single

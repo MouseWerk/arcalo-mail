@@ -61,6 +61,11 @@ Identifier: `de.mousewerk.arcalo.mail`.
 | `avatars` | Sender pictures: the address book, then BIMI (the `default._bimi` TXT record, DMARC with `p=quarantine` or `reject`, the logo checked against the SVG Tiny PS profile and rebuilt from an allow-list, once per domain, cached in `pictures`), then Gravatar when switched on (SHA-256 of the address, `d=404`); nothing from inside a message | done |
 | `hub` | All attachments of the local copy: kinds by type and name, filters by kind, sender, time and name, senders with counts | done |
 | `pop3` | POP3 (RFC 1939, STLS or implicit TLS, USER/PASS, UIDL, RETR, DELE) through `network::connect_pop3`; downloads into local folders (`pop3_messages`, `pop3_folders`), remembers what it took (`pop3_seen`), leaves mail on the server, removes it after N days or at once as chosen; `Pop3Session` implements `ImapClient` over the local tables so sync, actions and the worker run unchanged (its IDLE visits the server every two minutes and on a wake); presets for common providers; `pop3::fake` | done |
+| `calendar` | Calendars and appointments: sources (`local`, `caldav`, `graph`, `jmap`, `ics`), calendars with colors, hidden and writable flags, the default one; objects as the server has them (iCalendar, or Graph's JSON) with ETag or change key, expanded per view window (`ics`: RRULE, RDATE, EXDATE, RECURRENCE-ID, VTIMEZONE and IANA zones through `tz`, DST-safe); `events` with what may be changed (`Editability`: own, organized after a confirmation, received, a series instance, read only, a subscription); `create`, `update`, `delete` and `undo` local first, each queued in `cal_writes` (`pending`, `conflict` with both sides, `refused`) and replayed by `sync::sync_source` before it pulls; `resolve` (server version or mine), `discard`. `caldav`: discovery (well-known, principal, calendar home; RFC 6638 auto-schedule), sync-collection with the sync token or ctag and `calendar-multiget`, `PUT`/`DELETE` with `If-Match` (412 is a conflict), presets for iCloud, Fastmail, mailbox.org, Posteo, Nextcloud, `caldav::fake`. `graph`: `/me/calendars`, `calendarView/delta`, writes with the change key in `If-Match`, `accept`/`tentativelyAccept`/`decline`, `graph::fake`. `jmap`: JMAP Calendars (JSCalendar turned into iCalendar), `jmap::fake`. `ics`: subscriptions fetched with their ETag through `network::client_for(Service::Calendar)` | done |
+| `itip` | Meetings in mail: the `text/calendar` part of a message (`REQUEST`, `CANCEL`, `REPLY`, `COUNTER`), the card (times, attendees and their answers, conflicts in the user's calendars, outdated by a newer sequence), the answer (`reply_ics`, a `METHOD:REPLY` message from the account), `file` and `apply` (an accepted invitation into the default calendar, updates and cancellations applied by `scan` after new mail), `update_mail` (a meeting the user organizes, for servers that do not send updates themselves), `draft_from` (the assistant's dates as a draft for the calendar's editor) | done |
+| `crypto` | OpenPGP (`pgp`, rPGP: Ed25519 and Curve25519 keys made here, imported armored keys, PGP/MIME sign, encrypt, decrypt, verify, inline cleartext, Autocrypt headers in and out, `wkd`: the Web Key Directory's advanced and direct addresses) and S/MIME (`smime`: PKCS#12 import, CMS SignedData and EnvelopedData with RSA and AES-256-CBC, chains checked against the system's roots with `rustls-webpki`, e-mail protection usage). `protect` wraps a finished message before it is queued; `open` gives the reading pane the inner message and its `Protection`; secrets come through the shell's `Keys` (the credential store); decrypted content is never stored | done |
+| `arcalo` | „An Arcalo senden“: a message as Markdown with a `mid:` link back, the page title or task text, Arcalo's command line found on the PATH | done |
+| `widget` | What the Android home-screen widget shows: the unread count and the newest three mails of People (`widget.json`, written by the shell) | done |
 | `settings`, `settings_migrate` | One JSON object with a `version`; ordered, idempotent steps on the raw JSON, unknown keys kept (Arcalo's scheme) | done |
 | `i18n` | `tr!`/`trf!` pairs for backend texts in German and English | done |
 
@@ -76,6 +81,12 @@ read later), `snoozes`, `scheduled` (send later) and `followups`.
 `rules` and `rule_servers`, `templates`, `address_books`, `cards` and `card_emails`, `pictures` (sender pictures
 and BIMI answers per address or domain), and `pop3_messages`, `pop3_folders` and `pop3_seen` (the local folders of
 POP3 accounts).
+`0006_calendar_crypto.sql` adds `cal_sources` (a source's kind, address, account and sync state; secrets live in
+the credential store), `calendars` (remote id, name, color, writable, hidden), `cal_objects` (href, ETag or change
+key, UID, `ics` or `graph` data, the first start and last end for the window query, a deleted mark), `cal_writes`
+(the offline queue of appointments: create, update or delete, pending, conflict or refused, both sides of a
+conflict, whether attendees get the update), `itip_seen` (the invitations of messages and the answers given),
+`pgp_keys` and `smime_certs` (public keys and certificates; the secret parts are in the credential store).
 `0002_mail_actions.sql` adds `messages.hidden` (moved or deleted here, not yet on the
 server) and `reply_to_json`, `message_bodies.raw` (small messages kept whole, so their attachments open offline),
 `attachments.section` and `data`, `accounts.signature`, `contacts` (recipient suggestions) and `remote_senders`
@@ -148,7 +159,9 @@ them otherwise). `ui/src/lib/html.test.ts` checks it.
 
 Entry names: service `de.mousewerk.arcalo.mail`, account `account-<id>-password` (also a JMAP API token),
 `account-<id>-oauth-refresh-token` (rotated refresh tokens are written back at once), `proxy-<profile>-password`,
-`ai-<provider>-key` (a cloud provider's API key) and `carddav-<book>-password`.
+`ai-<provider>-key` (a cloud provider's API key), `carddav-<book>-password`, `calendar-<source>-secret` (a CalDAV
+password or the full address of an ICS subscription), `pgp-<fingerprint>-secret` (an armored secret key) and
+`smime-<fingerprint>-p12` (the PKCS#12 file and its password).
 OAuth access tokens are kept in memory only. The vault logic is tested with a fake cipher.
 
 ## Phones (`src-tauri/src/mobile`, `src-tauri/gen/android`, `src-tauri/Info.ios.plist`)
@@ -163,6 +176,13 @@ The same UI, store, commands and core. What differs:
   JNI in a process that may have no activity); iOS: a `BGAppRefreshTask` asked for each time the app goes to the
   background, 25 seconds (`mobile/ios.rs`). No push server (docs/plan.md, open decision 5).
 - **Badge.** Android: the number of the new-mail notification (launchers show it); iOS: the app icon's number.
+- **Notification buttons.** Archive, Mark read and Reply on a new-mail notification. Android: actions handled by
+  `MailActionReceiver.kt` (archive and read through `MailNative.notificationAction`, in the running app or on the
+  store directly with a check soon after) and an activity intent for Reply; iOS: the category `new-mail` and a
+  delegate of the notification center (`mobile/ios.rs`). The desktop: Linux notification actions and Windows toast
+  buttons (`notify-rust`); macOS shows the plain notification.
+- **Widget (Android).** `MailWidget.kt` reads `widget.json` (`mail_core::widget`), written next to the database when
+  the unread count changes and after each background check; a tap opens the app on the message.
 - **Sign-in.** Microsoft opens in Custom Tabs (`AuthTab.kt`) or `ASWebAuthenticationSession`; the redirect
   `de.mousewerk.arcalo.mail://oauth` comes back through the activity's intent filter or the session's callback,
   and `oauth::sign_in_with_session` exchanges the code as on the desktop.
@@ -184,7 +204,9 @@ Release steps for the stores: [release-mobile.md](release-mobile.md).
 Vite + React + TypeScript. `src/styles/tokens.css` is Arcalo's token set (spacing, type, radii, control heights,
 motion, layers, the neutral state tints) adapted for mail and extended by a contrast theme; `styles.test.ts`
 enforces tokens-only colors, no accent on selected/current/focused states, no side bars and `:focus-visible` rings.
-Three panes (`Sidebar`, `MessageList`, `ReadingPane`) and a compose sheet; below 720 px one pane at a time with
+Three panes (`Sidebar`, `MessageList`, `ReadingPane`) and a compose sheet; the calendar (`CalendarView`, Arcalo's
+Kalender with its `.calv` styles and the `--ev-tint`/`--ev-meta` tokens, logic in `lib/calendar.ts`) takes the list
+and the reading pane; `Meeting.tsx` draws the invitation card, „Beitreten“ and the protection badges; below 720 px one pane at a time with
 back navigation; touch screens get the phone and tablet layouts of the section above. In a plain browser `lib/api.ts` serves sample data (`lib/demo.ts`), so the
 layout can be checked without the app.
 
@@ -203,6 +225,10 @@ layout can be checked without the app.
 | Secrets | `keyring` 3 | as Arcalo |
 | DNS (SRV, MX) | `hickory-resolver` | system configuration, async |
 | Autoconfig files | `roxmltree` | small, read-only XML |
+| Calendars | `chrono`, `chrono-tz`, `rrule`, `iana-time-zone` | time zones and recurrence as calendars write them |
+| OpenPGP | `pgp` (rPGP) 0.21 | pure Rust, Ed25519/Curve25519, interoperates with GnuPG |
+| S/MIME | `cms` with `x509-cert`, `p12-keystore`, `rsa`, `aes`/`cbc`, `rustls-webpki` | RustCrypto, no OpenSSL |
+| Notification buttons | `notify-rust` | Linux actions and Windows toast buttons |
 
 All of them were checked on crates.io; only the ones in use are in `Cargo.toml` now.
 
@@ -224,6 +250,9 @@ All of them were checked on crates.io; only the ones in use are in `Cargo.toml` 
   later (also at the next start) and reminders (`ARCALO_MAIL_TICK_SECS=1` speeds up the clock), the assistant
   against the test server's fake OpenAI-compatible provider (`/ai/v1`: streaming, stop, errors, an account no
   provider may see), rules in the app and over ManageSieve (the test server's Sieve port), templates and snippets,
-  CardDAV contacts (`/dav`) with the contact card, a POP3 account set up by hand, the attachments, and the new
-  views on a phone and a tablet. `e2e/shots` writes the README screenshots from English sample
+  CardDAV contacts (`/dav`) with the contact card, a POP3 account set up by hand, the attachments, the calendar
+  against the test server's CalDAV calendars (`/caldav`: create, move, delete, undo, hide, the views), meeting
+  invitations with the iTIP answer in what was sent, „Beitreten“ and „An Arcalo senden“ (a stand-in `arcalo` on the
+  PATH), OpenPGP against the test server's own key (`/pgp`: Jonas opens what the app sent and answers encrypted),
+  and the new views on a phone and a tablet. `e2e/shots` writes the README screenshots from English sample
   mailboxes on a fixed clock (`ARCALO_MAIL_NOW`).

@@ -111,8 +111,40 @@ conformance job against Dovecot and GreenMail. Still open: the signed update fee
 - Open: BIMI's Verified Mark Certificates are not checked (the record, DMARC enforcement and the SVG profile are);
   the ManageSieve server is looked for on the IMAP host's port 4190 (another one can be entered in the rule editor;
   no discovery through DNS SRV `_sieve._tcp` yet); Graph rules for Microsoft accounts and Microsoft contacts are tested against a
-  fake Graph only; the calendar entry is an .ics file for the system's calendar app (no calendar of our own); a
-  thumbnail column for pictures in „Anhänge“.
+  fake Graph only; a thumbnail column for pictures in „Anhänge“. (The assistant's dates now go to the app's own
+  calendar, round 3.)
+
+## Where we are (feature round 3: calendar, meetings, encryption, Arcalo)
+
+- **Calendar** in Arcalo's design (its Kalender view ported: day, work week, week, month, list; time grid, all-day
+  row, now line, side panel, quiet waiting and conflict states): create by dragging, double click or N; move,
+  resize, rename and delete with „Rückgängig“; a meeting the user organizes changes only after „Aktualisierung an N
+  Teilnehmende senden?“. Sources: CalDAV (presets for iCloud, Fastmail, mailbox.org, Posteo, Nextcloud; discovery,
+  sync token or ctag, ETags, series, exceptions and time zones), Microsoft Graph (`Calendars.ReadWrite`, delta,
+  change keys), JMAP Calendars, ICS subscriptions (read only), and a calendar on this device. Colors, hidden
+  calendars, the default calendar, the work week; an offline queue with „Server-Version übernehmen“ / „Meine
+  Änderung behalten“.
+- **Meetings**: the invitation card (time, place, attendees and answers, conflicts, „Zusagen / Mit Vorbehalt /
+  Absagen“ as an iTIP REPLY over SMTP or Graph's accept/decline; a CalDAV server that schedules answers itself),
+  updates and cancellations applied, „Beitreten“ for Teams, Zoom, Webex, Google Meet and Jitsi in mail and
+  calendar, the assistant's dates as a draft in the calendar's editor.
+- **Encryption**: OpenPGP (keys made or imported, sign, encrypt, decrypt, verify, Autocrypt, Web Key Directory) and
+  S/MIME (a .p12 in the credential store, chains against the system's roots, RSA); lock and check badges; no remote
+  content in decrypted mail; files inside an encrypted message decrypted only to be saved. Interoperability checked
+  by hand with GnuPG and OpenSSL in both directions.
+- **„An Arcalo senden“**: a message as a page or a task through Arcalo's command line (`arcalo pages create … --stdin`,
+  `arcalo tasks add …`) with Markdown and a `mid:` link back, else a Markdown file to save.
+- **Notifications and widget**: Archive, Mark read and Reply on new-mail notifications (Linux actions, Windows toast
+  buttons, Android actions, an iOS category); an Android home-screen widget with the unread count and the newest
+  three mails of People.
+- Open: drafts of encrypted messages are saved unencrypted on the server (as most clients do; encrypting drafts to
+  the own key is next); the `mid:` link back needs Arcalo Mail registered as the handler of `mid:` addresses
+  (desktop deep links); notification buttons on macOS (notify-rust has no actions there; the plain notification
+  shows); iOS WidgetKit (the widget needs a Swift extension target in the Xcode project, planned for 1.1); JMAP
+  Calendars has no per-event ETag, so a write there goes over what the server has (the next sync shows the
+  result); S/MIME with RSA keys only (no ECDH key agreement yet); the Android and iOS parts (notification actions,
+  the widget, the category delegate) are built in CI and need a check on devices (release-mobile.md); Graph
+  calendars and invitations are tested against a fake Graph only.
 
 ## Milestone 1 – desktop, one IMAP/SMTP account
 
@@ -194,12 +226,9 @@ Goal: daily use with one IMAP/SMTP account on Windows, macOS and Linux.
 
 - Smart folders (unread, flagged, today).
 - Send later through the server's FUTURERELEASE where offered (the computer may be off then).
-- PGP (Autocrypt, rPGP or Sequoia) and S/MIME (certificates from the system store), signing and encryption.
 - Encryption at rest (SQLCipher, as Arcalo; off by default) and app lock.
-- **Arcalo integration**: „An Arcalo senden“ (a mail becomes a page or is linked from one, as Arcalo's
-  `arcalo-mail://` links), tasks from mails (a task with a link back), meeting notes from invitations; over a
-  local, user-approved channel, no cloud.
-- Calendar invitations (iMIP): accept or decline, add to Arcalo's calendar.
+- **Arcalo integration**, beyond „An Arcalo senden“ (round 3): meeting notes from invitations, Arcalo's
+  `arcalo-mail://` links opening the message here.
 - Microsoft Store (MSIX) and winget for Windows, as Arcalo.
 
 ## Open owner decisions

@@ -216,3 +216,8 @@ signs.) The secret `APPLE_DEVELOPMENT_TEAM` of milestone 1 is no longer read; it
   identity provider, `check_once` against the fake server); the e2e tests run the touch layout in the desktop app.
 - How often Android's WorkManager runs the check (Doze and the battery saver delay it) and when iOS grants
   background app refresh (the system learns from use; often hours apart, never when the user swiped the app away).
+- The notification buttons and the widget (round 3): on Android, Archive and Mark read from a notification with the
+  app closed (the store changes, a check follows when a network is there), Reply opening the compose sheet, the
+  widget's count and its three rows after a background check, a tap on a row opening that message; on iOS, the
+  `new-mail` category's buttons on a notification from the background check (long press), and notifications still
+  shown while the app is in front (the app's delegate replaces the notification plugin's).

@@ -18,7 +18,7 @@ Everything works without an app registration except the sign-in itself: a build 
 |---|---|
 | Authority | `https://login.microsoftonline.com/common/oauth2/v2.0` (work, school and personal accounts) |
 | Scopes | `offline_access`, `https://outlook.office.com/IMAP.AccessAsUser.All`, `https://outlook.office.com/SMTP.Send`, `openid`, `email`, `profile` |
-| Consent asked along (Microsoft Graph) | `https://graph.microsoft.com/MailboxSettings.ReadWrite` (server rules), `https://graph.microsoft.com/Contacts.Read` (contacts) |
+| Consent asked along (Microsoft Graph) | `https://graph.microsoft.com/MailboxSettings.ReadWrite` (server rules), `https://graph.microsoft.com/Contacts.Read` (contacts), `https://graph.microsoft.com/Calendars.ReadWrite` (calendar, answers to invitations) |
 | Redirect on the desktop | `http://127.0.0.1:<port>` (any port; no path) |
 | Redirect on Android and iOS | `de.mousewerk.arcalo.mail://oauth` (see below) |
 | Client id | compiled in from the build environment variable `ARCALO_MAIL_MS_CLIENT_ID` |
@@ -48,7 +48,8 @@ applications.
    `SMTP.Send`, `offline_access`, `openid`, `email`, `profile` (the app requests them with the full scope
    strings above, `https://outlook.office.com/…`, as Microsoft's IMAP/SMTP OAuth guide asks; listing them
    here shows them on the consent screen and lets administrators consent ahead), and
-   `MailboxSettings.ReadWrite` and `Contacts.Read` (Microsoft Graph). Neither needs admin consent. No application
+   `MailboxSettings.ReadWrite`, `Contacts.Read` and `Calendars.ReadWrite` (Microsoft Graph). None of them needs
+   admin consent. No application
    permissions (`…AccessAsApp`): those are for services, not for a mail app. Do not grant admin consent in
    MouseWerk's tenant on behalf of others; every organization consents for itself (see below).
 4. **Branding & properties.** Publisher domain `mousewerk.de` (verify it with the DNS TXT record Entra
@@ -59,10 +60,12 @@ applications.
    domain. Without it users see "unverified" on the consent screen and tenants with the default user
    consent settings block the app (users then get the admin consent error below).
 
-## Microsoft Graph: server rules and contacts
+## Microsoft Graph: server rules, contacts and calendars
 
-Rules that run on the server become inbox rules of the mailbox (`/me/mailFolders/inbox/messageRules`), and the
-contacts of a Microsoft account are read from `/me/contacts` (with their photos). Both go to Microsoft Graph,
+Rules that run on the server become inbox rules of the mailbox (`/me/mailFolders/inbox/messageRules`), the
+contacts of a Microsoft account are read from `/me/contacts` (with their photos), and its calendars are read from
+`/me/calendars` and each calendar's `calendarView/delta` (the delta link is kept, so a round reads only what
+changed). All go to Microsoft Graph,
 which takes its own access token: a token is for one resource, and the IMAP/SMTP token is for
 `outlook.office.com`.
 
@@ -70,13 +73,18 @@ which takes its own access token: a token is for one resource, and the IMAP/SMTP
   request's `scope`, as MSAL's `extraScopesToConsent` does), so one consent screen covers both. The token
   request still names only the mail scopes.
 - When a Graph call needs a token, the app redeems the same refresh token for
-  `offline_access MailboxSettings.ReadWrite Contacts.Read` on `graph.microsoft.com` (`oauth::graph_config`).
+  `offline_access MailboxSettings.ReadWrite Contacts.Read Calendars.ReadWrite` on `graph.microsoft.com`
+  (`oauth::graph_config`).
   Microsoft returns a Graph token for the consented permissions; nothing is stored besides the refresh token.
 - Accounts signed in before this version have not consented yet: Microsoft refuses the Graph token (consent
-  missing, `AADSTS65001`). The app then says that rules and contacts need the account signed in again in Settings,
+  missing, `AADSTS65001`). The app then says that rules, contacts and calendars need the account signed in again in Settings,
   and that sign-in asks for the new permissions. Mail keeps working meanwhile.
 - `MailboxSettings.ReadWrite` lets the app create, change and delete inbox rules; it reads and writes nothing
-  else of the mailbox settings. `Contacts.Read` is read-only. An organization that blocks user consent approves
+  else of the mailbox settings. `Contacts.Read` is read-only. `Calendars.ReadWrite` lets the app read the user's
+  calendars, create, move and delete appointments made in the app (each write names the event's `changeKey` in
+  `If-Match`, so a change made elsewhere meanwhile becomes a conflict the user settles), and answer invitations
+  (`accept`, `tentativelyAccept`, `decline`; Exchange tells the organizer). A change of a meeting the user
+  organizes goes out only after the app asked „Aktualisierung an N Teilnehmende senden?“. An organization that blocks user consent approves
   them together with the mail permissions (see below).
 - Inbox rules cannot do everything a rule in the app can (no "pin", no inbox tab); the rule editor says which
   parts would not work on the server before it saves (`graph::unsupported`).

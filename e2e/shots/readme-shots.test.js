@@ -414,3 +414,150 @@ scene("zero", async () => {
   await app.browser.execute(() => document.activeElement?.blur());
   await shot("inbox-zero");
 });
+
+// ---------------------------------------------------------------- calendar, meetings, encryption
+
+/** `20260312T103000Z` of a day of the screenshots' week (0 = Monday 9 March 2026) at `hh:mm` UTC. */
+const when = (day, hh, mm = 0) => new Date(Date.UTC(2026, 2, 9 + day, hh, mm)).toISOString().replace(/[-:]/g, "").replace(/\.\d+/, "");
+
+function vcal(uid, title, start, end, extra = []) {
+  return ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Example//Calendar//EN", "BEGIN:VEVENT", `UID:${uid}`, "DTSTAMP:20260301T090000Z", `DTSTART:${start}`, `DTEND:${end}`, `SUMMARY:${title}`, ...extra, "END:VEVENT", "END:VCALENDAR", ""].join("\r\n");
+}
+
+const putEvent = (calendar, name, ics) => fetch(`http://127.0.0.1:${work.control}/caldav-event?calendar=${calendar}&name=${name}`, { method: "POST", body: ics });
+
+scene("calendar", async () => {
+  await app.browser.setWindowSize(1440, 900);
+  const day = (d) => [when(d, 0).slice(0, 8), when(d + 1, 0).slice(0, 8)];
+  const events = [
+    ["work", "standup", vcal("standup@example.com", "Standup", when(0, 9, 30), when(0, 9, 45), ["RRULE:FREQ=DAILY;BYDAY=MO,TU,WE,TH,FR;COUNT=20"])],
+    ["work", "review", vcal("review@example.com", "Design review", when(0, 13), when(0, 14), ["LOCATION:Studio 2"])],
+    ["work", "lumen", vcal("lumen@example.com", "Customer interview: Lumen", when(1, 11), when(1, 12, 30), ["LOCATION:https://teams.microsoft.com/l/meetup-join/19%3ameeting_lumen"])],
+    ["work", "daniel", vcal("daniel-1on1@example.com", "1:1 Daniel", when(1, 15), when(1, 15, 30))],
+    ["work", "workshop", vcal("workshop@example.com", "Workshop: onboarding flow", when(2, 14), when(2, 16), ["LOCATION:Studio 1"])],
+    ["home", "climbing", vcal("climbing@example.net", "Climbing", when(2, 18, 30), when(2, 20))],
+    [
+      "work",
+      "q2",
+      vcal("q2-planning@example.com", "Q2 launch planning", when(3, 10, 30), when(3, 11, 30), [
+        "LOCATION:https://meet.jit.si/q2-launch-planning",
+        "ORGANIZER;CN=Emma Larsen:mailto:emma@example.com",
+        "ATTENDEE;CN=Daniel Okafor;PARTSTAT=ACCEPTED:mailto:daniel@example.com",
+        "ATTENDEE;CN=Priya Raman;PARTSTAT=TENTATIVE:mailto:priya@example.com",
+        "ATTENDEE;CN=Jonas Weber;PARTSTAT=ACCEPTED:mailto:jonas@example.com",
+        "DESCRIPTION:Scope\\, dates and owners for the Q2 launch.",
+      ]),
+    ],
+    ["home", "lunch", vcal("lunch@example.net", "Lunch with Ana", when(3, 12, 30), when(3, 13, 30), ["LOCATION:Café Lindgren"])],
+    ["work", "debrief", vcal("debrief@example.com", "Interview debrief", when(3, 16), when(3, 17))],
+    ["work", "demo", vcal("demo@example.com", "Sprint demo", when(4, 11), when(4, 12))],
+    ["home", "dinner", vcal("dinner@example.net", "Dinner with Leo", when(4, 19), when(4, 21, 30))],
+    ["home", "market", vcal("market@example.net", "Farmers market", when(5, 10), when(5, 12))],
+    ["work", "priya-out", vcal("priya-out@example.com", "Priya out of office", `${day(3)[0]}`, `${day(3)[1]}`, ["TRANSP:TRANSPARENT"]).replace(/DTSTART:(\d{8})\r\n/, "DTSTART;VALUE=DATE:$1\r\n").replace(/DTEND:(\d{8})\r\n/, "DTEND;VALUE=DATE:$1\r\n")],
+  ];
+  for (const [cal, name, ics] of events) await putEvent(cal, `${name}.ics`, ics);
+  await app.invoke("caldav_add", { name: "Example Cloud", url: `http://127.0.0.1:${work.control}/caldav/`, username: WORK, password: "sample-password" });
+  const overview = await app.invoke("calendar_overview");
+  for (const c of overview.calendars) {
+    if (c.name === "Arbeit") await app.invoke("calendar_set", { id: c.id, patch: { name: "Work", color: "#2563eb" } });
+    if (c.name === "Privat") await app.invoke("calendar_set", { id: c.id, patch: { name: "Personal", color: "#0d9488" } });
+    if (c.kind === "local") await app.invoke("calendar_set", { id: c.id, patch: { hidden: true } });
+  }
+  await app.browser.refresh();
+  await app.waitUntil(async () => (await app.browser.execute(() => document.body.classList.contains("ready"))) === true, 20000, "ready after reload");
+  await mail.openView(app, "Calendar");
+  await clickText(".calv-views .segmented button", "Week");
+  await app.waitText(".calv-ev .calv-ev-title", /Q2 launch planning/, 20000);
+  for (const e of await app.$$(".calv-ev")) if ((await app.textOf(e)).includes("Q2 launch planning")) await e.click();
+  await app.waitFor(".calv-detail .calv-join");
+  await app.browser.execute(() => {
+    document.activeElement?.blur();
+    document.querySelector(".calv-scroll").scrollTop = 7.6 * 48;
+  });
+  await shot("calendar-week-light");
+  await setTheme("dark");
+  await mail.openView(app, "Calendar");
+  await app.waitText(".calv-ev .calv-ev-title", /Q2 launch planning/, 20000);
+  for (const e of await app.$$(".calv-ev")) if ((await app.textOf(e)).includes("Q2 launch planning")) await e.click();
+  await app.waitFor(".calv-detail .calv-join");
+  await app.browser.execute(() => {
+    document.activeElement?.blur();
+    document.querySelector(".calv-scroll").scrollTop = 7.6 * 48;
+  });
+  await shot("calendar-week-dark");
+  await setTheme("light");
+});
+
+scene("invitation", async () => {
+  const ics = [
+    "BEGIN:VCALENDAR",
+    "VERSION:2.0",
+    "PRODID:-//Example//Calendar//EN",
+    "METHOD:REQUEST",
+    "BEGIN:VEVENT",
+    "UID:roadmap-review@example.com",
+    "SEQUENCE:0",
+    "DTSTAMP:20260312T090000Z",
+    `DTSTART:${when(3, 15, 30)}`,
+    `DTEND:${when(3, 16, 30)}`,
+    "SUMMARY:Roadmap review",
+    "LOCATION:https://teams.microsoft.com/l/meetup-join/19%3ameeting_roadmap",
+    "ORGANIZER;CN=Priya Raman:mailto:priya@example.com",
+    "ATTENDEE;CN=Emma Larsen;PARTSTAT=NEEDS-ACTION;RSVP=TRUE:mailto:emma@example.com",
+    "ATTENDEE;CN=Daniel Okafor;PARTSTAT=ACCEPTED:mailto:daniel@example.com",
+    "ATTENDEE;CN=Jonas Weber;PARTSTAT=TENTATIVE:mailto:jonas@example.com",
+    "END:VEVENT",
+    "END:VCALENDAR",
+    "",
+  ].join("\r\n");
+  const raw = [
+    "From: Priya Raman <priya@example.com>",
+    `To: Emma Larsen <${WORK}>`,
+    "Subject: Invitation: Roadmap review",
+    "Date: Thu, 12 Mar 2026 09:58:00 +0000",
+    "Message-ID: <roadmap-invite@example.com>",
+    "MIME-Version: 1.0",
+    'Content-Type: multipart/alternative; boundary="ALT"',
+    "",
+    "--ALT",
+    "Content-Type: text/plain; charset=utf-8",
+    "",
+    "Hi Emma, let's go through the roadmap before the launch planning wraps up. Priya",
+    "--ALT",
+    "Content-Type: text/calendar; charset=utf-8; method=REQUEST",
+    "",
+    ics,
+    "--ALT--",
+    "",
+  ].join("\r\n");
+  await work.deliver(raw, { date: NOW - 2640 });
+  await openFolder("Work", "Inbox");
+  await openMessage("Invitation: Roadmap review");
+  await app.waitFor(".invite-card", 15000);
+  await app.browser.execute(() => document.activeElement?.blur());
+  await shot("invitation-card");
+});
+
+scene("encrypted", async () => {
+  const accounts = await app.invoke("list_accounts");
+  const emma = accounts.find((a) => a.email === WORK);
+  await app.invoke("pgp_generate", { accountId: emma.id });
+  const armored = await (await fetch(`http://127.0.0.1:${work.control}/pgp/public`)).text();
+  await app.invoke("pgp_import", { text: armored });
+  // Jonas learns Emma's key from a signed message (Autocrypt) and answers encrypted.
+  await app.invoke("send_message", {
+    draft: { account_id: emma.id, to: ["jonas@example.org"], cc: [], bcc: [], subject: "Contract draft", text: "Here is the draft, signed.", html: null, attachments: [], in_reply_to: null, references: [], message_id: null, reply_to_id: null, forwarded: [], protect: { method: "pgp", sign: true, encrypt: false } },
+    followupSecs: null,
+  });
+  await app.waitUntil(async () => (await work.sent()).length > 0, 20000, "sent");
+  const r = await fetch(`http://127.0.0.1:${work.control}/pgp/deliver?subject=${encodeURIComponent("Re: Contract draft")}&date=${NOW - 420}`, {
+    method: "POST",
+    body: "Hi Emma,\n\nthanks, the draft reads well. Two small notes on section 4; I marked them in the copy you sent.\n\nJonas",
+  });
+  if (!r.ok) throw new Error(await r.text());
+  await openFolder("Work", "Inbox");
+  await openMessage("Re: Contract draft");
+  await app.waitFor(".protect-badges", 15000);
+  await app.browser.execute(() => document.activeElement?.blur());
+  await shot("encrypted-mail");
+});
