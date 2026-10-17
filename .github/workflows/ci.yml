@@ -191,6 +191,8 @@ jobs:
   android-e2e:
     name: Android emulator (phone screens)
     needs: android
+    # Also when a test of the checks failed (the Android build ran anyway).
+    if: ${{ !cancelled() && needs.android.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
