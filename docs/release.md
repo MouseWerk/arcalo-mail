@@ -55,8 +55,8 @@ would have to install by hand). Make it once, on a computer you trust, and keep 
    `plugins.updater.pubkey` with the content of `~/.tauri/arcalo-mail.key.pub` (`cat ~/.tauri/arcalo-mail.key.pub`),
    commit and push. The public key is not secret; it is in every installed copy.
 
-The release workflow refuses to start (job „Update key“, before anything is tagged) while the placeholder is
-there, while the key is not a minisign public key, or while `TAURI_SIGNING_PRIVATE_KEY` is missing. Normal CI does
+The release workflow refuses to start (job „Update key and Microsoft sign-in“, before anything is tagged) while the
+placeholder is there, while the key is not a minisign public key, or while `TAURI_SIGNING_PRIVATE_KEY` is missing. Normal CI does
 not need the key: its builds have no updater and never contact the feed.
 
 The release compiles the public key into the app as `ARCALO_MAIL_UPDATER_PUBKEY` and signs the bundles
@@ -65,7 +65,8 @@ The release compiles the public key into the app as `ARCALO_MAIL_UPDATER_PUBKEY`
 ## Once: variables and the phones
 
 - **`ARCALO_MAIL_MS_CLIENT_ID`** (repository variable): the Microsoft sign-in, [microsoft.md](microsoft.md). Without
-  it the release has no Microsoft sign-in.
+  it the release refuses to start; the repository variable `ARCALO_MAIL_RELEASE_WITHOUT_MICROSOFT` set to `true`
+  allows a release without Microsoft sign-in (with a warning).
 - **`AUTO_RELEASE`** (repository variable, optional): `false` switches the automatic release off (below).
 - **Android and iOS**: the keystore and the Apple secrets of [release-mobile.md](release-mobile.md). Without them the
   release has no APK (a debug-signed APK is not attached) and no TestFlight build; the desktop release goes on.

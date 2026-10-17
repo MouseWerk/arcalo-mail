@@ -100,8 +100,9 @@ GitHub Actions **variable**, not as a secret:
    `0a1b2c3d-…`.
 
 `.github/workflows/ci.yml` passes `${{ vars.ARCALO_MAIL_MS_CLIENT_ID }}` to every job as the environment
-variable of the same name; `oauth.rs` reads it at compile time (`option_env!`). The release workflow, once
-it exists, needs the same line. For a local build: `ARCALO_MAIL_MS_CLIENT_ID=… cargo tauri build`.
+variable of the same name; `oauth.rs` reads it at compile time (`option_env!`). The release workflow
+passes it the same way and refuses to start without it, unless the repository variable
+`ARCALO_MAIL_RELEASE_WITHOUT_MICROSOFT` is `true`. For a local build: `ARCALO_MAIL_MS_CLIENT_ID=… cargo tauri build`.
 
 ## What users and their IT may run into
 

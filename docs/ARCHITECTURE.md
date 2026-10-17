@@ -67,7 +67,7 @@ Identifier: `de.mousewerk.arcalo.mail`.
 | `arcalo` | „An Arcalo senden“: a message as Markdown with a `mid:` link back, the page title or task text, Arcalo's command line found on the PATH | done |
 | `widget` | What the Android home-screen widget shows: the unread count and the newest three mails of People (`widget.json`, written by the shell) | done |
 | `update`, `update_feed` | Desktop updates without the shell (as Arcalo's): which version is newer, a skipped version and „Später erinnern“, why a copy cannot replace itself (`Manual`: portable, package, macOS translocated or read-only, AppImage not writable), the restart marker and the notes for „Neu in Arcalo Mail“; `latest.json`, the platform entry, a download through `network::client_for(Service::UpdateFeed)` that pauses and continues with `Range`, the minisign check with the version in the trusted comment | done |
-| `update_android` | `android-latest.json` of the GitHub APK: whether a release is an update for the installed app (package, version code, signing certificate), never for a store install (`from_store`), the daily check, „Neu in Arcalo Mail“ once | done |
+| `update_android` | `android-latest.json` of the GitHub APK: whether a release is an update for the installed app (package, version code, signing certificate), never for a store install (`from_store`; an unknown installer counts as a store), the daily check, „Neu in Arcalo Mail“ once | done |
 | `mailto` | `mailto:` addresses (RFC 6068) of other apps: recipients, subject and text only | done |
 | `settings`, `settings_migrate` | One JSON object with a `version`; ordered, idempotent steps on the raw JSON, unknown keys kept (Arcalo's scheme) | done |
 | `i18n` | `tr!`/`trf!` pairs for backend texts in German and English | done |
