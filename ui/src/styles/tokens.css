@@ -231,10 +231,11 @@
   --z-overlay: 50;
   --z-anchored: 60;
   --z-hovercard: 65;
-  --z-menu: 70;
   --z-panel: 75;
   --z-viewer: 76;
   --z-toast: 80;
+  /* Menus are drawn on the page itself (components/ui.tsx), over the panels that open them. */
+  --z-menu: 85;
   --z-select: 90;
   --z-fullscreen: 900;
   --z-top: 1000;

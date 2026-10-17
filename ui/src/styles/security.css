@@ -8,7 +8,6 @@
   inset: 0;
   z-index: var(--z-top);
   display: grid;
-  place-items: center;
   padding: calc(var(--sp-6) + var(--safe-top)) calc(var(--sp-4) + var(--safe-right)) calc(var(--sp-6) + var(--safe-bottom))
     calc(var(--sp-4) + var(--safe-left));
   overflow-y: auto;
@@ -16,6 +15,8 @@
   color: var(--text);
 }
 .lock-card {
+  /* Centered while it fits, from the top when it does not (a centered grid item would be cut). */
+  margin: auto;
   width: min(360px, 100%);
   display: grid;
   justify-items: center;
@@ -213,5 +214,22 @@
 @media (max-width: 720px) {
   .lock-card {
     padding: var(--sp-6) var(--sp-4) var(--sp-4);
+  }
+  /* A phone: the lock is the screen itself, no card on it; the buttons a thumb's width. */
+  :root[data-touch] .lock-card {
+    width: 100%;
+    border: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+  :root[data-touch] .lock-wide,
+  :root[data-touch] .lock-pin {
+    min-height: var(--touch-row);
+  }
+  .phish {
+    flex-wrap: wrap;
+  }
+  .phish-body {
+    flex-basis: 100%;
   }
 }
