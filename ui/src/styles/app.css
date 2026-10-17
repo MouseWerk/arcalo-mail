@@ -1952,10 +1952,10 @@
 
 /* Writing: the whole screen on a phone, a large sheet on a tablet; above the keyboard. */
 .app[data-touch] .compose {
-  height: min(var(--compose-h-touch), calc(var(--app-h, 100vh) - 2 * var(--sp-6)));
+  height: min(var(--compose-h-touch), calc(var(--app-h, 100vh) - 2 * var(--sp-6) - var(--safe-top) - var(--safe-bottom)));
 }
 .app[data-layout="tablet"] .compose {
-  inset: var(--sp-6) 0 auto;
+  inset: calc(var(--sp-6) + var(--safe-top)) 0 auto;
   width: min(var(--compose-w-touch), calc(100vw - 2 * var(--sp-6)));
   margin: 0 auto;
 }
@@ -3817,7 +3817,7 @@ button.rule-text:hover {
 /* ---- phones: the setup over the whole screen, clear of the system bars */
 
 @media (max-width: 720px) {
-  .setup-welcome {
+  .setup.setup-welcome {
     padding: 0;
   }
   .setup-welcome .setup-card {
@@ -4230,4 +4230,37 @@ button.rule-text:hover {
   color: var(--text-3);
   font-size: var(--fs-xs);
   font-weight: var(--fw-medium);
+}
+
+/* ---- phones in landscape (two panes, low): writing and the settings over the whole screen,
+   clear of a cutout at the side */
+
+.app[data-short] .compose {
+  inset: 0 0 auto;
+  width: auto;
+  height: var(--app-h, 100%);
+  margin: 0;
+  border-radius: 0;
+}
+.app[data-short] .settings-overlay {
+  padding: 0;
+}
+.app[data-short] .settings {
+  width: 100%;
+  height: var(--app-h, 100%);
+  border-radius: 0;
+}
+.app[data-short] .settings-nav {
+  padding-top: calc(var(--sp-3) + var(--safe-top));
+  padding-left: calc(var(--sp-3) + var(--safe-left));
+}
+.app[data-short] .settings-body {
+  padding-right: calc(var(--sp-6) + var(--safe-right));
+  padding-bottom: calc(var(--sp-8) + var(--safe-bottom));
+}
+.setup {
+  padding: calc(var(--sp-6) + var(--safe-top)) calc(var(--sp-6) + var(--safe-right)) calc(var(--sp-6) + var(--safe-bottom)) calc(var(--sp-6) + var(--safe-left));
+}
+.settings .setup {
+  padding: 0;
 }

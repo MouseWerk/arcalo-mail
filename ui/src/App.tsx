@@ -45,7 +45,7 @@ import { clickSelect, isControl, isTyping, keyAction, pagesFor, rangeGaps, type 
 import { closeToast, runUndo, setUndo, showToast } from "./lib/toasts";
 import { displayName, now as clockNow, setClock } from "./lib/format";
 import { whenLabel } from "./lib/when";
-import { backStep, isTouch, layoutFor } from "./lib/touch";
+import { SHORT_MAX, backStep, isTouch, layoutFor } from "./lib/touch";
 import { applyTypeScale, onVisibility, tellSystemBars, watchViewport } from "./lib/viewport";
 import type {
   AccountInfo,
@@ -203,6 +203,7 @@ export function App() {
   // What the calendar should open on (an appointment, a day, a new one's draft), once.
   const [calRequest, setCalRequest] = useState<CalendarRequest | null>(null);
   const [width, setWidth] = useState(() => (typeof window === "undefined" ? 1280 : window.innerWidth));
+  const [height, setHeight] = useState(() => (typeof window === "undefined" ? 800 : window.innerHeight));
   // Phones: the settings' list of sections, before a section opens.
   const [settingsNav, setSettingsNav] = useState(true);
   const searchRef = useRef<HTMLInputElement | null>(null);
@@ -213,6 +214,10 @@ export function App() {
 
   const touch = isTouch(info?.touch ?? false);
   const layout = layoutFor(width, touch);
+  // A phone in landscape: two panes side by side, but too low for a floating sheet; writing and
+  // the settings take the whole screen as on a phone.
+  const short = touch && layout === "tablet" && height < SHORT_MAX;
+  const fullScreen = layout === "phone" || short;
 
   const mailbox = useMemo(() => Object.values(mailboxes).flat().find((m) => m.id === mailboxId) ?? null, [mailboxes, mailboxId]);
   const threads = settings?.threads ?? true;
@@ -317,7 +322,10 @@ export function App() {
   // ---------------------------------------------------------------- phones and tablets
 
   useEffect(() => {
-    const onResize = () => setWidth(window.innerWidth);
+    const onResize = () => {
+      setWidth(window.innerWidth);
+      setHeight(window.innerHeight);
+    };
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
   }, []);
@@ -1808,7 +1816,7 @@ export function App() {
     attachment({ id: it.id, message_id: it.message_id, part_index: 0, filename: it.filename, mime_type: it.mime_type, size: it.size, content_id: null, inline: false, section: null }, how);
 
   return (
-    <div className="app" data-view={view} data-layout={layout} data-touch={touch ? "" : undefined} data-composing={compose ? "" : undefined}>
+    <div className="app" data-view={view} data-layout={layout} data-short={short ? "" : undefined} data-touch={touch ? "" : undefined} data-composing={compose ? "" : undefined}>
       {!inApp() && <div className="demo-bar">{t("app.demo")}</div>}
       <div className="panes">
         {layout === "tablet" && view === "folders" && <div className="drawer-scrim" onClick={() => setView("list")} aria-hidden />}
@@ -2096,8 +2104,8 @@ export function App() {
           error={composeError}
           sending={sending}
           saved={isSaved(compose)}
-          modal={layout === "phone"}
-          phone={layout === "phone"}
+          modal={fullScreen}
+          phone={fullScreen}
           onChange={(d) => setCompose((c) => (c && c.uid === d.uid ? d : c))}
           onSend={(followupSecs) => void send(followupSecs)}
           onSendLater={(at, followupSecs) => (at == null ? setWhen({ kind: "send", followupSecs }) : void sendLater(at, followupSecs))}

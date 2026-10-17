@@ -341,8 +341,11 @@ for (const t of THEMES) {
           m?.scrollTo?.(0, m.scrollHeight);
         });
         await shot(`settings-${String(i).padStart(2, "0")}-${label}-end`);
-        await app.browser.back();
-        await app.waitFor(".settings-nav");
+        // A phone shows the sections as a page of their own; Back leads there.
+        if (await app.browser.execute(() => document.querySelector(".app").dataset.layout === "phone")) {
+          await app.browser.back();
+          await app.waitFor(".settings-nav");
+        }
       }
       await app.keys("Escape");
     });
