@@ -115,13 +115,16 @@ it("imports an own key protected with a passphrase and signs with it", async () 
   await app.fill("#compose-subject", "Signiert");
   await app.browser.execute(() => document.querySelector(".compose .editor, .compose .compose-body").focus());
   await app.type("Mit dem neuen Schlüssel.");
-  await app.waitFor('.compose-foot [data-compose="protect"]', 8000);
+  // Jonas's answer carried his key with prefer-encrypt=mutual (Autocrypt): the sheet starts encrypted.
+  await app.waitText('.compose-foot [data-compose="protect"]', /Verschlüsselt \(OpenPGP\)/, 8000);
   await app.click('.compose-foot [data-compose="protect"]');
   await menuItem(app, "Signieren");
-  await app.waitText('.compose-foot [data-compose="protect"]', /Signiert \(OpenPGP\)/);
+  await new Promise((r) => setTimeout(r, 300));
   const before = (await server.sent()).length;
   await clickText(app, ".compose-foot .btn-primary", "Senden");
   await app.waitUntil(async () => (await server.sent()).length === before + 1, 25000, "sent over SMTP");
   const read = await (await control(`/pgp/sent?i=${before}`)).json();
+  assert.equal(read.decrypted, true, JSON.stringify(read));
   assert.equal(read.signature, "valid", JSON.stringify(read));
+  assert.match(read.text, /Mit dem neuen Schlüssel/);
 });

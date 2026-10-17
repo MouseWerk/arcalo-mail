@@ -16,8 +16,8 @@ before(async () => {
   server = await startServer();
   await server.deliver(
     message({
-      from: "Buchhaltung <rechnung@billing.example>",
-      subject: "Ihre Rechnung",
+      from: "Lea Wagner <lea@example.org>",
+      subject: "Unterlagen zum Projekt",
       body: "Anbei die Rechnung.",
       attachments: [
         { name: "Rechnung_2026‮fdp.exe", type: "application/octet-stream", data: "MZ not really a program" },
@@ -42,7 +42,7 @@ const names = async () => {
 };
 
 it("shows the real extension and never opens a program", async () => {
-  await openMessage(app, "Ihre Rechnung");
+  await openMessage(app, "Unterlagen zum Projekt");
   await app.waitUntil(async () => (await names()).length === 2, 15000, "two attachments");
   assert.deepEqual(await names(), ["Rechnung_2026fdp.exe", "bericht.docm"], "no right-to-left override in the name");
   await clickText(app, ".reading-pane .attachment-name", "Rechnung_2026fdp.exe");
