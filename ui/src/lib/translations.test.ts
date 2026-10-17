@@ -23,7 +23,9 @@ type Finding = { rule: string; where: string; text: string; detail: string };
 
 /** A finding of `rule` in a text at `where` (a catalog key, a Rust file, a highlights file) that
  *  contains `text` is accepted. */
-const ALLOWED: { rule: string; where: string; text?: string; reason: string }[] = [];
+const ALLOWED: { rule: string; where: string; text?: string; reason: string }[] = [
+  { rule: "glossary", where: "calset.addCaldavHint", text: "mailbox.org", reason: "the name of a mail provider" },
+];
 
 /** Texts with „{n} …s“ that need no { one, other } plural because the count is never 1. */
 const COUNT_NEVER_ONE: Record<string, string> = {};

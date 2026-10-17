@@ -3,7 +3,9 @@ package de.mousewerk.arcalo.mail
 import android.content.Context
 import androidx.work.Constraints
 import androidx.work.ExistingPeriodicWorkPolicy
+import androidx.work.ExistingWorkPolicy
 import androidx.work.NetworkType
+import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.Worker
@@ -25,6 +27,7 @@ class MailCheckWorker(context: Context, params: WorkerParameters) : Worker(conte
             return Result.retry()
         }
         MailNotifier.show(applicationContext, report)
+        MailWidget.refresh(applicationContext)
         return Result.success()
     }
 
@@ -40,6 +43,14 @@ class MailCheckWorker(context: Context, params: WorkerParameters) : Worker(conte
                 .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
                 .build()
             WorkManager.getInstance(context).enqueueUniquePeriodicWork(NAME, ExistingPeriodicWorkPolicy.KEEP, request)
+        }
+
+        /** One check as soon as a network is there: a notification's button changed a message. */
+        fun soon(context: Context) {
+            val request = OneTimeWorkRequestBuilder<MailCheckWorker>()
+                .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
+                .build()
+            WorkManager.getInstance(context).enqueueUniqueWork("$NAME-soon", ExistingWorkPolicy.REPLACE, request)
         }
     }
 }

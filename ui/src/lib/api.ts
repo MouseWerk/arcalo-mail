@@ -52,6 +52,20 @@ import type {
   Tone,
   AiItem,
   Pop3Transport,
+  Abilities,
+  ArcaloSent,
+  CalChanged,
+  CalendarEvent,
+  CalendarInfo,
+  CalendarOverview,
+  CalFields,
+  CalSource,
+  CalUndo,
+  CertInfo,
+  EventDraft,
+  InvitationAnswer,
+  PgpKeyInfo,
+  StoredKey,
 } from "./types";
 
 export const inApp = (): boolean => typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -182,7 +196,46 @@ export const api = {
   aiForgetResults: () => call<void>("ai_forget_results", {}, () => undefined),
   setImportant: (ids: number[], important: boolean) => call<void>("set_important", { ids, important }, () => undefined),
   aiRemind: (messageId: number, due: number, note: string) => call<void>("ai_remind", { messageId, due, note }, () => undefined),
-  aiCalendar: (messageId: number, item: AiItem) => call<string>("ai_calendar", { messageId, item }, () => ""),
+  aiCalendar: (messageId: number, item: AiItem) => call<EventDraft>("ai_calendar", { messageId, item }, () => demo.eventDraft(item)),
+
+  // The calendar (src-tauri/src/calendar.rs).
+  calendarOverview: () => call<CalendarOverview>("calendar_overview", {}, () => demo.calendar.overview()),
+  calendarEvents: (from: string, to: string) => call<CalendarEvent[]>("calendar_events", { from, to }, () => demo.calendar.events(from, to)),
+  calendarCreate: (calendarId: number | null, fields: CalFields) => call<CalChanged>("calendar_create", { calendarId, fields }, () => demo.calendar.create(calendarId, fields)),
+  calendarUpdate: (key: string, fields: CalFields, send: boolean) => call<CalChanged>("calendar_update", { key, fields, send }, () => demo.calendar.update(key, fields)),
+  calendarDelete: (key: string) => call<CalUndo>("calendar_delete", { key }, () => demo.calendar.remove(key)),
+  calendarUndo: (undo: CalUndo) => call<CalendarEvent | null>("calendar_undo", { undo }, () => demo.calendar.undo(undo)),
+  calendarResolve: (key: string, keepMine: boolean) => call<void>("calendar_resolve", { key, keepMine }, () => undefined),
+  calendarDiscard: (key: string) => call<void>("calendar_discard", { key }, () => undefined),
+  calendarSet: (id: number, patch: { color?: string; hidden?: boolean; name?: string }) =>
+    call<CalendarInfo>("calendar_set", { id, patch }, () => demo.calendar.set(id, patch)),
+  calendarSync: () => call<CalSource[]>("calendar_sync", {}, () => demo.calendar.overview().sources),
+  caldavAdd: (name: string, url: string, username: string, password: string) => call<number>("caldav_add", { name, url, username, password }, () => 0),
+  icsSubscribe: (name: string, url: string) => call<number>("ics_subscribe", { name, url }, () => 0),
+  calendarAccount: (accountId: number, on: boolean) => call<void>("calendar_account", { accountId, on }, () => undefined),
+  calendarRemoveSource: (id: number) => call<void>("calendar_remove_source", { id }, () => undefined),
+  invitationAnswer: (messageId: number, answer: InvitationAnswer, comment: string | null) =>
+    call<{ event_key: string | null; sent: "mail" | "microsoft" | "server" | "none" }>("invitation_answer", { messageId, answer, comment }, () => ({ event_key: null, sent: "mail" })),
+
+  // Signed and encrypted mail (src-tauri/src/crypto.rs).
+  cryptoKeys: () => call<StoredKey[]>("crypto_keys", {}, () => []),
+  pgpGenerate: (accountId: number) => call<PgpKeyInfo>("pgp_generate", { accountId }, () => ({ fingerprint: "", name: "", email: "", created: 0, can_encrypt: true })),
+  pgpImport: (text: string) => call<PgpKeyInfo[]>("pgp_import", { text }, () => []),
+  pgpExport: (fingerprint: string) => call<string>("pgp_export", { fingerprint }, () => ""),
+  pgpLookup: (email: string) => call<PgpKeyInfo | null>("pgp_lookup", { email }, () => null),
+  smimeImport: (path: string, password: string) => call<CertInfo>("smime_import", { path, password }, () => ({ fingerprint: "", subject: "", issuer: "", emails: [], not_after: 0 })),
+  cryptoRemove: (kind: "pgp" | "smime", fingerprint: string) => call<void>("crypto_remove", { kind, fingerprint }, () => undefined),
+  cryptoAbilities: (accountId: number, recipients: string[]) =>
+    call<Abilities>("crypto_abilities", { accountId, recipients }, () => ({ pgp_sign: false, pgp_encrypt: false, pgp_missing: recipients, smime_sign: false, smime_encrypt: false, smime_missing: recipients })),
+  saveProtectedAttachment: (messageId: number, index: number, path: string) => call<void>("save_protected_attachment", { messageId, index, path }, () => undefined),
+
+  // „An Arcalo senden“ (src-tauri/src/arcalo.rs).
+  arcaloStatus: () => call<string | null>("arcalo_status", {}, () => null),
+  sendToArcalo: (messageId: number, target: "page" | "task" | null) =>
+    call<ArcaloSent>("send_to_arcalo", { messageId, target }, () => ({ via_cli: false, title: "", markdown: "", file_name: "mail.md" })),
+  saveMarkdown: (path: string, text: string) => call<void>("save_markdown", { path, text }, () => undefined),
+  /** The message a notification asked to open before the UI was ready. */
+  takePendingOpen: () => call<{ id: number; reply: boolean } | null>("take_pending_open", {}, () => null),
 
   // Rules.
   rules: () => call<Rule[]>("rules_list", {}, () => demo.rules),
@@ -303,6 +356,40 @@ export function onTrayAction(f: (action: string) => void): () => void {
 }
 
 /** Opens a link in the default browser. */
+/** The calendar changed (a sync, a write that reached the server). */
+export function onCalendarChanged(f: () => void): () => void {
+  if (!inApp()) return () => {};
+  let off: (() => void) | null = null;
+  let gone = false;
+  void import("@tauri-apps/api/event").then(({ listen }) =>
+    listen("calendar-changed", () => f()).then((un) => {
+      if (gone) un();
+      else off = un;
+    }),
+  );
+  return () => {
+    gone = true;
+    off?.();
+  };
+}
+
+/** A notification asked to open a message (to read or to reply). */
+export function onOpenMessage(f: () => void): () => void {
+  if (!inApp()) return () => {};
+  let off: (() => void) | null = null;
+  let gone = false;
+  void import("@tauri-apps/api/event").then(({ listen }) =>
+    listen("open-message", () => f()).then((un) => {
+      if (gone) un();
+      else off = un;
+    }),
+  );
+  return () => {
+    gone = true;
+    off?.();
+  };
+}
+
 export async function openExternal(url: string): Promise<void> {
   if (inApp()) {
     const { openUrl } = await import("@tauri-apps/plugin-opener");

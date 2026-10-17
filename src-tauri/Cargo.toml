@@ -16,6 +16,8 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 base64 = "0.22.1"
+# The calendar's ranges and times (`calendar.rs`).
+chrono = "0.4.45"
 # The addresses of the network interfaces: a change means reconnecting (`watch_network`).
 if-addrs = "0.15"
 mail-core = { path = "../crates/mail-core" }
@@ -43,6 +45,11 @@ keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }
 # One window per user: a second start brings the first one to the front.
 [target.'cfg(any(windows, target_os = "macos", target_os = "linux"))'.dependencies]
 tauri-plugin-single-instance = "2"
+
+# Buttons on the new-mail notification (archive, mark read, reply): the notification server's
+# actions on Linux, the toast's buttons on Windows.
+[target.'cfg(any(windows, target_os = "linux"))'.dependencies]
+notify-rust = "4.18"
 
 # Android (`mobile/android.rs`): the Kotlin side through JNI, also from the background check that
 # runs without the app (WorkManager): the Keystore cipher, Custom Tabs, notifications.

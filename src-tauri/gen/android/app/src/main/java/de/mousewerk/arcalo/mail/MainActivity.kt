@@ -28,11 +28,27 @@ class MainActivity : TauriActivity() {
     MailNotifier.createChannel(this)
     MailCheckWorker.schedule(this)
     takeRedirect(intent)
+    takeOpen(intent)
   }
 
   override fun onNewIntent(intent: Intent) {
     super.onNewIntent(intent)
     takeRedirect(intent)
+    takeOpen(intent)
+  }
+
+  /** A notification or the widget asked to open a message (to read it or to reply): handed to Rust. */
+  private fun takeOpen(intent: Intent?) {
+    if (intent == null) return
+    val id = intent.getLongExtra(EXTRA_OPEN, -1)
+    if (id < 0) return
+    MailNative.openMessage(id, intent.getBooleanExtra(EXTRA_REPLY, false))
+    intent.removeExtra(EXTRA_OPEN)
+  }
+
+  companion object {
+    const val EXTRA_OPEN = "open_message"
+    const val EXTRA_REPLY = "reply"
   }
 
   override fun onWebViewCreate(webView: WebView) {

@@ -2,4 +2,9 @@
 <resources>
     <!-- ui/src/styles/tokens.css, token bg-app. -->
     <color name="arcalo_mail_background">#0e0f11</color>
+    <!-- The widget: tokens bg-raised, text, text-3, border. -->
+    <color name="widget_background">#1c1d21</color>
+    <color name="widget_text">#ececef</color>
+    <color name="widget_text_2">#989ba4</color>
+    <color name="widget_border">#12ffffff</color>
 </resources>

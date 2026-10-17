@@ -38,6 +38,9 @@ pub struct Note {
     pub group: String,
     pub title: String,
     pub body: String,
+    /// The message of a note about one message: its buttons (archive, mark read, reply) act on
+    /// it. None for a summary or a reminder.
+    pub id: Option<i64>,
 }
 
 /// What a run found.
@@ -88,14 +91,14 @@ pub fn notes_for(account: &Account, mut list: Vec<MessageSummary>) -> Vec<Note> 
     let group = account.email.clone();
     if list.len() > NOTES_PER_ACCOUNT {
         return new_mail_text(&list, Some(account))
-            .map(|(title, body)| Note { key: format!("account-{}", account.id), group, title, body })
+            .map(|(title, body)| Note { key: format!("account-{}", account.id), group, title, body, id: None })
             .into_iter()
             .collect();
     }
     list.iter()
         .filter_map(|m| {
             let (title, body) = new_mail_text(std::slice::from_ref(m), Some(account))?;
-            Some(Note { key: format!("message-{}", m.id), group: group.clone(), title, body })
+            Some(Note { key: format!("message-{}", m.id), group: group.clone(), title, body, id: Some(m.id) })
         })
         .collect()
 }
@@ -191,10 +194,24 @@ pub fn run(data_dir: &Path, budget: Duration) -> Report {
         for (i, r) in due.reminders.iter().enumerate() {
             let group = accounts.iter().find(|a| a.id == r.account_id).map(|a| a.email.clone()).unwrap_or_default();
             let (title, body) = reminder_text(r);
-            notes.push(Note { key: format!("reminder-{}-{i}", r.account_id), group, title, body });
+            notes.push(Note { key: format!("reminder-{}-{i}", r.account_id), group, title, body, id: None });
         }
     }
+    // The home-screen widget shows what came in.
+    crate::write_widget(&store, data_dir);
     Report { skipped: false, notes, unread: store.unread_in_inboxes().unwrap_or(0) }
+}
+
+/// A notification's button pressed while the app is not running (Android): archived or marked
+/// read in the store of `data_dir`; the next check carries it to the server. Returns the unread
+/// count for the badge.
+pub fn quick_action(data_dir: &Path, message_id: i64, action: &str) -> Option<u32> {
+    let store = Store::open(&data_dir.join("mail.db")).ok()?;
+    if let Err(e) = mail_core::actions::quick_action(&store, message_id, action) {
+        mail_core::diag::log("background", &format!("notification action: {e}"));
+    }
+    crate::write_widget(&store, data_dir);
+    store.unread_in_inboxes().ok()
 }
 
 #[cfg(test)]
@@ -244,6 +261,7 @@ mod tests {
         assert_eq!(notes.len(), 2);
         assert_eq!((notes[0].title.as_str(), notes[0].body.as_str()), ("Lea", "(No subject)"), "newest first");
         assert_eq!(notes[1].key, "message-1");
+        assert_eq!(notes[1].id, Some(1), "its buttons act on the message");
         assert_eq!(notes[1].group, "maria@example.org");
 
         let many: Vec<_> = (1..=5).map(|i| summary(i, "X", "s", i)).collect();
@@ -251,6 +269,7 @@ mod tests {
         assert_eq!(notes.len(), 1);
         assert_eq!(notes[0].title, "5 new messages");
         assert_eq!(notes[0].body, "maria@example.org");
+        assert_eq!(notes[0].id, None);
         assert!(notes_for(&a, vec![]).is_empty());
     }
 

@@ -91,6 +91,10 @@ describe("compose", () => {
     one_click: false,
     marks: { pinned: false, later: false, snoozed_until: null, followup_due: null },
     unsubscribed: null,
+    protection: null,
+    protected_files: [],
+    invitation: null,
+    meeting: null,
   };
   const account = { id: 1, provider: "imap" as const, name: "", email: "maria@example.org", sender_name: "Maria", transport: { kind: "graph" as const }, signature: "Maria Muster" };
 

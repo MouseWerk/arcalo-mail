@@ -39,8 +39,8 @@
 //!   account signed in through the identity provider; `POST /graph-event?calendar=C1` (Graph's
 //!   event JSON) puts one
 //! * `GET /pgp/public`: Jonas's OpenPGP key; `GET /pgp/sent?i=0`: what Jonas reads in sent
-//!   message 0; `POST /pgp/deliver?subject=…` (text as the body): a signed and encrypted message
-//!   from Jonas into the inbox
+//!   message 0; `POST /pgp/deliver?subject=…&date=…` (text as the body): a signed and encrypted
+//!   message from Jonas into the inbox
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -384,8 +384,10 @@ async fn handle(stream: TcpStream, shared: Arc<Shared>) -> std::io::Result<()> {
             let subject = q.get("subject").cloned().unwrap_or_else(|| "Verschlüsselt".into());
             let sent: Vec<(String, Vec<u8>)> =
                 shared.sent.lock().unwrap().iter().map(|m| (m.from.clone(), m.raw.clone())).collect();
-            let now =
-                std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
+            // `date` (Unix seconds): the screenshots' fixed clock.
+            let now = q.get("date").and_then(|v| v.parse().ok()).unwrap_or_else(|| {
+                std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64)
+            });
             let letter = {
                 let peer = shared.peer.lock().unwrap();
                 peer.learn_from(&sent);

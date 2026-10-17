@@ -11,6 +11,8 @@ import {
   Italic,
   Link,
   List,
+  Lock,
+  ShieldCheck,
   ListOrdered,
   Paperclip,
   Quote,
@@ -28,7 +30,7 @@ import { api, onFileDrop, pickFiles } from "../lib/api";
 import { fileSize } from "../lib/format";
 import { useAi } from "../lib/ai";
 import { matchSnippets, snippetQuery, today } from "../lib/snippets";
-import type { Account, Contact, Destination, Template, WritingStyle } from "../lib/types";
+import type { Abilities, Account, Contact, Destination, ProtectMethod, Template, WritingStyle } from "../lib/types";
 import { Menu, PromptDialog, Spinner, trapFocus, type MenuItem } from "./ui";
 import { followupItems, sendLaterItems } from "./TimeMenus";
 import { AiText, PrivacyLine } from "./Assistant";
@@ -48,7 +50,46 @@ type Props = {
   onDiscard: () => void;
   /** The AI assistant is set up (the writing help). */
   aiOn?: boolean;
+  /** New messages are signed with this method when the key is there (Settings → Verschlüsselung). */
+  signByDefault?: ProtectMethod | null;
 };
+
+/**
+ * Signing and encrypting: what the account's keys and the recipients' keys allow, asked again
+ * when the recipients change; signing by default once it is known to be possible.
+ */
+function useAbilities(draft: ComposeState, onChange: (d: ComposeState) => void, signByDefault: ProtectMethod | null | undefined) {
+  const [abilities, setAbilities] = useState<Abilities | null>(null);
+  const recipients = [...draft.to, ...draft.cc, ...draft.bcc];
+  const key = `${draft.accountId}|${recipients.join(",")}`;
+  const defaulted = useRef(false);
+  const latest = useRef(draft);
+  latest.current = draft;
+  useEffect(() => {
+    if (draft.accountId == null) return;
+    let gone = false;
+    const timer = window.setTimeout(() => {
+      void api
+        .cryptoAbilities(draft.accountId!, recipients)
+        .then((a) => {
+          if (gone) return;
+          setAbilities(a);
+          const d = latest.current;
+          if (!defaulted.current && d.protect === undefined && signByDefault && (signByDefault === "pgp" ? a.pgp_sign : a.smime_sign)) {
+            defaulted.current = true;
+            onChange({ ...d, protect: { method: signByDefault, sign: true, encrypt: false } });
+          }
+        })
+        .catch(() => {});
+    }, 300);
+    return () => {
+      gone = true;
+      clearTimeout(timer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key]);
+  return abilities;
+}
 
 /** The snippet chooser: what was typed after `;;`, where the caret is. */
 type SnippetPick = { query: string; list: Template[]; active: number };
@@ -306,9 +347,35 @@ function Editor({
 
 /** The compose sheet: bottom right on a wide window, full screen on a phone. Esc closes it (and
  *  keeps the draft), Ctrl+Enter sends. Files dropped on the window are attached. */
-export function ComposeSheet({ draft, accounts, error, sending, onChange, onSend, onSendLater, onSaveDraft, onClose, onDiscard, aiOn }: Props) {
+export function ComposeSheet({ draft, accounts, error, sending, onChange, onSend, onSendLater, onSaveDraft, onClose, onDiscard, aiOn, signByDefault }: Props) {
   const t = useT();
   const lang = currentLang();
+  const abilities = useAbilities(draft, onChange, signByDefault);
+  const protect = draft.protect ?? null;
+  /** The protection menu: per method signing and encrypting, as the keys allow. */
+  const protectItems = (): MenuItem[] => {
+    const a = abilities;
+    const items: MenuItem[] = [];
+    const methods: [ProtectMethod, string, boolean, boolean, string[]][] = [
+      ["pgp", "OpenPGP", !!a?.pgp_sign, !!a?.pgp_encrypt, a?.pgp_missing ?? []],
+      ["smime", "S/MIME", !!a?.smime_sign, !!a?.smime_encrypt, a?.smime_missing ?? []],
+    ];
+    for (const [method, name, canSign, canEncrypt, missing] of methods) {
+      const on = protect?.method === method ? protect : null;
+      const set = (sign: boolean, encrypt: boolean) => onChange({ ...draft, protect: sign || encrypt ? { method, sign, encrypt } : null });
+      items.push({ heading: name });
+      items.push({ label: t("protect.sign"), checked: !!on?.sign, disabled: !canSign, hint: canSign ? undefined : t("protect.noOwnKey"), onSelect: () => set(!on?.sign, !!on?.encrypt) });
+      items.push({
+        label: t("protect.encrypt"),
+        checked: !!on?.encrypt,
+        disabled: !canEncrypt,
+        hint: canEncrypt ? undefined : missing.length ? t("protect.missingFor", { n: missing.length }) : t("protect.noRecipients"),
+        onSelect: () => set(on?.sign ?? canSign, !on?.encrypt),
+      });
+    }
+    if (protect) items.push("separator", { label: t("protect.none"), onSelect: () => onChange({ ...draft, protect: null }) });
+    return items;
+  };
   const [dropping, setDropping] = useState(false);
   // „Erinnern, wenn keine Antwort“ after this many days (null: no reminder).
   const [remind, setRemind] = useState<number | null>(null);
@@ -708,6 +775,21 @@ export function ComposeSheet({ draft, accounts, error, sending, onChange, onSend
         <button type="button" className="icon-btn" onClick={() => void pickFiles().then((p) => (p.length ? attach(p) : undefined))} aria-label={t("compose.attach")} title={t("compose.attach")}>
           <Paperclip size={16} strokeWidth={1.75} aria-hidden />
         </button>
+        {(abilities?.pgp_sign || abilities?.smime_sign || abilities?.pgp_encrypt || abilities?.smime_encrypt || protect) && (
+          <button
+            type="button"
+            className={`btn btn-quiet protect-btn${protect ? " protect-on" : ""}`}
+            data-compose="protect"
+            aria-haspopup="menu"
+            aria-pressed={!!protect}
+            aria-label={t("protect.menu")}
+            title={t("protect.menu")}
+            onClick={(e) => setMenu({ items: protectItems(), at: above(e.currentTarget) })}
+          >
+            {protect?.encrypt ? <Lock size={16} strokeWidth={1.75} aria-hidden /> : <ShieldCheck size={16} strokeWidth={1.75} aria-hidden />}
+            {protect && <span>{protect.encrypt ? t("protect.encryptedShort", { method: protect.method === "pgp" ? "OpenPGP" : "S/MIME" }) : t("protect.signedShort", { method: protect.method === "pgp" ? "OpenPGP" : "S/MIME" })}</span>}
+          </button>
+        )}
         <button type="button" className="icon-btn" aria-pressed={draft.rich} onClick={toggleRich} aria-label={draft.rich ? t("compose.toPlain") : t("compose.toRich")} title={draft.rich ? t("compose.toPlain") : t("compose.toRich")}>
           <Type size={16} strokeWidth={1.75} aria-hidden />
         </button>

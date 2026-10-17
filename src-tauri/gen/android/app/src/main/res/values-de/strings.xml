@@ -1,4 +1,15 @@
 <resources>
     <string name="channel_new_mail">Neue Nachrichten</string>
     <string name="channel_new_mail_text">Eine Benachrichtigung für jede neue Nachricht im Posteingang</string>
+    <string name="action_archive">Archivieren</string>
+    <string name="action_read">Gelesen</string>
+    <string name="action_reply">Antworten</string>
+    <string name="widget_name">Arcalo Mail: Personen</string>
+    <string name="widget_description">Ungelesene Mail und die neuesten Nachrichten von Personen</string>
+    <string name="widget_none_unread">Nichts ungelesen</string>
+    <string name="widget_empty">Noch keine Mail von Personen</string>
+    <plurals name="widget_unread">
+        <item quantity="one">%d ungelesen</item>
+        <item quantity="other">%d ungelesen</item>
+    </plurals>
 </resources>

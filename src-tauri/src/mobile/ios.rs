@@ -11,6 +11,10 @@
 //!   system decides when, often hours later). It runs `background::run` for 25 seconds and posts
 //!   local notifications.
 //! - The badge: `applicationIconBadgeNumber` (the notification permission includes it).
+//! - The notification buttons: a category `new-mail` with archive, mark read (both in the
+//!   background) and reply (opens the app); a delegate of the notification center hands the
+//!   pressed button to `mobile::notification_action` and still shows notifications while the
+//!   app is in front.
 
 use std::cell::RefCell;
 use std::ffi::{CStr, CString};
@@ -37,6 +41,14 @@ const NEXT_CHECK_SECS: f64 = 15.0 * 60.0;
 const STATE_BACKGROUND: isize = 2;
 /// `ASWebAuthenticationSessionErrorCodeCanceledLogin`.
 const CANCELED_LOGIN: isize = 1;
+/// The category of a note about one message (its buttons).
+const CATEGORY: &str = "new-mail";
+/// `UNNotificationDefaultActionIdentifier`: the notification itself was tapped.
+const DEFAULT_ACTION: &str = "com.apple.UNNotificationDefaultActionIdentifier";
+/// `UNNotificationActionOptionForeground`.
+const OPTION_FOREGROUND: usize = 1 << 2;
+/// `UNNotificationPresentationOptionSound | List | Banner`.
+const PRESENT: usize = (1 << 1) | (1 << 3) | (1 << 4);
 
 fn class(name: &CStr) -> Option<&'static AnyClass> {
     AnyClass::get(name)
@@ -193,6 +205,113 @@ fn start_session(url: &str) -> Result<(), String> {
     Ok(())
 }
 
+// ---------------------------------------------------------------------------- notification buttons
+
+define_class!(
+    // SAFETY: NSObject has no subclassing requirements; no Drop.
+    #[unsafe(super(NSObject))]
+    #[name = "ArcaloMailNotificationDelegate"]
+    /// The notification center's delegate: the pressed buttons, and notifications shown while
+    /// the app is in front.
+    struct NotificationDelegate;
+
+    impl NotificationDelegate {
+        #[unsafe(method(userNotificationCenter:willPresentNotification:withCompletionHandler:))]
+        fn will_present(&self, _center: *mut AnyObject, _note: *mut AnyObject, done: *mut Block<dyn Fn(usize)>) {
+            // SAFETY: the system hands a valid block.
+            if let Some(done) = unsafe { done.as_ref() } {
+                done.call((PRESENT,));
+            }
+        }
+
+        #[unsafe(method(userNotificationCenter:didReceiveNotificationResponse:withCompletionHandler:))]
+        fn did_receive(&self, _center: *mut AnyObject, response: *mut AnyObject, done: *mut Block<dyn Fn()>) {
+            // SAFETY: `response` is a UNNotificationResponse.
+            unsafe { take_response(response) };
+            // SAFETY: the system hands a valid block.
+            if let Some(done) = unsafe { done.as_ref() } {
+                done.call(());
+            }
+        }
+    }
+);
+
+thread_local! {
+    /// The delegate (the center keeps it weakly), main thread only.
+    static DELEGATE: RefCell<Option<Retained<AnyObject>>> = const { RefCell::new(None) };
+}
+
+/// The message and the button of a notification's response.
+///
+/// # Safety
+/// `response` must be a `UNNotificationResponse`.
+unsafe fn take_response(response: *mut AnyObject) {
+    if response.is_null() {
+        return;
+    }
+    let (action, id) = unsafe {
+        let action: *mut AnyObject = msg_send![response, actionIdentifier];
+        let note: *mut AnyObject = msg_send![response, notification];
+        let request: *mut AnyObject = msg_send![note, request];
+        let content: *mut AnyObject = msg_send![request, content];
+        let info: *mut AnyObject = msg_send![content, userInfo];
+        let number: *mut AnyObject =
+            if info.is_null() { std::ptr::null_mut() } else { msg_send![info, objectForKey: &*ns_string("message")] };
+        let id: i64 = if number.is_null() { -1 } else { msg_send![number, longLongValue] };
+        (rust_string(action).unwrap_or_default(), id)
+    };
+    if id < 0 {
+        return;
+    }
+    let action = if action == DEFAULT_ACTION { "default".to_string() } else { action };
+    if action == "default" || action == "reply" {
+        crate::commands::open_message(super::app(), id, action == "reply");
+    } else {
+        super::notification_action(id, action);
+    }
+}
+
+/// The category with the buttons, and the delegate (in the app's setup, on the main thread).
+pub fn register_categories() {
+    let (Some(center_class), Some(action_class), Some(category_class), Some(set_class), Some(array_class)) = (
+        class(c"UNUserNotificationCenter"),
+        class(c"UNNotificationAction"),
+        class(c"UNNotificationCategory"),
+        class(c"NSSet"),
+        class(c"NSArray"),
+    ) else {
+        return;
+    };
+    autoreleasepool(|_| {
+        // SAFETY: the documented UserNotifications API (iOS 10+), on the main thread.
+        unsafe {
+            let make = |id: &str, title: &str, options: usize| -> *mut AnyObject {
+                msg_send![action_class, actionWithIdentifier: &*ns_string(id), title: &*ns_string(title), options: options]
+            };
+            let actions = [
+                make("archive", mail_core::tr!("Archivieren", "Archive"), 0),
+                make("read", mail_core::tr!("Gelesen", "Mark read"), 0),
+                make("reply", mail_core::tr!("Antworten", "Reply"), OPTION_FOREGROUND),
+            ];
+            let list: *mut AnyObject = msg_send![array_class, arrayWithObjects: actions.as_ptr(), count: actions.len()];
+            let empty: *mut AnyObject = msg_send![array_class, array];
+            let category: *mut AnyObject = msg_send![
+                category_class,
+                categoryWithIdentifier: &*ns_string(CATEGORY),
+                actions: list,
+                intentIdentifiers: empty,
+                options: 0usize
+            ];
+            let set: *mut AnyObject = msg_send![set_class, setWithObject: category];
+            let center: *mut AnyObject = msg_send![center_class, currentNotificationCenter];
+            let _: () = msg_send![center, setNotificationCategories: set];
+            let delegate: Retained<AnyObject> = msg_send![NotificationDelegate::class(), new];
+            let _: () = msg_send![center, setDelegate: &*delegate];
+            DELEGATE.with(|d| *d.borrow_mut() = Some(delegate));
+        }
+    });
+}
+
 // ---------------------------------------------------------------------------- background
 
 /// Registers the background task; before the launch ends (`run`, before Tauri starts).
@@ -279,6 +398,16 @@ fn post(report: &Report) {
             let _: () = msg_send![&*content, setTitle: &*ns_string(&note.title)];
             let _: () = msg_send![&*content, setBody: &*ns_string(&note.body)];
             let _: () = msg_send![&*content, setThreadIdentifier: &*ns_string(&note.group)];
+            // A note about one message: its buttons, and the message for them.
+            if let (Some(id), Some(dict_class), Some(number_class)) =
+                (note.id, class(c"NSDictionary"), class(c"NSNumber"))
+            {
+                let number: *mut AnyObject = msg_send![number_class, numberWithLongLong: id];
+                let info: *mut AnyObject =
+                    msg_send![dict_class, dictionaryWithObject: number, forKey: &*ns_string("message")];
+                let _: () = msg_send![&*content, setUserInfo: info];
+                let _: () = msg_send![&*content, setCategoryIdentifier: &*ns_string(CATEGORY)];
+            }
             if let Some(number_class) = class(c"NSNumber") {
                 let badge: *mut AnyObject = msg_send![number_class, numberWithInteger: report.unread as isize];
                 let _: () = msg_send![&*content, setBadge: badge];

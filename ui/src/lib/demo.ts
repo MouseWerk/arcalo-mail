@@ -1,6 +1,7 @@
 // Sample data for `npm run dev` in a plain browser (no Tauri backend): the layout, themes and
 // flows can be looked at without an account. Never used inside the app.
 
+import type { AiItem, CalChanged, CalendarEvent, CalendarInfo, CalendarOverview, CalFields, CalUndo, EventDraft } from "./types";
 import type {
   Account,
   AccountDraft,
@@ -156,6 +157,10 @@ let settings: Settings = {
   ai: { providers: [], default_provider: "", accounts: {}, auto_summary: true, priority: true, tone: true },
   bimi: true,
   gravatar: false,
+  calendar: { default_calendar: null, entry_minutes: 30, workdays: [1, 2, 3, 4, 5] },
+  autocrypt: true,
+  sign_by_default: null,
+  arcalo_target: "page",
 };
 const listeners = new Set<(n: Notice) => void>();
 
@@ -262,6 +267,10 @@ export const demo = {
       sender_trusted: senders.has(x.from?.email ?? ""),
       files: x.has_attachments ? [{ id: 1, message_id: x.id, part_index: 0, filename: "Angebot-Relaunch.pdf", mime_type: "application/pdf", size: 182_000, content_id: null, inline: false, section: null }] : [],
       load_error: null,
+      protection: null,
+      protected_files: [],
+      invitation: null,
+      meeting: null,
     };
   },
   allowRemote: (id: number) => void remote.add(id),
@@ -416,4 +425,80 @@ export const demo = {
     return { email, name: list[0]?.from?.name ?? null, org: null, phones: [], emails: [], book: null, received: list.length, sent: 0, recent: list.slice(0, 8), files: [] };
   },
   hub: (_f: HubFilter): { total: number; offset: number; items: HubItem[] } => ({ total: 0, offset: 0, items: [] }),
+  eventDraft: (item: AiItem): EventDraft => {
+    const start = item.date ? new Date(`${item.date}T${item.time ?? "09:00"}:00`) : new Date();
+    return { title: item.title, start: start.toISOString(), end: new Date(start.getTime() + 3600e3).toISOString(), all_day: !item.time, location: item.place ?? "", description: "" };
+  },
+  calendar: demoCalendar(),
 };
+
+/** A calendar on this device with a few appointments around today, for the browser preview. */
+function demoCalendar() {
+  const cals: CalendarInfo[] = [
+    { id: 1, source_id: 1, kind: "local", source_name: "Auf diesem Gerät", remote_id: "local", name: "Kalender", color: "#2563eb", writable: true, hidden: false, account_id: null },
+    { id: 2, source_id: 2, kind: "ics", source_name: "Feiertage", remote_id: "ics", name: "Feiertage", color: "#0d9488", writable: false, hidden: false, account_id: null },
+  ];
+  const day = (offset: number, h: number, m = 0) => {
+    const d = new Date();
+    d.setHours(h, m, 0, 0);
+    d.setDate(d.getDate() + offset);
+    return d.toISOString();
+  };
+  let next = 10;
+  const make = (cal: number, title: string, start: string, end: string, extra: Partial<CalendarEvent> = {}): CalendarEvent => {
+    const id = next++;
+    return { key: `${cal}|${id}|`, calendar_id: cal, object_id: id, uid: `demo-${id}`, instance: "", title, start, end, all_day: false, location: "", organizer: "", attendees: [], body: null, link: null, link_kind: null, busy: "busy", private: false, recurring: false, categories: [], editable: cal === 1 ? "yes" : "ics", write: null, ...extra };
+  };
+  let events: CalendarEvent[] = [
+    make(1, "Abstimmung Relaunch", day(0, 10), day(0, 11), { location: "Raum 2", link: "https://meet.jit.si/arcalo-relaunch", link_kind: "Jitsi" }),
+    make(1, "Mittag mit Lea", day(0, 12, 30), day(0, 13, 30)),
+    make(1, "Angebot durchsehen", day(1, 9), day(1, 10, 30)),
+    make(2, "Brückentag", day(2, 0), day(3, 0), { all_day: true }),
+  ];
+  const deleted = new Map<number, CalendarEvent>();
+  return {
+    overview: (): CalendarOverview => ({
+      sources: [
+        { id: 1, kind: "local", name: "Auf diesem Gerät", url: "", username: "", account_id: null, auto_schedule: false, last_sync: null, error: null, pending: 0 },
+        { id: 2, kind: "ics", name: "Feiertage", url: "https://example.org", username: "", account_id: null, auto_schedule: false, last_sync: Math.floor(Date.now() / 1000), error: null, pending: 0 },
+      ],
+      calendars: cals,
+      default: 1,
+      presets: [["iCloud", "https://caldav.icloud.com/"]],
+      accounts: [],
+    }),
+    events: (from: string, to: string) => events.filter((e) => e.start < to && e.end > from && !cals.find((c) => c.id === e.calendar_id)?.hidden),
+    create: (calendarId: number | null, f: CalFields): CalChanged => {
+      const e = make(calendarId ?? 1, f.title ?? "", f.start ?? day(0, 9), f.end ?? day(0, 10), { location: f.location ?? "" });
+      events = [...events, e];
+      return { event: e, undo: { object_id: e.object_id, kind: "created", before: null } };
+    },
+    update: (key: string, f: CalFields): CalChanged => {
+      const was = events.find((e) => e.key === key)!;
+      const e = { ...was, ...f } as CalendarEvent;
+      events = events.map((x) => (x.key === key ? e : x));
+      return { event: e, undo: { object_id: e.object_id, kind: "changed", before: JSON.stringify(was) } };
+    },
+    remove: (key: string): CalUndo => {
+      const was = events.find((e) => e.key === key)!;
+      deleted.set(was.object_id, was);
+      events = events.filter((e) => e.key !== key);
+      return { object_id: was.object_id, kind: "deleted", before: null };
+    },
+    undo: (u: CalUndo): CalendarEvent | null => {
+      if (u.kind === "created") {
+        events = events.filter((e) => e.object_id !== u.object_id);
+        return null;
+      }
+      const back = u.kind === "deleted" ? deleted.get(u.object_id) : u.before ? (JSON.parse(u.before) as CalendarEvent) : undefined;
+      if (!back) return null;
+      events = [...events.filter((e) => e.object_id !== u.object_id), back];
+      return back;
+    },
+    set: (id: number, patch: { color?: string; hidden?: boolean; name?: string }): CalendarInfo => {
+      const i = cals.findIndex((c) => c.id === id);
+      cals[i] = { ...cals[i], ...patch };
+      return cals[i];
+    },
+  };
+}

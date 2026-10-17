@@ -232,6 +232,10 @@
   --text: #ececef;
   --text-2: #a7a9b1;
   --text-3: #989ba4;
+  /* Calendar appointments: how much of the calendar color their fill takes, and time and
+     place on it (4.5:1 on every calendar color; Arcalo's lib/eventlook.ts). */
+  --ev-tint: 26%;
+  --ev-meta: #c6c7cd;
   --star: #facc15;
   --warning-fill: #fbbf24;
   --text-inverse: #0e0f11;
@@ -305,6 +309,10 @@
   --text: #18181b;
   --text-2: #52525b;
   --text-3: #67676f;
+  /* Calendar appointments: how much of the calendar color their fill takes, and time and
+     place on it (4.5:1 on every calendar color; Arcalo's lib/eventlook.ts). */
+  --ev-tint: 14%;
+  --ev-meta: #52525b;
   --star: #c98209;
   --warning-fill: #c98209;
   --text-inverse: #ffffff;
@@ -373,6 +381,10 @@
   --text: #ffffff;
   --text-2: #e6e6e6;
   --text-3: #d0d0d0;
+  /* Calendar appointments: how much of the calendar color their fill takes, and time and
+     place on it (4.5:1 on every calendar color; Arcalo's lib/eventlook.ts). */
+  --ev-tint: 26%;
+  --ev-meta: #e6e6e6;
   --star: #ffd84d;
   --warning-fill: #ffd84d;
   --text-inverse: #000000;

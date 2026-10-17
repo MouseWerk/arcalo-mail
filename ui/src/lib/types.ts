@@ -206,7 +206,160 @@ export type MessageView = {
   /** The attachments the user sees. */
   files: Attachment[];
   load_error: string | null;
+  /** OpenPGP or S/MIME: encrypted, signed, by whom, whether it could be opened. */
+  protection: Protection | null;
+  /** The files inside an encrypted message (saved through the backend, decrypted again). */
+  protected_files: ProtectedFile[];
+  /** A meeting invitation, update or cancellation in the message. */
+  invitation: InvitationCard | null;
+  /** An online meeting's link in the message („Beitreten“). */
+  meeting: { url: string; kind: string } | null;
 };
+
+// ---------------------------------------------------------------- signed and encrypted mail
+
+export type Protection = {
+  method: "pgp" | "smime";
+  encrypted: boolean;
+  decrypted: boolean;
+  signed: boolean;
+  signature: "valid" | "untrusted" | "mismatch" | "unknown_key" | "invalid" | null;
+  signer: string | null;
+  fingerprint: string | null;
+  error: string | null;
+};
+
+export type ProtectedFile = { index: number; filename: string | null; mime_type: string; size: number };
+
+export type ProtectMethod = "pgp" | "smime";
+
+export type Protect = { method: ProtectMethod; sign: boolean; encrypt: boolean };
+
+export type Abilities = { pgp_sign: boolean; pgp_encrypt: boolean; pgp_missing: string[]; smime_sign: boolean; smime_encrypt: boolean; smime_missing: string[] };
+
+export type StoredKey = { kind: "pgp" | "smime"; fingerprint: string; email: string; name: string; own: boolean; source: string; expires: number | null };
+
+export type PgpKeyInfo = { fingerprint: string; name: string; email: string; created: number; can_encrypt: boolean };
+
+export type CertInfo = { fingerprint: string; subject: string; issuer: string; emails: string[]; not_after: number };
+
+// ---------------------------------------------------------------- calendar and meetings
+
+export type Busy = "free" | "tentative" | "busy" | "oof" | "elsewhere";
+
+/** How an appointment may be changed here (mail_core::calendar::Editability). */
+export type Editability = "yes" | "confirm" | "received" | "series" | "read_only" | "ics";
+
+/** What a change of an appointment says; RFC 3339 times. */
+export type CalFields = { title?: string; start?: string; end?: string; location?: string; all_day?: boolean; description?: string };
+
+/** A change waiting for the server. */
+export type WriteState = { op: "create" | "update" | "delete"; state: "pending" | "conflict" | "refused"; error: string | null; server: CalFields | null; mine: CalFields | null; send: boolean };
+
+export type CalendarEvent = {
+  /** `<calendar>|<object>|<instance>`. */
+  key: string;
+  calendar_id: number;
+  object_id: number;
+  uid: string;
+  instance: string;
+  title: string;
+  start: string;
+  end: string;
+  all_day: boolean;
+  location: string;
+  organizer: string;
+  attendees: string[];
+  body: string | null;
+  link: string | null;
+  link_kind: string | null;
+  busy: Busy;
+  private: boolean;
+  recurring: boolean;
+  categories: string[];
+  editable: Editability;
+  write: WriteState | null;
+};
+
+export type CalSourceKind = "local" | "caldav" | "graph" | "jmap" | "ics";
+
+export type CalSource = {
+  id: number;
+  kind: CalSourceKind;
+  name: string;
+  url: string;
+  username: string;
+  account_id: number | null;
+  auto_schedule: boolean;
+  last_sync: number | null;
+  error: string | null;
+  pending: number;
+};
+
+export type CalendarInfo = {
+  id: number;
+  source_id: number;
+  kind: CalSourceKind;
+  source_name: string;
+  remote_id: string;
+  name: string;
+  color: string;
+  writable: boolean;
+  hidden: boolean;
+  account_id: number | null;
+};
+
+export type CalendarOverview = {
+  sources: CalSource[];
+  calendars: CalendarInfo[];
+  /** Where new appointments go. */
+  default: number;
+  /** CalDAV servers people use: name and address (`{host}`: the user's own). */
+  presets: [string, string][];
+  accounts: { account_id: number; email: string; kind: "graph" | "jmap"; on: boolean }[];
+};
+
+export type CalUndo = { object_id: number; kind: "created" | "changed" | "deleted"; before: string | null };
+
+export type CalChanged = { event: CalendarEvent | null; undo: CalUndo };
+
+export type Attendee = { name: string; email: string; status: string; role: string };
+
+export type Invitation = {
+  method: string;
+  uid: string;
+  sequence: number;
+  recurrence_id: string | null;
+  title: string;
+  start: string;
+  end: string;
+  all_day: boolean;
+  recurring: boolean;
+  location: string;
+  description: string | null;
+  organizer: string;
+  attendees: Attendee[];
+  link: string | null;
+  link_kind: string | null;
+  me: string | null;
+  my_status: string | null;
+  mine: boolean;
+};
+
+export type InvitationAnswer = "accepted" | "tentative" | "declined";
+
+export type InvitationCard = {
+  invitation: Invitation;
+  answer: InvitationAnswer | null;
+  outdated: boolean;
+  event_key: string | null;
+  conflicts: CalendarEvent[];
+};
+
+/** An appointment the assistant found, as a draft for the calendar's editor. */
+export type EventDraft = { title: string; start: string; end: string; all_day: boolean; location: string; description: string };
+
+export type ArcaloSent = { via_cli: boolean; title: string; markdown: string | null; file_name: string | null };
 
 export type Undo = { outbox: number[]; hidden: number[]; accounts: number[] };
 
@@ -226,6 +379,8 @@ export type ComposeDraft = {
   reply_to_id: number | null;
   /** The attachments of this message go along (forwarding). */
   forwarded: number[];
+  /** Signed and/or encrypted with OpenPGP or S/MIME. */
+  protect?: Protect | null;
 };
 
 export type Queued = { outbox_id: number; message_id: string; delay: number };
@@ -302,6 +457,22 @@ export type Settings = {
   /** Profile pictures from BIMI (on) and Gravatar (off by default). */
   bimi: boolean;
   gravatar: boolean;
+  calendar: CalendarSettings;
+  /** The own OpenPGP key goes along in every message (Autocrypt). */
+  autocrypt: boolean;
+  /** New messages are signed with this method when a key or certificate is there. */
+  sign_by_default: ProtectMethod | null;
+  /** „An Arcalo senden“ makes a page or a task. */
+  arcalo_target: "page" | "task";
+};
+
+export type CalendarSettings = {
+  /** Where new appointments go (the first writable calendar without one). */
+  default_calendar: number | null;
+  /** Length of a new appointment made with a double click or N. */
+  entry_minutes: number;
+  /** ISO weekdays of the work week (1 = Monday). */
+  workdays: number[];
 };
 
 // ---------------------------------------------------------------- the AI assistant

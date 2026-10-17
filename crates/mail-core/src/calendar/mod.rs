@@ -898,6 +898,14 @@ pub struct Undo {
     pub kind: String,
     /// The data before a change.
     pub before: Option<String>,
+    /// A deleted appointment: where it was, so it can be made again after the server took the
+    /// delete (the object is gone then).
+    #[serde(default)]
+    pub calendar_id: Option<i64>,
+    #[serde(default)]
+    pub uid: Option<String>,
+    #[serde(default)]
+    pub format: Option<String>,
 }
 
 /// Queues a write for an object, merged with one already waiting.
@@ -988,7 +996,7 @@ pub fn create(store: &Store, calendar_id: i64, f: &Fields, me: &[String]) -> Res
         Ok(id)
     })?;
     let ev = first_event(store, id, me)?;
-    Ok((ev, Undo { object_id: id, kind: "created".into(), before: None }))
+    Ok((ev, Undo { object_id: id, kind: "created".into(), before: None, calendar_id: None, uid: None, format: None }))
 }
 
 /// The first appointment of an object (a single one: itself).
@@ -1048,7 +1056,17 @@ pub fn update(store: &Store, key: &str, f: &Fields, send: bool, me: &[String]) -
         Ok(())
     })?;
     let ev = event(store, &format!("{}|{}|{}", o.calendar_id, o.id, ev.instance), me)?;
-    Ok((ev, Undo { object_id: o.id, kind: "changed".into(), before: Some(o.data) }))
+    Ok((
+        ev,
+        Undo {
+            object_id: o.id,
+            kind: "changed".into(),
+            before: Some(o.data),
+            calendar_id: None,
+            uid: None,
+            format: None,
+        },
+    ))
 }
 
 fn read_only(e: Editability) -> Error {
@@ -1088,7 +1106,14 @@ pub fn delete(store: &Store, key: &str, me: &[String]) -> Result<Undo> {
         }
         Ok(())
     })?;
-    Ok(Undo { object_id: o.id, kind: "deleted".into(), before: Some(o.data) })
+    Ok(Undo {
+        object_id: o.id,
+        kind: "deleted".into(),
+        before: Some(o.data),
+        calendar_id: Some(o.calendar_id),
+        uid: Some(o.uid),
+        format: Some(o.format),
+    })
 }
 
 /// Takes a change back; returns the appointment as it is again (`None` after taking back a new one).
@@ -1097,6 +1122,21 @@ pub fn undo(store: &Store, u: &Undo, me: &[String]) -> Result<Option<CalendarEve
         Ok(o) => o,
         // A new appointment that never reached the server is gone with its delete.
         Err(_) if u.kind == "created" => return Ok(None),
+        // Deleted and gone from the server already: made again from what it was.
+        Err(_) if u.kind == "deleted" => {
+            let (Some(cal), Some(uid), Some(data)) = (u.calendar_id, u.uid.as_deref(), u.before.as_deref()) else {
+                return Err(Error::NotFound("appointment".into()));
+            };
+            let data = match u.format.as_deref() {
+                Some("graph") => {
+                    let f = fields_of_data("graph", data).ok_or_else(|| Error::Invalid("graph".into()))?;
+                    ics::new_event(uid, &f, Utc::now())
+                }
+                _ => data.to_string(),
+            };
+            let id = insert_internal(store, cal, uid, &data)?;
+            return Ok(first_event(store, id, me).ok());
+        }
         Err(e) => return Err(e),
     };
     let cal = calendar(store, o.calendar_id)?;

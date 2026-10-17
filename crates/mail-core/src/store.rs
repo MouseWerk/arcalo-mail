@@ -522,7 +522,7 @@ impl Store {
             self.set_flags(mailbox_id, h.uid, &h.flags, h.modseq)?;
             return Ok(id);
         }
-        let has_attachments = p.attachments.iter().any(|a| !a.inline)
+        let has_attachments = p.attachments.iter().any(|a| !a.inline && !a.is_protocol())
             || h.header.windows(15).any(|w| w.eq_ignore_ascii_case(b"multipart/mixed"));
         self.conn.execute(
             "INSERT INTO messages (account_id, mailbox_id, uid, modseq, message_id, in_reply_to, refs, subject,
@@ -656,7 +656,11 @@ impl Store {
         }
         self.conn.execute(
             "UPDATE messages SET has_body = 1, snippet = ?2, has_attachments = ?3 WHERE id = ?1",
-            params![id, p.snippet, p.attachments.iter().any(|a| !a.inline || a.content_id.is_none())],
+            params![
+                id,
+                p.snippet,
+                p.attachments.iter().any(|a| (!a.inline || a.content_id.is_none()) && !a.is_protocol())
+            ],
         )?;
         self.index_message(id, p)
     }
@@ -686,7 +690,7 @@ impl Store {
         }
         self.conn.execute(
             "UPDATE messages SET has_body = 1, snippet = ?2, has_attachments = ?3 WHERE id = ?1",
-            params![id, b.snippet, !b.attachments.is_empty()],
+            params![id, b.snippet, b.attachments.iter().any(|(a, _)| !a.is_protocol())],
         )?;
         let p = ParsedMessage { text: b.text.clone(), snippet: b.snippet.clone(), ..header.clone() };
         self.index_message(id, &p)

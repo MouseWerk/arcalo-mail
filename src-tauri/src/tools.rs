@@ -22,7 +22,7 @@ type Res<T> = Result<T, Error>;
 // ---------------------------------------------------------------------------- Microsoft Graph
 
 /// A Graph access token of a Microsoft account (its refresh token, Graph's scopes).
-async fn graph_token(account_id: i64) -> Res<String> {
+pub(crate) async fn graph_token(account_id: i64) -> Res<String> {
     let key = secret_key(account_id, SecretKind::RefreshToken);
     let refresh = secrets::get(&key)?.ok_or_else(|| {
         Error::Invalid(tr!("Das Konto ist nicht angemeldet.", "The account is not signed in.").into())

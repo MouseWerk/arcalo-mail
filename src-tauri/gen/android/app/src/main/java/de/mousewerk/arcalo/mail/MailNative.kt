@@ -16,4 +16,10 @@ object MailNative {
 
     /** WorkManager stops the check. */
     @JvmStatic external fun cancelCheck()
+
+    /** A notification's button: "archive" or "read". The unread count, or -1 when the running app does it. */
+    @JvmStatic external fun notificationAction(context: Context, dataDir: String, id: Long, action: String): Int
+
+    /** A notification or the widget opened the app on a message (to read it or to reply). */
+    @JvmStatic external fun openMessage(id: Long, reply: Boolean)
 }

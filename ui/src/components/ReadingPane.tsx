@@ -37,6 +37,7 @@ import type { Attachment, MessageSummary, MessageView } from "../lib/types";
 import { MailFrame } from "./MailFrame";
 import { Spinner } from "./ui";
 import { Avatar } from "./Avatar";
+import { InvitationCard, JoinButton, ProtectedFiles, ProtectionBadges } from "./Meeting";
 import type { Address } from "../lib/types";
 
 export type Loaded = MessageView | "loading" | { error: string };
@@ -76,6 +77,8 @@ type Props = {
   assistant?: React.ReactNode;
   /** A sender or recipient was clicked: the contact card. */
   onContact?: (a: Address) => void;
+  /** The calendar on an invitation's appointment (or its day). */
+  onOpenCalendar?: (key: string | null, start: string) => void;
 };
 
 function attachmentIcon(mime: string) {
@@ -232,6 +235,13 @@ function MessageCard({ view, theme, p, onCollapse }: { view: MessageView; theme:
       </header>
       {p.stream && <h2 className="stream-subject">{m.subject || t("list.noSubject")}</h2>}
       <MarkNotes view={view} p={p} />
+      {view.protection && <ProtectionBadges p={view.protection} />}
+      {view.invitation && <InvitationCard view={view} onAnswered={() => p.onRetry(m.id)} onOpenCalendar={(key, start) => p.onOpenCalendar?.(key, start)} />}
+      {!view.invitation && view.meeting && (
+        <div className="meeting-row">
+          <JoinButton url={view.meeting.url} kind={view.meeting.kind} />
+        </div>
+      )}
       {view.draft && (
         <div className="notice" role="status">
           <Pencil size={16} strokeWidth={1.75} aria-hidden />
@@ -290,6 +300,7 @@ function MessageCard({ view, theme, p, onCollapse }: { view: MessageView; theme:
         </div>
       )}
       {view.files.length > 0 && <Attachments files={view.files} onAttachment={p.onAttachment} />}
+      <ProtectedFiles view={view} />
     </article>
   );
 }

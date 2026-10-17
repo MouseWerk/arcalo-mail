@@ -4,11 +4,15 @@
 //! same crate builds the desktop app and, through `run` as the mobile entry point, the Android
 //! and iOS apps; what the phones do differently is in `mobile` (the workers run while the app is
 //! in front, a background check of its own otherwise, the browser session of the sign-in). A
-//! clock thread does what the time tools have due (`run_clock`).
+//! clock thread does what the time tools have due (`run_clock`); the calendar has a loop of its
+//! own (`calendar`).
 
+mod arcalo;
 mod assistant;
 mod background;
+mod calendar;
 mod commands;
+mod crypto;
 #[cfg(mobile)]
 mod mobile;
 mod secrets;
@@ -93,11 +97,28 @@ fn data_dir(app: &AppHandle) -> Result<PathBuf, Box<dyn std::error::Error>> {
     Ok(app.path().app_data_dir()?)
 }
 
-/// The unread messages of all inboxes on the app icon (where the platform shows a badge).
+/// The unread messages of all inboxes on the app icon (where the platform shows a badge), and
+/// on phones the home-screen widget's file.
 pub fn update_badge(app: &AppHandle) {
     let Some(state) = app.try_state::<AppState>() else { return };
     let unread = state.store().unread_in_inboxes().unwrap_or(0);
     show_unread(app, unread);
+    // Phones: the home-screen widget's file (Android shows it; iOS's widget is planned).
+    #[cfg(mobile)]
+    write_widget(&state.store(), &state.data_dir);
+    #[cfg(target_os = "android")]
+    mobile::android::refresh_widget();
+}
+
+/// `widget.json` next to the database: what the Android widget shows (`mail_core::widget`).
+#[cfg_attr(desktop, allow(dead_code))]
+pub(crate) fn write_widget(store: &Store, dir: &Path) {
+    let Ok(w) = mail_core::widget::snapshot(store) else { return };
+    let path = dir.join("widget.json");
+    let tmp = dir.join("widget.json.tmp");
+    if std::fs::write(&tmp, serde_json::to_vec(&w).unwrap_or_default()).is_ok() {
+        let _ = std::fs::rename(&tmp, &path);
+    }
 }
 
 /// The desktop: the badge on the dock or taskbar icon and the count in the window title.
@@ -141,7 +162,66 @@ fn notify_new_mail(app: &AppHandle, account_id: i64, messages: &[i64]) {
     let account = store.account(account_id).ok();
     drop(store);
     let Some((title, body)) = background::new_mail_text(&list, account.as_ref()) else { return };
+    // One message: its buttons (archive, mark read, reply) where the desktop shows them.
+    #[cfg(any(windows, target_os = "linux"))]
+    if let [m] = list.as_slice()
+        && notify_with_actions(app, &title, &body, m.id)
+    {
+        return;
+    }
     let _ = app.notification().builder().title(title).body(body).show();
+}
+
+/// A notification with buttons (Linux: the notification server's actions; Windows: the toast's
+/// buttons); `false` when the desktop has none (no notification server), so the plain one goes.
+#[cfg(any(windows, target_os = "linux"))]
+fn notify_with_actions(app: &AppHandle, title: &str, body: &str, message_id: i64) -> bool {
+    let mut n = notify_rust::Notification::new();
+    n.summary(title)
+        .body(body)
+        .action("default", mail_core::tr!("Öffnen", "Open"))
+        .action("archive", mail_core::tr!("Archivieren", "Archive"))
+        .action("read", mail_core::tr!("Gelesen", "Mark read"))
+        .action("reply", mail_core::tr!("Antworten", "Reply"));
+    #[cfg(target_os = "linux")]
+    n.appname("Arcalo Mail");
+    #[cfg(windows)]
+    n.app_id(&app.config().identifier);
+    let Ok(handle) = n.show() else { return false };
+    let app = app.clone();
+    let _ = std::thread::Builder::new().name("notification".into()).spawn(move || {
+        handle.wait_for_action(|action| notification_action(&app, message_id, action));
+    });
+    true
+}
+
+/// What a notification's button asked for: archived or read here (the worker carries it to the
+/// server), or the message opened (to reply to it).
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+pub(crate) fn notification_action(app: &AppHandle, message_id: i64, action: &str) {
+    let Some(state) = app.try_state::<AppState>() else { return };
+    match action {
+        "archive" | "read" => {
+            let accounts = match mail_core::actions::quick_action(&state.store(), message_id, action) {
+                Ok(a) => a,
+                Err(e) => {
+                    mail_core::diag::log("notification", &e.to_string());
+                    return;
+                }
+            };
+            state.kick(&accounts);
+            for a in &accounts {
+                let _ = app.emit("mail-notice", &Notice::Changed { account_id: *a, mailboxes: vec![] });
+            }
+            update_badge(app);
+        }
+        "default" | "reply" => {
+            #[cfg(desktop)]
+            tray::show_main(app);
+            commands::open_message(Some(app), message_id, action == "reply");
+        }
+        _ => {}
+    }
 }
 
 /// How often the clock looks at the time tools while the app runs (`ARCALO_MAIL_TICK_SECS`
@@ -278,6 +358,8 @@ pub fn start_worker(app: &AppHandle, account: &Account) {
             Notice::NewMail { account_id, messages } => {
                 notify_new_mail(&sink_app, *account_id, messages);
                 assistant::judge_new_mail(&sink_app, *account_id, messages);
+                // Invitations among them change the calendar.
+                calendar::kick();
             }
             _ => {}
         }
@@ -403,6 +485,7 @@ pub fn run() {
             let settings = mail_core::settings::load(&store)?;
             apply_language(settings.language);
             secrets::init(&dir);
+            crypto::register();
             app.manage(AppState {
                 store: Mutex::new(store),
                 db,
@@ -424,6 +507,7 @@ pub fn run() {
                 if in_front {
                     start_workers(&handle);
                     tools::sync_all_books(&handle);
+                    calendar::start_loop(&handle);
                 }
                 update_badge(&handle);
                 watch_network(handle);
@@ -540,6 +624,34 @@ pub fn run() {
             assistant::set_important,
             assistant::ai_remind,
             assistant::ai_calendar,
+            calendar::calendar_overview,
+            calendar::calendar_events,
+            calendar::calendar_create,
+            calendar::calendar_update,
+            calendar::calendar_delete,
+            calendar::calendar_undo,
+            calendar::calendar_resolve,
+            calendar::calendar_discard,
+            calendar::calendar_set,
+            calendar::calendar_sync,
+            calendar::caldav_add,
+            calendar::ics_subscribe,
+            calendar::calendar_account,
+            calendar::calendar_remove_source,
+            calendar::invitation_answer,
+            crypto::crypto_keys,
+            crypto::pgp_generate,
+            crypto::pgp_import,
+            crypto::pgp_export,
+            crypto::pgp_lookup,
+            crypto::smime_import,
+            crypto::crypto_remove,
+            crypto::crypto_abilities,
+            crypto::save_protected_attachment,
+            arcalo::arcalo_status,
+            arcalo::send_to_arcalo,
+            arcalo::save_markdown,
+            commands::take_pending_open,
             tools::rules_list,
             tools::rules_server,
             tools::rule_unsupported,

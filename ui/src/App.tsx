@@ -4,7 +4,10 @@ import {
   BellRing,
   BookmarkMinus,
   BookmarkPlus,
+  CalendarDays,
   CircleUserRound,
+  NotebookPen,
+  ListTodo,
   Clock,
   Crosshair,
   Download,
@@ -31,7 +34,8 @@ import {
   UserPlus,
   X,
 } from "lucide-react";
-import { api, inApp, onNotice, onReminders, onTrayAction, openExternal, pickSavePath } from "./lib/api";
+import { api, inApp, onNotice, onOpenMessage, onReminders, onTrayAction, openExternal, pickSavePath } from "./lib/api";
+import { openCalendar, setWeekLocale, type CalendarRequest } from "./lib/calendar";
 import { applyTheme, onSystemThemeChange, type Theme } from "./lib/theme";
 import { currentLang, langFromLocale, setLang, useT } from "./lib/i18n";
 import { draftFromMessage, emptyDraft, fromComposeDraft, isEmpty, isValidAddress, replaceOwnText, replyDraft, toDraft, type ComposeState } from "./lib/compose";
@@ -70,6 +74,7 @@ import { CATEGORIES, CATEGORY_ICON, CATEGORY_LABEL, InboxHead, InboxZero } from 
 import { ScheduledView, ScreenerView, SubscriptionsView } from "./components/SmartViews";
 import { WhenDialog, followupItems, snoozeItems } from "./components/TimeMenus";
 import { ComposeSheet } from "./components/ComposeSheet";
+import { CalendarView } from "./components/CalendarView";
 import { AssistantBar } from "./components/Assistant";
 import { AskView } from "./components/AskView";
 import { AttachmentHub } from "./components/AttachmentHub";
@@ -105,7 +110,8 @@ type Place =
   | { kind: "scheduled" }
   | { kind: "subscriptions" }
   | { kind: "ask" }
-  | { kind: "files" };
+  | { kind: "files" }
+  | { kind: "calendar" };
 
 /** A source of list pages, `key` names it (a new key starts the list afresh). */
 type Source = { key: string; page: (offset: number, limit: number) => Promise<Page> };
@@ -170,6 +176,8 @@ export function App() {
   const [palette, setPalette] = useState(false);
   const [preview, setPreview] = useState<{ name: string; url: string; text?: string } | null>(null);
   const [contact, setContact] = useState<{ email: string; name: string | null } | null>(null);
+  // What the calendar should open on (an appointment, a day, a new one's draft), once.
+  const [calRequest, setCalRequest] = useState<CalendarRequest | null>(null);
   const [width, setWidth] = useState(() => (typeof window === "undefined" ? 1280 : window.innerWidth));
   // Phones: the settings' list of sections, before a section opens.
   const [settingsNav, setSettingsNav] = useState(true);
@@ -217,6 +225,7 @@ export function App() {
   useEffect(() => {
     void Promise.all([api.appInfo(), api.settings()]).then(([i, s]) => {
       setClock(i.clock);
+      setWeekLocale(i.locale);
       setInfo(i);
       setSettings(s);
     });
@@ -764,8 +773,32 @@ export function App() {
       const from = listView.summary.from;
       items.push("separator", { label: t("read.unsubscribe"), icon: <MailMinus size={14} aria-hidden />, onSelect: () => unsubscribe(from.email, displayName(from, currentLang()), methodOf(listView)) });
     }
+    const target = focusView && "summary" in focusView ? focusView.summary.id : latest.summary.id;
+    items.push(
+      "separator",
+      { heading: t("arcalo.heading") },
+      { label: t("arcalo.page"), icon: <NotebookPen size={14} aria-hidden />, onSelect: () => void sendToArcalo(target, "page") },
+      { label: t("arcalo.task"), icon: <ListTodo size={14} aria-hidden />, onSelect: () => void sendToArcalo(target, "task") },
+    );
     if (touch) items.push("separator", { label: t("read.spam"), icon: <ShieldAlert size={14} aria-hidden />, onSelect: () => act("spam") });
     setMenu({ items, at });
+  };
+
+  /** „An Arcalo senden“: a page or a task in Arcalo; without Arcalo the page as a Markdown file. */
+  const sendToArcalo = async (id: number, target: "page" | "task") => {
+    try {
+      const r = await api.sendToArcalo(id, target);
+      if (r.via_cli) {
+        showToast({ title: t(target === "page" ? "arcalo.sentPage" : "arcalo.sentTask"), detail: r.title, tone: "success", duration: 4000 });
+        return;
+      }
+      const path = await pickSavePath(r.file_name ?? "mail.md");
+      if (!path) return;
+      await api.saveMarkdown(path, r.markdown ?? "");
+      showToast({ title: t("arcalo.saved"), detail: t("arcalo.noCli"), duration: 5000, action: undefined });
+    } catch (e) {
+      showToast({ title: t("arcalo.failed"), detail: String(e), tone: "danger" });
+    }
   };
 
   const onMark = (a: MarkAction, v: MessageView) => {
@@ -1035,6 +1068,36 @@ export function App() {
   // The tray menu's „Neue Nachricht“.
   useEffect(() => onTrayAction((a) => a === "compose" && newMessage()));
 
+  // The calendar asked for from elsewhere (an invitation, the assistant's appointment).
+  useEffect(() => {
+    const go = (e: Event) => {
+      const r = (e as CustomEvent<CalendarRequest>).detail;
+      goPlace({ kind: "calendar" });
+      setCalRequest(r);
+    };
+    window.addEventListener("arcalo-mail:calendar", go);
+    return () => window.removeEventListener("arcalo-mail:calendar", go);
+  });
+
+  // A notification's „Öffnen“ or „Antworten“: the message (also when it started the app).
+  const openRequested = async () => {
+    const r = await api.takePendingOpen().catch(() => null);
+    if (!r) return;
+    if (placeRef.current.kind === "calendar") goPlace({ kind: "inbox", account: null });
+    openById(r.id);
+    if (r.reply) {
+      const v = await loadView(r.id);
+      if (v) replyTo("reply", v);
+    }
+  };
+  const openRequestedRef = useRef(openRequested);
+  openRequestedRef.current = openRequested;
+  useEffect(() => {
+    if (!accounts?.length) return;
+    void openRequestedRef.current();
+    return onOpenMessage(() => void openRequestedRef.current());
+  }, [!!accounts?.length]);
+
   // Back in front after a while (the window got the focus again): check for mail now.
   useEffect(() => {
     const onFocus = () => {
@@ -1078,6 +1141,8 @@ export function App() {
       const inCompose = (e.target as HTMLElement | null)?.closest?.(".compose");
       const action = keyAction(e, isTyping(e.target) || !!inCompose);
       if (!action || (overlay && action !== "settings" && action !== "palette")) return;
+      // The calendar has keys of its own; compose, undo, the settings and the palette stay.
+      if (placeRef.current.kind === "calendar" && !showOutbox && !results && !["compose", "undo", "settings", "palette", "search"].includes(action)) return;
       const index = current != null ? order.indexOf(current) : -1;
       const go = (i: number) => {
         const row = rowAt(i);
@@ -1217,6 +1282,7 @@ export function App() {
     add("followups", t("folder.followups"), BellRing, times.followups, times.followups > 0);
     add("scheduled", t("folder.scheduled"), Send, times.scheduled, times.scheduled > 0);
     add("subscriptions", t("folder.subscriptions"), Newspaper, 0, false);
+    add("calendar", t("nav.calendar"), CalendarDays, 0, true);
     add("files", t("folder.files"), Paperclip, 0, true);
     add("ask", t("folder.ask"), MessagesSquare, 0, aiOn);
     return out;
@@ -1505,6 +1571,14 @@ export function App() {
             onUnsubscribe={(s) => unsubscribe(s.sender, s.name || s.sender, s.method)}
             onShowFolders={() => setView("folders")}
           />
+        ) : !results && place.kind === "calendar" ? (
+          <CalendarView
+            settings={settings}
+            onSettings={() => setSettingsOpen("calendar")}
+            onShowFolders={() => setView("folders")}
+            request={calRequest}
+            onRequestTaken={() => setCalRequest(null)}
+          />
         ) : !results && place.kind === "ask" ? (
           <AskView on={aiOn} onOpen={(s) => openById(s.message_id, s.subject)} onShowFolders={() => setView("folders")} onSettings={() => setSettingsOpen("ai")} />
         ) : !results && place.kind === "files" ? (
@@ -1622,7 +1696,8 @@ export function App() {
             }
           />
         )}
-        <ReadingPane
+        {(showOutbox || results || place.kind !== "calendar") && <ReadingPane
+          onOpenCalendar={(key, start) => openCalendar({ key, day: start })}
           thread={thread}
           views={views}
           expanded={expanded}
@@ -1672,7 +1747,7 @@ export function App() {
               />
             ) : undefined
           }
-        />
+        />}
       </div>
       {compose && (
         <ComposeSheet
@@ -1687,6 +1762,7 @@ export function App() {
           onClose={() => void closeCompose()}
           onDiscard={() => void discardCompose()}
           aiOn={aiOn}
+          signByDefault={settings.sign_by_default}
         />
       )}
       {settingsOpen && (

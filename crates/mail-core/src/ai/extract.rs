@@ -1,10 +1,10 @@
 //! Tasks and dates from a message: the model's JSON read leniently, and what the user makes of
-//! an item: a reminder at its time (`later::remind_task`) or a calendar entry to open in the
-//! calendar app (an iCalendar file, RFC 5545, made here; nothing is sent anywhere).
+//! an item: a reminder at its time (`later::remind_task`) or a draft appointment in the app's
+//! calendar (`itip::draft_from`; nothing is written before the user creates it).
 
 use serde::{Deserialize, Serialize};
 
-use super::{civil, days_from_civil};
+use super::days_from_civil;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -67,58 +67,6 @@ pub fn parse(answer: &str, offset: i64) -> Vec<Item> {
         .collect()
 }
 
-fn ics_escape(s: &str) -> String {
-    s.replace('\\', "\\\\").replace(';', "\\;").replace(',', "\\,").replace('\n', "\\n")
-}
-
-/// An iCalendar file with one appointment (a whole day without a time), for the calendar app.
-/// `now`: for DTSTAMP; `uid_seed`: makes the UID stable for the same item.
-pub fn ics(item: &Item, description: &str, now: i64, uid_seed: &str) -> Option<String> {
-    let (y, m, d) = date_parts(item.date.as_deref()?)?;
-    let stamp = {
-        let (yy, mm, dd, _) = civil(now);
-        let t = now.rem_euclid(86400);
-        format!("{yy:04}{mm:02}{dd:02}T{:02}{:02}{:02}Z", t / 3600, t % 3600 / 60, t % 60)
-    };
-    let (start, end) = match item.time.as_deref().and_then(time_parts) {
-        Some((h, min)) => {
-            let (eh, emin) = item.end.as_deref().and_then(time_parts).unwrap_or(((h + 1).min(23), min));
-            (
-                format!("DTSTART:{y:04}{m:02}{d:02}T{h:02}{min:02}00"),
-                format!("DTEND:{y:04}{m:02}{d:02}T{eh:02}{emin:02}00"),
-            )
-        }
-        None => {
-            let (ny, nm, nd, _) = civil((days_from_civil(y, m, d) + 1) * 86400);
-            (format!("DTSTART;VALUE=DATE:{y:04}{m:02}{d:02}"), format!("DTEND;VALUE=DATE:{ny:04}{nm:02}{nd:02}"))
-        }
-    };
-    let uid = {
-        use sha2::{Digest, Sha256};
-        let h = Sha256::digest(format!("{uid_seed}|{}|{}", item.title, item.date.as_deref().unwrap_or_default()));
-        h.iter().take(12).map(|b| format!("{b:02x}")).collect::<String>()
-    };
-    let mut lines = vec![
-        "BEGIN:VCALENDAR".to_string(),
-        "VERSION:2.0".into(),
-        "PRODID:-//MouseWerk//Arcalo Mail//EN".into(),
-        "BEGIN:VEVENT".into(),
-        format!("UID:{uid}@arcalo-mail"),
-        format!("DTSTAMP:{stamp}"),
-        start,
-        end,
-        format!("SUMMARY:{}", ics_escape(&item.title)),
-    ];
-    if let Some(p) = &item.place {
-        lines.push(format!("LOCATION:{}", ics_escape(p)));
-    }
-    if !description.trim().is_empty() {
-        lines.push(format!("DESCRIPTION:{}", ics_escape(description.trim())));
-    }
-    lines.extend(["END:VEVENT".to_string(), "END:VCALENDAR".into()]);
-    Some(lines.join("\r\n") + "\r\n")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -150,13 +98,10 @@ mod tests {
             r#"{"items":[{"kind":"event","title":"Abstimmung, Website","date":"2026-10-20","time":"14:00","place":"Raum 2"},{"kind":"event","title":"Messe","date":"2026-10-31"}]}"#,
             0,
         );
-        let a = ics(&items[0], "Aus der Mail von Lea", 1_792_195_200, "m1").unwrap();
-        assert!(a.contains("DTSTART:20261020T140000\r\nDTEND:20261020T150000"), "{a}");
-        assert!(a.contains("SUMMARY:Abstimmung\\, Website"));
-        assert!(a.contains("LOCATION:Raum 2"));
-        assert!(a.contains("DTSTAMP:20261017T000000Z"));
-        let b = ics(&items[1], "", 0, "m1").unwrap();
-        assert!(b.contains("DTSTART;VALUE=DATE:20261031\r\nDTEND;VALUE=DATE:20261101"), "{b}");
-        assert_eq!(ics(&items[1], "", 0, "m1"), Some(b), "the same item, the same UID");
+        let a = crate::itip::draft_from(&items[0], "Aus der Mail von Lea").unwrap();
+        assert_eq!((a.title.as_str(), a.location.as_str(), a.all_day), ("Abstimmung, Website", "Raum 2", false));
+        assert_eq!((a.end - a.start).num_minutes(), 60, "an hour without an end");
+        let b = crate::itip::draft_from(&items[1], "").unwrap();
+        assert!(b.all_day && (b.end - b.start).num_days() == 1);
     }
 }

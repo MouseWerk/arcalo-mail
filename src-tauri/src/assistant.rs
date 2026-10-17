@@ -174,28 +174,19 @@ pub fn ai_remind(state: State<'_, AppState>, message_id: i64, due: i64, note: St
     Ok(())
 }
 
-/// An appointment found in a message as a calendar file, opened in the calendar app.
+/// An appointment found in a message as a draft for the calendar: the calendar opens with it in
+/// its editor; nothing is written before the user creates it.
 #[tauri::command]
-pub fn ai_calendar(app: AppHandle, state: State<'_, AppState>, message_id: i64, item: Item) -> Res<String> {
-    use tauri_plugin_opener::OpenerExt;
+pub fn ai_calendar(state: State<'_, AppState>, message_id: i64, item: Item) -> Res<mail_core::itip::Draft> {
     let description = {
         let store = state.store();
         let d = store.message(message_id)?;
         let from = d.summary.from.map(|a| a.name.unwrap_or(a.email)).unwrap_or_default();
         mail_core::trf!("Aus der Mail „{}“ von {from}", "From the mail “{}” from {from}", d.summary.subject)
     };
-    let ics = mail_core::ai::extract::ics(&item, &description, mail_core::store::now(), &message_id.to_string())
-        .ok_or_else(|| {
-            Error::Invalid(mail_core::tr!("Der Termin hat kein Datum.", "The appointment has no date.").into())
-        })?;
-    let dir = state.data_dir.join("calendar");
-    std::fs::create_dir_all(&dir).map_err(|e| Error::Invalid(e.to_string()))?;
-    let name: String = item.title.chars().map(|c| if c.is_alphanumeric() { c } else { '-' }).take(40).collect();
-    let path = dir.join(format!("{}-{name}.ics", message_id));
-    std::fs::write(&path, ics).map_err(|e| Error::Invalid(e.to_string()))?;
-    let p = path.to_string_lossy().into_owned();
-    app.opener().open_path(&p, None::<&str>).map_err(|e| Error::Invalid(e.to_string()))?;
-    Ok(p)
+    mail_core::itip::draft_from(&item, &description).ok_or_else(|| {
+        Error::Invalid(mail_core::tr!("Der Termin hat kein Datum.", "The appointment has no date.").into())
+    })
 }
 
 /// New mail of an account whose provider may see it: the model decides about „Wichtig“ (a few

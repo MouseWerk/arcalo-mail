@@ -422,6 +422,16 @@ pub fn prepare_send(store: &Store, d: &Draft, files: &[FileAttachment], date: i6
     Ok((op, mid))
 }
 
+/// What a button of a new-mail notification does to the message: `archive` or `read` (marked
+/// read). Returns the accounts whose worker should look at its queue.
+pub fn quick_action(store: &Store, id: i64, action: &str) -> Result<Vec<i64>> {
+    match action {
+        "archive" => Ok(archive(store, &[id])?.accounts),
+        "read" => set_flags(store, &[id], Some(true), None),
+        other => Err(Error::Invalid(trf!("Unbekannte Aktion „{other}“.", "Unknown action “{other}”."))),
+    }
+}
+
 /// Queues a finished message (an answer to an invitation, a meeting's update): sent at once,
 /// filed in Sent as written.
 pub fn queue_raw(store: &Store, account_id: i64, raw: &[u8], recipients: &[String]) -> Result<i64> {
@@ -736,6 +746,16 @@ mod tests {
         assert!(undo(&s, &u).unwrap());
         assert_eq!(s.messages(inbox, 10, 0).unwrap().len(), 2);
         assert!(outbox::entries(&s).unwrap().is_empty());
+    }
+
+    #[test]
+    fn notification_buttons_archive_and_mark_read() {
+        let (s, account, inbox, ids) = setup();
+        assert_eq!(quick_action(&s, ids[0], "read").unwrap(), [account]);
+        assert_eq!(s.mailbox(inbox).unwrap().unread, 1);
+        assert_eq!(quick_action(&s, ids[1], "archive").unwrap(), [account]);
+        assert_eq!(s.messages(inbox, 10, 0).unwrap().len(), 1, "archived at once");
+        assert!(quick_action(&s, ids[0], "explode").is_err());
     }
 
     #[test]

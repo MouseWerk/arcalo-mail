@@ -27,6 +27,26 @@ pub struct AttachmentInfo {
     pub inline: bool,
 }
 
+impl AttachmentInfo {
+    /// A part that carries the message rather than a file of it: the encrypted body and the
+    /// signature of OpenPGP or S/MIME, a meeting's calendar data. The list's paperclip leaves
+    /// them out (the reading pane shows them as a lock, a check, an invitation).
+    pub fn is_protocol(&self) -> bool {
+        let mime = self.mime_type.to_ascii_lowercase();
+        matches!(
+            mime.as_str(),
+            "application/pgp-encrypted"
+                | "application/pgp-signature"
+                | "application/pkcs7-signature"
+                | "application/x-pkcs7-signature"
+                | "application/pkcs7-mime"
+                | "application/x-pkcs7-mime"
+                | "text/calendar"
+                | "application/ics"
+        ) || (mime == "application/octet-stream" && self.filename.as_deref() == Some("encrypted.asc"))
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ParsedMessage {
     pub subject: String,
@@ -264,6 +284,25 @@ pub(crate) mod tests {
         s.push_str(body);
         s.push_str("\r\n");
         s.into_bytes()
+    }
+
+    #[test]
+    fn calendar_data_and_signatures_are_no_files() {
+        let raw = b"From: a@example.org\r\nSubject: Einladung\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=B\r\n\r\n--B\r\nContent-Type: text/plain\r\n\r\nHallo\r\n--B\r\nContent-Type: text/calendar; method=REQUEST\r\nContent-Disposition: attachment; filename=invite.ics\r\n\r\nBEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n--B\r\nContent-Type: application/pdf\r\nContent-Disposition: attachment; filename=plan.pdf\r\n\r\n%PDF\r\n--B--\r\n";
+        let p = parse(raw).unwrap();
+        let kinds: Vec<(String, bool)> = p.attachments.iter().map(|a| (a.mime_type.clone(), a.is_protocol())).collect();
+        assert!(kinds.contains(&("text/calendar".into(), true)), "{kinds:?}");
+        assert!(kinds.contains(&("application/pdf".into(), false)), "{kinds:?}");
+        let encrypted = AttachmentInfo {
+            index: 1,
+            filename: Some("encrypted.asc".into()),
+            mime_type: "application/octet-stream".into(),
+            size: 10,
+            content_id: None,
+            inline: false,
+        };
+        assert!(encrypted.is_protocol());
+        assert!(!AttachmentInfo { filename: Some("daten.bin".into()), ..encrypted }.is_protocol());
     }
 
     #[test]

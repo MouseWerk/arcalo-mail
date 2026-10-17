@@ -272,10 +272,26 @@ async fn caldav_discovers_syncs_by_token_and_writes_with_etags() {
     sync_source(&store, source, &basic()).await.unwrap();
     assert_eq!(fake.lock().unwrap().writes.len(), writes);
     // Deleted for real.
-    delete(&store.lock().unwrap(), &ev.key, &me()).unwrap();
+    let deleted = delete(&store.lock().unwrap(), &ev.key, &me()).unwrap();
     sync_source(&store, source, &basic()).await.unwrap();
     assert!(!fake.lock().unwrap().calendars[caldav::fake::WORK].objects.contains_key(&path));
     assert!(object(&store.lock().unwrap(), ev.object_id).is_err());
+    // „Rückgängig“ after the server took the delete: made there again, with the same UID.
+    let back = undo(&store.lock().unwrap(), &deleted, &me()).unwrap().expect("back");
+    assert_eq!((back.title.as_str(), back.uid.as_str()), ("Abgesagt?", ev.uid.as_str()));
+    assert_eq!(back.write.as_ref().map(|w| w.op.as_str()), Some("create"));
+    sync_source(&store, source, &basic()).await.unwrap();
+    assert!(
+        fake.lock().unwrap().calendars[caldav::fake::WORK]
+            .objects
+            .values()
+            .any(|(_, d)| d.contains("SUMMARY:Abgesagt?")),
+        "on the server again"
+    );
+    let back = event(&store.lock().unwrap(), &back.key, &me()).unwrap();
+    assert!(back.write.is_none());
+    delete(&store.lock().unwrap(), &back.key, &me()).unwrap();
+    sync_source(&store, source, &basic()).await.unwrap();
     // A refused sign-in: the change waits with the error, the source says why.
     let refused = Access::Basic { user: "maria".into(), password: "falsch".into() };
     let (ev2, _) =

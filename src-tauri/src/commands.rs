@@ -1052,3 +1052,31 @@ pub fn discard_outbox(app: AppHandle, state: State<'_, AppState>, id: i64) -> Re
     update_badge(&app);
     Ok(true)
 }
+
+// ---------------------------------------------------------------------------- opened from outside
+
+/// A message to open that a notification asked for before the UI was ready (a phone's
+/// notification starts the app): `(id, reply)`.
+static PENDING_OPEN: std::sync::Mutex<Option<(i64, bool)>> = std::sync::Mutex::new(None);
+
+/// A notification asked to open a message (to read or to reply): the running UI hears it at
+/// once (`open-message`), a UI still starting takes it with [`take_pending_open`].
+pub fn open_message(app: Option<&AppHandle>, id: i64, reply: bool) {
+    *PENDING_OPEN.lock().unwrap_or_else(|e| e.into_inner()) = Some((id, reply));
+    if let Some(app) = app {
+        use tauri::Emitter;
+        let _ = app.emit("open-message", serde_json::json!({ "id": id, "reply": reply }));
+    }
+}
+
+#[derive(Serialize)]
+pub struct PendingOpen {
+    id: i64,
+    reply: bool,
+}
+
+/// The message a notification asked to open, once.
+#[tauri::command]
+pub fn take_pending_open() -> Option<PendingOpen> {
+    PENDING_OPEN.lock().unwrap_or_else(|e| e.into_inner()).take().map(|(id, reply)| PendingOpen { id, reply })
+}

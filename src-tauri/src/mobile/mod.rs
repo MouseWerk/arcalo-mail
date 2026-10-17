@@ -11,14 +11,20 @@
 //!   `de.mousewerk.arcalo.mail://oauth` ([`auth_session`]).
 //! - **Badge.** Android: the count on the new-mail notification; iOS: the app icon's number.
 //! - **Secrets.** `secrets.rs`: the Android Keystore (through `android`) and the iOS Keychain.
+//! - **Notification buttons.** Archive, mark read and reply on a new-mail notification
+//!   (Android: the notification's actions, `MailActionReceiver.kt`; iOS: a notification
+//!   category). With the app running they go through `crate::notification_action`; Android
+//!   without the app acts on the store directly (`background::quick_action`).
+//! - **Widget.** Android: `MailWidget.kt` shows `widget.json` (`crate::write_widget`), refreshed
+//!   when the unread count changes and after each background check.
 
 #[cfg(target_os = "android")]
 pub mod android;
 #[cfg(target_os = "ios")]
 pub mod ios;
 
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use mail_core::Error;
@@ -26,6 +32,13 @@ use tauri::{AppHandle, WindowEvent};
 
 /// Whether the app is in front (its workers run).
 static IN_FRONT: AtomicBool = AtomicBool::new(false);
+/// The running app, for what the platform hands over (a notification's button).
+static APP: OnceLock<AppHandle> = OnceLock::new();
+
+/// The running app; none in Android's background check.
+pub fn app() -> Option<&'static AppHandle> {
+    APP.get()
+}
 
 pub fn in_front() -> bool {
     IN_FRONT.load(Ordering::SeqCst)
@@ -38,11 +51,20 @@ pub fn before_launch() {
 }
 
 /// In the app's setup, on the main thread.
-pub fn setup(_app: &AppHandle) {
+pub fn setup(app: &AppHandle) {
+    let _ = APP.set(app.clone());
     #[cfg(target_os = "android")]
     if let Err(e) = android::init_from_app() {
         mail_core::diag::log("android", &format!("no JNI context: {e}"));
     }
+    #[cfg(target_os = "ios")]
+    ios::register_categories();
+}
+
+/// A notification's button, pressed while the app runs: done off the main thread.
+pub fn notification_action(message_id: i64, action: String) {
+    let Some(app) = app() else { return };
+    std::thread::spawn(move || crate::notification_action(app, message_id, &action));
 }
 
 /// Whether the app was started to be used (not by the system for a background check, iOS).

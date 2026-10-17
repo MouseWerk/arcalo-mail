@@ -3,4 +3,15 @@
     <string name="main_activity_title">Arcalo Mail</string>
     <string name="channel_new_mail">New mail</string>
     <string name="channel_new_mail_text">A notification for each new message in the inbox</string>
+    <string name="action_archive">Archive</string>
+    <string name="action_read">Mark read</string>
+    <string name="action_reply">Reply</string>
+    <string name="widget_name">Arcalo Mail: People</string>
+    <string name="widget_description">Unread mail and the newest messages from people</string>
+    <string name="widget_none_unread">Nothing unread</string>
+    <string name="widget_empty">No mail from people yet</string>
+    <plurals name="widget_unread">
+        <item quantity="one">%d unread</item>
+        <item quantity="other">%d unread</item>
+    </plurals>
 </resources>

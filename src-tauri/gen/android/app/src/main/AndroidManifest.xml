@@ -52,5 +52,22 @@
                 <data android:scheme="de.mousewerk.arcalo.mail" android:host="oauth" />
             </intent-filter>
         </activity>
+        <!-- The buttons of a new-mail notification (archive, mark read): only the app's own
+             notifications send these. -->
+        <receiver
+            android:name=".MailActionReceiver"
+            android:exported="false" />
+        <!-- The home-screen widget: unread count and the newest mails of People. -->
+        <receiver
+            android:name=".MailWidget"
+            android:label="@string/widget_name"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/mail_widget" />
+        </receiver>
     </application>
 </manifest>

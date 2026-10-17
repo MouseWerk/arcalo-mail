@@ -2,13 +2,15 @@
 //! through JNI, in both directions.
 //!
 //! Rust → Kotlin: static methods of `KeystoreCipher` (the secrets, `secrets.rs`), `AuthTab`
-//! (Custom Tabs for the sign-in) and `MailNotifier` (the unread count on the notification). They
-//! are called from any thread: the classes come from the app's class loader, kept from the
-//! first call on a Java thread.
+//! (Custom Tabs for the sign-in), `MailNotifier` (the unread count on the notification) and
+//! `MailWidget` (the home-screen widget reads `widget.json` again). They are called from any
+//! thread: the classes come from the app's class loader, kept from the first call on a Java
+//! thread.
 //!
 //! Kotlin → Rust: `MailNative.backgroundCheck` (WorkManager's check, in a process that may have
-//! no activity and no Tauri) and `MailNative.onRedirect` (the sign-in's redirect reached the
-//! activity).
+//! no activity and no Tauri), `MailNative.onRedirect` (the sign-in's redirect reached the
+//! activity), `MailNative.notificationAction` (archive or mark read from a notification) and
+//! `MailNative.openMessage` (a notification opened the app to read or answer a message).
 //!
 //! Plain JNI rather than a Tauri plugin: the background check runs without Tauri, and the
 //! Keystore must answer there too.
@@ -26,6 +28,7 @@ use crate::secrets::Cipher;
 const CIPHER: &str = "de.mousewerk.arcalo.mail.KeystoreCipher";
 const AUTH_TAB: &str = "de.mousewerk.arcalo.mail.AuthTab";
 const NOTIFIER: &str = "de.mousewerk.arcalo.mail.MailNotifier";
+const WIDGET: &str = "de.mousewerk.arcalo.mail.MailWidget";
 
 /// WorkManager gives a worker ten minutes; the check takes at most this.
 const BACKGROUND_BUDGET: Duration = Duration::from_secs(90);
@@ -174,6 +177,61 @@ pub fn set_unread(unread: u32) {
     if let Err(e) = r {
         mail_core::diag::log("android", &format!("badge: {e}"));
     }
+}
+
+/// The home-screen widget reads `widget.json` again (`MailWidget.kt`).
+pub fn refresh_widget() {
+    let r = with_env(|env, java| {
+        let c = class(env, java, WIDGET)?;
+        env.call_static_method(&c, "refresh", "(Landroid/content/Context;)V", &[JValue::Object(java.context.as_obj())])
+            .map_err(|e| failure(env, e))?;
+        Ok(())
+    });
+    if let Err(e) = r {
+        mail_core::diag::log("android", &format!("widget: {e}"));
+    }
+}
+
+/// `MailNative.notificationAction(context, dataDir, id, action)`: archive (`archive`) or mark
+/// read (`read`) from a notification's button. With the app running through its state (the
+/// worker carries it to the server at once); else in the store, for the next check. Answers the
+/// unread count, or -1 when the app does it.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_de_mousewerk_arcalo_mail_MailNative_notificationAction<'l>(
+    mut env: JNIEnv<'l>,
+    _class: JClass<'l>,
+    context: JObject<'l>,
+    data_dir: JString<'l>,
+    id: jni::sys::jlong,
+    action: JString<'l>,
+) -> jni::sys::jint {
+    let action: String = env.get_string(&action).map(Into::into).unwrap_or_default();
+    if super::app().is_some() {
+        super::notification_action(id, action);
+        return -1;
+    }
+    let dir: String = env.get_string(&data_dir).map(Into::into).unwrap_or_default();
+    if let Err(e) = init_with(&mut env, &context) {
+        mail_core::diag::log("android", &format!("notification action without JNI: {e}"));
+    }
+    match crate::background::quick_action(Path::new(&dir), id, &action) {
+        Some(unread) => {
+            refresh_widget();
+            unread.min(i32::MAX as u32) as i32
+        }
+        None => -1,
+    }
+}
+
+/// `MailNative.openMessage(id, reply)`: a notification opened the app on a message.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_de_mousewerk_arcalo_mail_MailNative_openMessage<'l>(
+    _env: JNIEnv<'l>,
+    _class: JClass<'l>,
+    id: jni::sys::jlong,
+    reply: jni::sys::jboolean,
+) {
+    crate::commands::open_message(super::app(), id, reply != 0);
 }
 
 /// `MailNative.backgroundCheck(context, dataDir)`: one check of every account (WorkManager);

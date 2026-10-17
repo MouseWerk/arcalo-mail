@@ -5,8 +5,6 @@
 //! ([`to_ics`]) so series expand and times are placed as for every other source. JMAP has no
 //! per-event ETag: a write goes over what the server has (the next sync shows the result).
 
-use std::collections::BTreeMap;
-
 use chrono::{DateTime, NaiveDateTime, Utc};
 use serde_json::{Map, Value, json};
 
@@ -359,6 +357,8 @@ pub async fn destroy(client: &JmapClient, id: &str) -> Result<()> {
 pub mod fake {
     //! The calendar methods of the fake JMAP server: two calendars, events by id, a state that
     //! counts every change.
+
+    use std::collections::BTreeMap;
 
     use super::*;
 

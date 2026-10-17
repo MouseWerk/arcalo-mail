@@ -4,6 +4,7 @@
 
 import { AlarmClock, CalendarPlus, ChevronDown, Cloud, Languages, ListChecks, Lock, Reply, Sparkles, Square, TriangleAlert, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { openCalendar } from "../lib/calendar";
 import { api } from "../lib/api";
 import { destinationKey, useAi } from "../lib/ai";
 import { currentLang, useT, type TKey } from "../lib/i18n";
@@ -269,7 +270,7 @@ export function AssistantBar({ messageId, latestId, accountId, on, autoSummary, 
                           onClick={() =>
                             void api
                               .aiCalendar(messageId, it)
-                              .then(() => showToast({ title: t("ai.calendarOpened"), duration: 3000 }))
+                              .then((draft) => openCalendar({ draft }))
                               .catch((e) => showToast({ title: String(e), tone: "danger" }))
                           }
                         >

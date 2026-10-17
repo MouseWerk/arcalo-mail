@@ -3,7 +3,7 @@
 
 import { t, type Lang } from "./i18n";
 import { addressLine, displayName, fullDate } from "./format";
-import type { Account, Address, Attachment, ComposeDraft, FileInfo, MessageView } from "./types";
+import type { Account, Address, Attachment, ComposeDraft, FileInfo, MessageView, Protect } from "./types";
 
 export type ComposeMode = "new" | "reply" | "replyAll" | "forward" | "draft";
 
@@ -30,6 +30,8 @@ export type ComposeState = {
   replyToId: number | null;
   /** Bumped when the body is replaced from outside, so the editor loads it again. */
   revision: number;
+  /** Signed and/or encrypted when sent (OpenPGP or S/MIME). */
+  protect?: Protect | null;
 };
 
 export const escapeHtml = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -214,6 +216,7 @@ export function toDraft(s: ComposeState): ComposeDraft {
     message_id: s.messageId,
     reply_to_id: s.replyToId,
     forwarded: s.forwarded.map((a) => a.id),
+    protect: s.protect ?? null,
   };
 }
 
