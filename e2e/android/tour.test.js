@@ -184,6 +184,48 @@ for (const [W, H] of [
         }
         await back();
 
+        // The app lock: a PIN set in „Sicherheit“, the lock screen, a wrong PIN, the right one.
+        const fill = (sel, value) =>
+          page.evaluate(
+            ([s, v]) => {
+              const e = document.querySelector(s);
+              e.focus();
+              Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(e, v);
+              e.dispatchEvent(new Event("input", { bubbles: true }));
+            },
+            [sel, value],
+          );
+        await page.click(".folders-btn").catch(() => {});
+        await page.click('.sidebar-head [aria-label="Einstellungen"]');
+        await page.click(".settings-nav-item", { text: /^Sicherheit$/ });
+        await page.click("[data-security] [role=radio]", { text: /^Bei Inaktivität$/ });
+        await page.waitForSelector("[data-pin-new]");
+        await fill("[data-pin-new]", "4711");
+        await fill("[data-pin-repeat]", "4711");
+        await shot("security-pin");
+        await page.click("[data-pin-save]");
+        await shot("security-pin-saved");
+        await page.evaluate(() => window.__TAURI_INTERNALS__.invoke("applock_lock_now", {}));
+        await page.waitForSelector(".lock-screen");
+        await shot("lock-screen");
+        const pin = await page.evaluate(() => document.querySelector(".lock-pin")?.getBoundingClientRect().toJSON() ?? null);
+        if (pin) {
+          const lw = device.webViewBounds();
+          device.tap(lw.left + (pin.left + pin.width / 2) * dpr, lw.top + (pin.top + pin.height / 2) * dpr);
+          await sleep(1500);
+          await shot("lock-pin-keyboard");
+          await back();
+        }
+        await fill(".lock-pin", "0000");
+        await page.key("Enter");
+        await shot("lock-wrong-pin");
+        await fill(".lock-pin", "4711");
+        await page.key("Enter");
+        await page.waitForFunction(() => !document.querySelector(".lock-screen"), undefined, { timeout: 15000 });
+        await page.click("[data-security] [role=radio]", { text: /^Aus$/ }).catch(() => {});
+        await back();
+        await back();
+
         // The calendar and its views.
         if (!(await page.$(".views .folder"))) await page.click(".folders-btn");
         await page.click(".views .folder", { text: /^Kalender/ });
