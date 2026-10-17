@@ -698,8 +698,11 @@ impl ImapClient for ImapSession {
     async fn fetch_headers(&mut self, range: UidRange) -> Result<Vec<FetchedHeader>> {
         let to = range.to.map_or("*".into(), |t| t.to_string());
         let modseq = if self.caps.condstore { " MODSEQ" } else { "" };
-        let cmd =
-            format!("UID FETCH {}:{to} (UID FLAGS INTERNALDATE RFC822.SIZE BODY.PEEK[HEADER]{modseq})", range.from);
+        let gmail = if self.caps.gmail { " X-GM-MSGID" } else { "" };
+        let cmd = format!(
+            "UID FETCH {}:{to} (UID FLAGS INTERNALDATE RFC822.SIZE BODY.PEEK[HEADER]{modseq}{gmail})",
+            range.from
+        );
         let done = check(self.command(&cmd).await?, "FETCH")?;
         let mut out = vec![];
         for attrs in done.data.iter().filter_map(fetch_attrs) {
@@ -707,12 +710,25 @@ impl ImapClient for ImapSession {
             if !range.contains(uid) {
                 continue;
             }
-            let mut h =
-                FetchedHeader { uid, flags: Flags::default(), modseq: None, internal_date: 0, size: 0, header: vec![] };
+            let mut h = FetchedHeader {
+                uid,
+                flags: Flags::default(),
+                modseq: None,
+                internal_date: 0,
+                size: 0,
+                header: vec![],
+                gm_msgid: None,
+            };
+            // A FETCH the server sent on its own (a flag change) has no header: not this answer's.
+            if !attrs.iter().any(|a| matches!(a, AttributeValue::BodySection { .. } | AttributeValue::Rfc822Header(_)))
+            {
+                continue;
+            }
             for a in attrs {
                 match a {
                     AttributeValue::Flags(f) => h.flags = flags_of(f),
                     AttributeValue::ModSeq(m) => h.modseq = Some(*m),
+                    AttributeValue::GmailMsgId(id) => h.gm_msgid = Some(*id),
                     AttributeValue::InternalDate(d) => h.internal_date = parse_internal_date(d).unwrap_or(0),
                     AttributeValue::Rfc822Size(s) => h.size = *s,
                     AttributeValue::BodySection { data: Some(d), .. } | AttributeValue::Rfc822Header(Some(d)) => {
@@ -724,6 +740,30 @@ impl ImapClient for ImapSession {
             out.push(h);
         }
         out.sort_by_key(|h| h.uid);
+        Ok(out)
+    }
+
+    async fn fetch_previews(&mut self, range: UidRange) -> Result<Vec<(u32, Vec<u8>)>> {
+        let to = range.to.map_or("*".into(), |t| t.to_string());
+        let cmd = format!("UID FETCH {}:{to} (UID BODY.PEEK[TEXT]<0.{PREVIEW_BYTES}>)", range.from);
+        let done = check(self.command(&cmd).await?, "FETCH")?;
+        let mut out = vec![];
+        for attrs in done.data.iter().filter_map(fetch_attrs) {
+            let Some(uid) = uid_of(attrs) else { continue };
+            if !range.contains(uid) {
+                continue;
+            }
+            for a in attrs {
+                if let AttributeValue::BodySection {
+                    section: Some(SectionPath::Full(MessageSection::Text)),
+                    data,
+                    ..
+                } = a
+                {
+                    out.push((uid, data.as_deref().unwrap_or_default().to_vec()));
+                }
+            }
+        }
         Ok(out)
     }
 
@@ -1025,6 +1065,23 @@ mod tests {
         assert_eq!(parts[2].content_id.as_deref(), Some("logo@x"));
         assert!(!parts[2].is_attachment(), "an image the HTML shows");
         assert_eq!(decode_2231("utf-8''Gr%C3%BC%C3%9Fe.pdf"), "Grüße.pdf");
+    }
+
+    /// Gmail's labels with brackets, quoted, as an atom or as a literal, and its German folders
+    /// in modified UTF-7: the names come through whole.
+    #[test]
+    fn gmail_list_names() {
+        let name = |line: &[u8]| {
+            let (_, resp) = Response::parse(line).unwrap();
+            let Response::MailboxData(MailboxDatum::List(l)) = resp else { panic!("{resp:?}") };
+            utf7::decode(&l.name)
+        };
+        assert_eq!(name(b"* LIST (\\HasNoChildren) \"/\" \"[Notion]\"\r\n"), "[Notion]");
+        assert_eq!(name(b"* LIST (\\HasNoChildren) \"/\" [Notion]\r\n"), "[Notion]");
+        assert_eq!(name(b"* LIST (\\HasNoChildren) \"/\" {8}\r\n[Notion]\r\n"), "[Notion]");
+        assert_eq!(name(b"* LIST (\\HasNoChildren) \"/\" \"[Notion]/Seiten\"\r\n"), "[Notion]/Seiten");
+        assert_eq!(name(b"* LIST (\\Drafts \\HasNoChildren) \"/\" \"[Gmail]/Entw&APw-rfe\"\r\n"), "[Gmail]/Entwürfe");
+        assert_eq!(name(b"* LIST (\\HasNoChildren) \"/\" \"Entw&APw-rfe\"\r\n"), "Entwürfe");
     }
 
     /// A server on loopback that answers the login with `login` and `ENABLE` with `enable`.

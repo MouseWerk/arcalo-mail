@@ -558,6 +558,7 @@ impl ImapClient for Pop3Session {
                 internal_date: at,
                 size: raw.len() as u32,
                 header: header_of(&raw),
+                gm_msgid: None,
             })
             .collect())
     }

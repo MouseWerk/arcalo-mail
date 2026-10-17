@@ -1,36 +1,19 @@
-//! A mailbox shaped like a German Gmail account, for the tests that guard what a real Gmail
-//! account showed on a phone: the `[Gmail]/…` folders with localized names and SPECIAL-USE
-//! attributes, labels with brackets and nesting (`[Notion]`, `[Notion]/Inbox`), a label that has
-//! the name of a special folder (`Entwürfe`, made by an earlier client), the same message in
-//! INBOX, „Alle Nachrichten“ and a label, thousands of messages from 2015 until now, HTML mail
-//! with pictures inside (`cid:`) and from the web (`https://bilder.zeit.example/…`), receipts
-//! and newsletters as their senders write them, and old large messages whose bodies the server hands out slowly
-//! (`Shared::slow_old_body_ms`).
-//!
-//! `X-GM-EXT-1` is offered and `X-GM-MSGID`/`X-GM-THRID` answered (the same id for a message in
-//! every folder), as Gmail does; Gmail has CONDSTORE but no QRESYNC.
+//! A German Gmail account full of mail, for the tests that guard what a real Gmail account
+//! showed on a phone. It starts from the core's Gmail fake ([`FakeImap::gmail`]: the `[Gmail]/…`
+//! folders with German names and SPECIAL-USE, `X-GM-EXT-1` without QRESYNC, labels such as
+//! `[Notion]` and a label „Entwürfe“ next to the real drafts), adds a nested label
+//! (`[Notion]/Inbox`) and a receipts label, and fills it through [`FakeImap::deliver_gmail`]
+//! (once in All Mail and once per label, one `X-GM-MSGID`): thousands of messages from 2015 until
+//! now, HTML with pictures inside (`cid:`) and from the web (`https://bilder.zeit.example/…`),
+//! receipts and newsletters as their senders write them, and old large messages whose bodies the
+//! wire server hands out slowly (`Shared::slow_old_body_ms`).
 
 use mail_core::imap::fake::{FakeImap, FakeMailbox};
 use serde::Serialize;
 
-/// The folders of the account: name and SPECIAL-USE attributes.
-pub const FOLDERS: &[(&str, &[&str])] = &[
-    ("INBOX", &[]),
-    ("[Gmail]", &["\\Noselect"]),
-    ("[Gmail]/Alle Nachrichten", &["\\All"]),
-    ("[Gmail]/Entwürfe", &["\\Drafts"]),
-    ("[Gmail]/Gesendet", &["\\Sent"]),
-    ("[Gmail]/Markiert", &["\\Flagged"]),
-    ("[Gmail]/Papierkorb", &["\\Trash"]),
-    ("[Gmail]/Spam", &["\\Junk"]),
-    ("[Gmail]/Wichtig", &["\\Important"]),
-    ("[Notion]", &[]),
-    ("[Notion]/Inbox", &[]),
-    ("Belege", &[]),
-    // A label an earlier mail program made for its drafts: a folder of its own, not a second
-    // drafts folder.
-    ("Entwürfe", &[]),
-];
+/// Labels this account has besides those of [`FakeImap::gmail`]: a nested one below
+/// „[Notion]“ and the receipts a filter files.
+pub const LABELS: &[&str] = &["[Notion]/Inbox", "Belege"];
 
 pub const ALL_MAIL: &str = "[Gmail]/Alle Nachrichten";
 
@@ -73,18 +56,6 @@ pub struct Expected {
     pub from: String,
     pub message_id: String,
     pub category: &'static str,
-}
-
-/// `X-GM-MSGID` of a message: the same in every folder (from its Message-ID).
-pub fn gm_msgid(raw: &[u8]) -> u64 {
-    let id = mail_core::parse::parse(raw).ok().and_then(|p| p.message_id).unwrap_or_default();
-    // FNV-1a, kept in Gmail's range (a 64-bit number below 2^63).
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for b in id.bytes() {
-        h ^= u64::from(b);
-        h = h.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    h >> 1
 }
 
 struct Mail {
@@ -197,7 +168,7 @@ fn person(i: usize, date: i64) -> Mail {
         body: Body::Text(format!(
             "Hallo Maria,\n\nwie besprochen: {topic}. Sag mir einfach Bescheid, ob es bei dir passt.\n\nLiebe Grüße"
         )),
-        folders: vec!["INBOX", ALL_MAIL],
+        folders: vec!["INBOX"],
         category: "people",
         seen: true,
     }
@@ -223,7 +194,7 @@ fn newsletter(i: usize, date: i64) -> Mail {
 <h1>Guten Morgen</h1><p>Die wichtigsten Nachrichten des Tages, kurz zusammengefasst.</p>\
 <p><a href=\"https://www.zeit.de/\">Weiterlesen</a></p></td></tr></table></body></html>"
         )),
-        folders: vec!["INBOX", ALL_MAIL],
+        folders: vec!["INBOX"],
         category: "newsletters",
         seen: true,
     }
@@ -237,14 +208,14 @@ fn receipt(i: usize, date: i64) -> Mail {
             "<html><body><table><tr><td><h2>Vielen Dank für deinen Kauf</h2><p>Bestellnummer: \
 T-1234-5678</p><p>Gesamtbetrag: 69,99 €</p><p>Sony Interactive Entertainment Europe</p></td></tr></table></body></html>"
                 .into(),
-            vec!["INBOX", ALL_MAIL, "Belege"],
+            vec!["INBOX", "Belege"],
         ),
         1 => (
             "Amazon.de <bestellbestaetigung@amazon.de>",
             format!("Deine Amazon.de-Bestellung von „Kopfhörer“ ({i})"),
             "<html><body><p>Hallo Maria, danke für deine Bestellung. Voraussichtliche Lieferung: Donnerstag.</p></body></html>"
                 .into(),
-            vec!["INBOX", ALL_MAIL, "Belege"],
+            vec!["INBOX", "Belege"],
         ),
         2 => (
             "PayPal <service@paypal.de>",
@@ -252,19 +223,19 @@ T-1234-5678</p><p>Gesamtbetrag: 69,99 €</p><p>Sony Interactive Entertainment E
             "<html><body><p>Hallo Maria Muster, du hast 19,99 € EUR an Valve Corporation gesendet.</p>\
 <p>Transaktionscode: 4AB12345CD678901E</p></body></html>"
                 .into(),
-            vec!["INBOX", ALL_MAIL],
+            vec!["INBOX"],
         ),
         3 => (
             "Apple <no_reply@email.apple.com>",
             format!("Deine Rechnung von Apple ({i})"),
             "<html><body><p>iCloud+ mit 50 GB Speicher: 0,99 €</p></body></html>".into(),
-            vec!["INBOX", ALL_MAIL, "Belege"],
+            vec!["INBOX", "Belege"],
         ),
         _ => (
             "DB Vertrieb GmbH <buchungsbestaetigung@bahn.de>",
             format!("Ihre Buchungsbestätigung (Auftrag {})", 400_000 + i),
             "<html><body><p>Vielen Dank für Ihre Buchung. Ihr Ticket finden Sie im Anhang.</p></body></html>".into(),
-            vec!["INBOX", ALL_MAIL],
+            vec!["INBOX"],
         ),
     };
     Mail {
@@ -287,7 +258,7 @@ fn notion(i: usize, date: i64) -> Mail {
         headers: vec!["Auto-Submitted: auto-generated".into()],
         body: Body::Text("Lea Sommer hat dich in einem Kommentar erwähnt.".into()),
         // A filter skips the inbox: the label and All Mail only.
-        folders: vec!["[Notion]/Inbox", ALL_MAIL],
+        folders: vec!["[Notion]/Inbox"],
         category: "notifications",
         seen: true,
     }
@@ -300,7 +271,7 @@ fn github(i: usize, date: i64) -> Mail {
         date,
         headers: vec![],
         body: Body::Text("All checks have passed.".into()),
-        folders: vec!["INBOX", ALL_MAIL],
+        folders: vec!["INBOX"],
         category: "notifications",
         seen: true,
     }
@@ -313,7 +284,7 @@ fn picture(i: usize, date: i64) -> Mail {
         date,
         headers: vec![],
         body: Body::Related("So sieht das neue Logo aus. Gefällt es dir?".into()),
-        folders: vec!["INBOX", ALL_MAIL],
+        folders: vec!["INBOX"],
         category: "people",
         seen: true,
     }
@@ -322,11 +293,9 @@ fn picture(i: usize, date: i64) -> Mail {
 /// Fills `f` with the Gmail account: `count` messages (at least 50) from 2015 until `now`.
 pub fn fill(f: &mut FakeImap, count: usize, now: i64, user: &str) -> Summary {
     let count = count.max(50);
-    f.caps.gmail = true;
-    f.caps.qresync = false;
-    f.mailboxes.clear();
-    for (name, attrs) in FOLDERS {
-        f.mailboxes.insert((*name).to_string(), FakeMailbox::new(attrs));
+    *f = FakeImap::gmail();
+    for label in LABELS {
+        f.mailboxes.insert((*label).to_string(), FakeMailbox::new(&[]));
     }
     let last = now - 3600;
     let at = |i: usize| START + (last - START) * i as i64 / (count as i64 - 1);
@@ -347,7 +316,7 @@ pub fn fill(f: &mut FakeImap, count: usize, now: i64, user: &str) -> Summary {
             m.subject = format!("Scan vom Amt ({i})");
             m.body = Body::Large { text: "Anbei der Scan.".into(), size: LARGE + 100_000 };
             m.category = "people";
-            m.folders = vec!["INBOX", ALL_MAIL];
+            m.folders = vec!["INBOX"];
         }
         if i == count / 10 {
             m = person(i, date);
@@ -421,7 +390,7 @@ pub fn fill(f: &mut FakeImap, count: usize, now: i64, user: &str) -> Summary {
         let mut m = person(k, now - 86_400 * (k as i64 + 2));
         m.from = format!("Maria Muster <{user}>");
         m.subject = subject.into();
-        m.folders = if folder.starts_with("[Gmail]/Gesendet") { vec![folder, ALL_MAIL] } else { vec![folder] };
+        m.folders = if folder.starts_with("[Gmail]/Gesendet") { vec![folder] } else { vec![folder] };
         mails.push((m, format!("own{k}@fixture.gmail.example")));
     }
 
@@ -431,8 +400,10 @@ pub fn fill(f: &mut FakeImap, count: usize, now: i64, user: &str) -> Summary {
     mails.sort_by_key(|(m, _)| m.date);
     for (m, id) in &mails {
         let raw = render(m, id, &to);
-        for folder in &m.folders {
-            let uid = f.deliver(folder, &raw, m.date);
+        // Once in All Mail and once per label, with one X-GM-MSGID (as Gmail keeps it).
+        f.deliver_gmail(&raw, m.date, &m.folders);
+        for folder in m.folders.iter().copied().chain([ALL_MAIL]) {
+            let uid = f.mailboxes[folder].uid_next - 1;
             let flags =
                 mail_core::imap::Flags { seen: m.seen, draft: folder.contains("Entwürfe"), ..Default::default() };
             f.set_flags(folder, uid, flags);
@@ -455,7 +426,7 @@ pub fn fill(f: &mut FakeImap, count: usize, now: i64, user: &str) -> Summary {
         cid: "Logo im Text".into(),
         remote: "Herbst-Newsletter mit Bildern".into(),
         playstation: "Vielen Dank für deinen Kauf".into(),
-        folders: FOLDERS.iter().map(|(n, _)| (*n).to_string()).collect(),
+        folders: f.mailboxes.keys().cloned().collect(),
         expected,
     }
 }
@@ -470,18 +441,19 @@ mod tests {
         let now = 1_792_135_800;
         let s = fill(&mut f, 600, now, "maria@example.org");
         assert!(f.caps.gmail && !f.caps.qresync);
+        assert!(f.mailboxes.contains_key("[Notion]/Inbox") && f.mailboxes.contains_key("[Gmail]/Entwürfe"));
         assert_eq!(s.newest[0], "Neueste Nachricht: Treffen heute um sechs");
         assert!(s.counts["[Gmail]/Alle Nachrichten"] > s.counts["INBOX"]);
         // The same message in three folders, with one X-GM-MSGID.
-        let raw_of = |folder: &str| {
+        let id_in = |folder: &str| {
             f.mailboxes[folder]
                 .messages
                 .values()
                 .find(|m| String::from_utf8_lossy(&m.raw).contains("Subject: Vielen Dank für deinen Kauf"))
-                .map(|m| m.raw.clone())
+                .and_then(|m| m.gm_msgid)
                 .unwrap()
         };
-        let ids: Vec<u64> = ["INBOX", ALL_MAIL, "Belege"].iter().map(|b| gm_msgid(&raw_of(b))).collect();
+        let ids: Vec<u64> = ["INBOX", ALL_MAIL, "Belege"].iter().map(|b| id_in(b)).collect();
         assert!(ids.windows(2).all(|w| w[0] == w[1]));
         // The picture inside is referenced from the HTML.
         let p = f.mailboxes["INBOX"]
