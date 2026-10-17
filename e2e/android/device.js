@@ -50,6 +50,8 @@ export function fresh() {
     /* not running */
   }
   shell(`pm clear ${PKG}`);
+  // The log from here on is this start's (diagnose).
+  adb("logcat", "-c");
   try {
     shell(`pm grant ${PKG} android.permission.POST_NOTIFICATIONS`);
   } catch {
@@ -184,7 +186,14 @@ export function diagnose(file) {
   run("forwards", () => adb("forward", "--list"));
   run("reverse", () => adb("reverse", "--list"));
   run("focused window", () => shell("dumpsys window windows").split("\n").filter((l) => /mCurrentFocus|mFocusedApp/.test(l)).join("\n"));
-  run("logcat", () => adb("logcat", "-d", "-t", "400"));
+  run("crash log", () => adb("logcat", "-d", "-b", "crash"));
+  run("the app's log", () =>
+    adb("logcat", "-d", "-v", "brief")
+      .split("\n")
+      .filter((l) => /AndroidRuntime|FATAL|DEBUG|libc|Rust|Tauri|tauri|arcalo|WebView|chromium|ActivityManager.*(mousewerk|Process)|lowmemory|Kill/i.test(l))
+      .slice(-300)
+      .join("\n"),
+  );
   const text = parts.join("\n\n");
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, text);
