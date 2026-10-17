@@ -190,6 +190,7 @@ async fn syncs_a_jmap_account_and_follows_changes() {
             sent_mailbox: Some("Sent".into()),
             draft: None,
             answered: None,
+            copies: vec![],
         },
     )
     .unwrap();

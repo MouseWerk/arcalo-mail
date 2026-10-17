@@ -373,31 +373,72 @@ pub fn queue_send(store: &Store, d: &Draft, files: &[FileAttachment], delay_secs
 /// encrypted ([`crate::crypto::protect`], with the secrets the shell registered), the copy for
 /// Sent too; mail from an address with an own OpenPGP key carries its `Autocrypt` header.
 pub fn prepare_send(store: &Store, d: &Draft, files: &[FileAttachment], date: i64) -> Result<(Op, String)> {
+    prepare_send_with(store, d, files, date, crate::crypto::registered().as_ref())
+}
+
+/// [`prepare_send`] with the secrets in `keys`. An encrypted message goes to To and Cc encrypted
+/// for them (and the sender) only; every Bcc recipient gets a copy of its own, encrypted for
+/// that recipient (and the sender), so no one learns of a Bcc recipient from the keys a message
+/// is encrypted to.
+pub fn prepare_send_with(
+    store: &Store,
+    d: &Draft,
+    files: &[FileAttachment],
+    date: i64,
+    keys: &dyn crate::crypto::Keys,
+) -> Result<(Op, String)> {
     let d = &cleaned(d);
     let account = store.account(d.account_id)?;
     let rcpt = compose::recipients(d)?;
+    let blind: Vec<String> = d
+        .bcc
+        .iter()
+        .filter(|b| !b.trim().is_empty())
+        .map(|b| compose::parse_address(b).map(|a| a.email))
+        .collect::<Result<_>>()?;
+    let encrypt = d.protect.is_some_and(|p| p.encrypt);
+    let visible: Vec<String> = rcpt
+        .iter()
+        .map(|a| a.email.clone())
+        .filter(|e| !(encrypt && blind.iter().any(|b| b.eq_ignore_ascii_case(e))))
+        .collect();
     let mid = d.message_id.clone().unwrap_or_else(|| compose::new_message_id(&account.email));
     let autocrypt = if crate::settings::load(store)?.autocrypt {
         crate::crypto::autocrypt_for(store, &account.email)?
     } else {
         None
     };
-    let finish = |raw: Vec<u8>| -> Result<Vec<u8>> {
+    let finish = |raw: Vec<u8>, to: &[String]| -> Result<Vec<u8>> {
         let raw = match &autocrypt {
             Some(h) => crate::crypto::add_header(&raw, "Autocrypt", h),
             None => raw,
         };
         match &d.protect {
-            Some(how) => {
-                let to: Vec<String> = rcpt.iter().map(|a| a.email.clone()).collect();
-                crate::crypto::protect(store, &account.email, &raw, &to, how, crate::crypto::registered().as_ref())
-            }
+            Some(how) => crate::crypto::protect(store, &account.email, &raw, to, how, keys),
             None => Ok(raw),
         }
     };
-    let raw = finish(compose::build(&account, d, files, &mid, date, false)?)?;
-    let with_bcc = d.bcc.iter().any(|b| !b.trim().is_empty());
-    let sent = if with_bcc { Some(b64(&finish(compose::build(&account, d, files, &mid, date, true)?)?)) } else { None };
+    let built = compose::build(&account, d, files, &mid, date, false)?;
+    let all: Vec<String> = rcpt.iter().map(|a| a.email.clone()).collect();
+    let (raw, copies) = if encrypt && !blind.is_empty() {
+        let copies = blind
+            .iter()
+            .map(|b| {
+                Ok(crate::outbox::Copy {
+                    raw_b64: b64(&finish(built.clone(), &[b.clone()])?),
+                    recipients: vec![b.clone()],
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        // Nobody in To or Cc: the copies are all there is to send.
+        let raw = if visible.is_empty() { None } else { Some(finish(built, &visible)?) };
+        (raw, copies)
+    } else {
+        (Some(finish(built, &all)?), vec![])
+    };
+    let with_bcc = !blind.is_empty();
+    let sent =
+        if with_bcc { Some(b64(&finish(compose::build(&account, d, files, &mid, date, true)?, &all)?)) } else { None };
     let sent_mailbox = store.mailbox_by_role(account.id, Role::Sent)?.map(|m| m.name);
     let answered = match d.reply_to_id {
         Some(id) => store.summaries(&[id])?.first().map(|s| (s.mailbox_id, s.uid)),
@@ -407,14 +448,23 @@ pub fn prepare_send(store: &Store, d: &Draft, files: &[FileAttachment], date: i6
         Some((mb, uid)) => Some((store.mailbox(mb)?.name, uid)),
         None => None,
     };
+    let (raw_b64, recipients, copies) = match raw {
+        Some(r) => (b64(&r), if encrypt { visible } else { all }, copies),
+        None => {
+            let mut copies = copies;
+            let first = copies.remove(0);
+            (first.raw_b64, first.recipients, copies)
+        }
+    };
     let op = Op::Send {
-        raw_b64: b64(&raw),
+        raw_b64,
         from: account.email.clone(),
-        recipients: rcpt.iter().map(|a| a.email.clone()).collect(),
+        recipients,
         sent_b64: sent,
         sent_mailbox,
         draft: d.message_id.clone(),
         answered,
+        copies,
     };
     for a in &rcpt {
         store.touch_contact(a, true, now())?;
@@ -445,6 +495,7 @@ pub fn queue_raw(store: &Store, account_id: i64, raw: &[u8], recipients: &[Strin
         sent_mailbox,
         draft: None,
         answered: None,
+        copies: vec![],
     };
     outbox::enqueue(store, account_id, &op)
 }
@@ -596,7 +647,7 @@ pub fn message_view_with(
                             .filter(|a| !(a.inline && a.content_id.is_some()))
                             .map(|a| ProtectedFile {
                                 index: a.index,
-                                filename: a.filename.clone(),
+                                filename: a.filename.as_deref().map(crate::files::display_name),
                                 mime_type: a.mime_type.clone(),
                                 size: a.size,
                             })
@@ -613,6 +664,9 @@ pub fn message_view_with(
                 detail.html = None;
             }
             if p.decrypted || p.signed {
+                // What the protection speaks for is the text: an HTML part next to it (which
+                // nothing signed) is not shown.
+                detail.html = None;
                 detail.text = Some(text);
             }
             protection = Some(p);
@@ -671,7 +725,8 @@ pub fn message_view_with(
         .filter(|a| !encrypted && !is_wrapper(a))
         // The calendar part of an invitation shows as its card.
         .filter(|a| invitation.is_none() || !(a.mime_type == "text/calendar" || a.mime_type == "application/ics"))
-        .cloned()
+        // Shown without bidirectional controls, so the real extension is what the user reads.
+        .map(|a| Attachment { filename: a.filename.as_deref().map(crate::files::display_name), ..a.clone() })
         .collect();
     let meeting = invitation
         .as_ref()

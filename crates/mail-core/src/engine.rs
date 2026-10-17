@@ -368,8 +368,23 @@ fn b64(s: &str) -> Result<Vec<u8>> {
 /// Carries out one step of the queue; returns the folders it touched.
 async fn apply<C: Connector>(ctx: &Ctx<C>, conn: &mut C::Imap, id: i64, op: &Op) -> Result<Vec<String>> {
     match op {
-        Op::Send { raw_b64, from, recipients, sent_b64, sent_mailbox, draft, answered } => {
+        Op::Send { raw_b64, from, recipients, sent_b64, sent_mailbox, draft, answered, copies } => {
             ctx.connector.send(from, recipients, &b64(raw_b64)?).await?;
+            if let Some((next, rest)) = copies.split_first() {
+                // The next copy waits as a step of its own: a retry never sends one twice.
+                let more = Op::Send {
+                    raw_b64: next.raw_b64.clone(),
+                    from: from.clone(),
+                    recipients: next.recipients.clone(),
+                    sent_b64: sent_b64.clone().or_else(|| Some(raw_b64.clone())),
+                    sent_mailbox: sent_mailbox.clone(),
+                    draft: draft.clone(),
+                    answered: answered.clone(),
+                    copies: rest.to_vec(),
+                };
+                outbox::replace(&ctx.store, id, &more)?;
+                return Box::pin(apply(ctx, conn, id, &more)).await;
+            }
             ctx.notice(Notice::Sent { account_id: ctx.account_id, outbox_id: id });
             // Sent: what is left is filing it; that step never sends again.
             let rest = Op::AppendSent {
@@ -1282,6 +1297,7 @@ mod tests {
                 sent_mailbox: Some("Sent".into()),
                 draft: None,
                 answered: None,
+                copies: vec![],
             },
         )
         .unwrap();
@@ -1380,6 +1396,7 @@ mod tests {
             sent_mailbox: None,
             draft: None,
             answered: None,
+            copies: vec![],
         };
         outbox::enqueue(&s.store, s.account, &send).unwrap();
         w.send(Command::Kick);

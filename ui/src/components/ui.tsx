@@ -154,6 +154,7 @@ export function ConfirmDialog({
   danger,
   onConfirm,
   onClose,
+  above,
 }: {
   title: string;
   text: string;
@@ -161,11 +162,14 @@ export function ConfirmDialog({
   danger?: boolean;
   onConfirm: () => void;
   onClose: () => void;
+  /** Over the compose sheet. */
+  above?: boolean;
 }) {
   const t = useT();
   return (
     <Dialog
       title={title}
+      above={above}
       onClose={onClose}
       footer={
         <>

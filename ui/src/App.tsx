@@ -88,6 +88,7 @@ import { Toasts } from "./components/Toasts";
 import { UpdateLayer, setBeforeRestart, startUpdates } from "./components/Updates";
 import { Outbox } from "./components/Outbox";
 import { ConfirmDialog, Dialog, Menu, PromptDialog, type MenuItem } from "./components/ui";
+import { PassphraseDialog } from "./components/Meeting";
 
 /** On a phone one pane is shown at a time; `view` says which (app.css, narrow layout). On a
  *  tablet `folders` opens the folders as a drawer over the list. */
@@ -176,6 +177,10 @@ export function App() {
   const [menu, setMenu] = useState<{ items: MenuItem[]; at: { x: number; y: number } } | null>(null);
   const [palette, setPalette] = useState(false);
   const [preview, setPreview] = useState<{ name: string; url: string; text?: string } | null>(null);
+  /** Asked before sending: the passphrase of the signing key, or sending a decrypted quote readable. */
+  const [sendCheck, setSendCheck] = useState<{ kind: "unlock"; fingerprint: string; go: () => void } | { kind: "plain"; go: () => void } | null>(null);
+  /** An attachment „Öffnen“ held back: a program or script (save only) or a macro document. */
+  const [risky, setRisky] = useState<{ a: Attachment; risk: "macro" | "blocked" } | null>(null);
   const [contact, setContact] = useState<{ email: string; name: string | null } | null>(null);
   // What the calendar should open on (an appointment, a day, a new one's draft), once.
   const [calRequest, setCalRequest] = useState<CalendarRequest | null>(null);
@@ -913,8 +918,9 @@ export function App() {
   };
 
   /** „Später senden“: the message waits here until `at`. */
-  const sendLater = async (at: number, followupSecs: number | null) => {
+  const sendLater = async (at: number, followupSecs: number | null, confirmedPlain = false) => {
     if (!compose || sending || !recipientsOk(compose)) return;
+    if (!(await readyToSend(compose, () => void sendLater(at, followupSecs, true), confirmedPlain))) return;
     setSending(true);
     setComposeError(null);
     const state = compose;
@@ -941,8 +947,28 @@ export function App() {
     }
   };
 
-  const send = async (followupSecs: number | null = null) => {
+  /**
+   * Before a message goes out: a decrypted message's quote is not sent readable without a yes,
+   * and an own OpenPGP key that signs it gets its passphrase first. `false`: asked, wait.
+   */
+  const readyToSend = async (state: ComposeState, go: () => void, confirmedPlain = false) => {
+    if (state.fromEncrypted && !state.protect?.encrypt && !confirmedPlain) {
+      setSendCheck({ kind: "plain", go });
+      return false;
+    }
+    if (state.protect?.method === "pgp" && state.protect.sign && state.accountId != null) {
+      const fp = await api.pgpLocked(state.accountId).catch(() => null);
+      if (fp) {
+        setSendCheck({ kind: "unlock", fingerprint: fp, go });
+        return false;
+      }
+    }
+    return true;
+  };
+
+  const send = async (followupSecs: number | null = null, confirmedPlain = false) => {
     if (!compose || sending || !recipientsOk(compose)) return;
+    if (!(await readyToSend(compose, () => void send(followupSecs, true), confirmedPlain))) return;
     setSending(true);
     setComposeError(null);
     const state = compose;
@@ -1005,7 +1031,7 @@ export function App() {
 
   // ---------------------------------------------------------------- attachments
 
-  const attachment = async (a: Attachment, how: "open" | "save" | "preview") => {
+  const attachment = async (a: Attachment, how: "open" | "open_anyway" | "save" | "preview") => {
     const name = a.filename ?? t("read.unnamed");
     try {
       if (how === "preview") {
@@ -1014,8 +1040,9 @@ export function App() {
           const bytes = Uint8Array.from(atob(p.data_b64), (c) => c.charCodeAt(0));
           setPreview({ name, url: "", text: new TextDecoder().decode(bytes) });
         } else setPreview({ name, url: `data:${p.mime_type};base64,${p.data_b64}` });
-      } else if (how === "open") {
-        await api.openAttachment(a.id);
+      } else if (how === "open" || how === "open_anyway") {
+        const r = await api.openAttachment(a.id, how === "open_anyway");
+        if (!r.opened && r.risk !== "none") setRisky({ a, risk: r.risk });
       } else {
         const path = await pickSavePath(name);
         if (!path) return;
@@ -1895,6 +1922,58 @@ export function App() {
         />
       )}
       {confirm && <ConfirmDialog title={confirm.title} text={confirm.text} confirm={confirm.confirm} onConfirm={confirm.run} onClose={() => setConfirm(null)} />}
+      {sendCheck?.kind === "unlock" && <PassphraseDialog above fingerprint={sendCheck.fingerprint} onDone={sendCheck.go} onClose={() => setSendCheck(null)} />}
+      {sendCheck?.kind === "plain" && (
+        <ConfirmDialog
+          title={t("protect.sendUnencryptedTitle")}
+          text={t("protect.quotesEncrypted")}
+          confirm={t("protect.sendUnencrypted")}
+          danger
+          above
+          onConfirm={sendCheck.go}
+          onClose={() => setSendCheck(null)}
+        />
+      )}
+      {risky && (
+        <Dialog
+          title={risky.risk === "blocked" ? t("read.blockedTitle") : t("read.macroTitle")}
+          onClose={() => setRisky(null)}
+          footer={
+            <>
+              <button type="button" className="btn btn-quiet" onClick={() => setRisky(null)}>
+                {t("common.cancel")}
+              </button>
+              {risky.risk === "macro" && (
+                <button
+                  type="button"
+                  className="btn"
+                  onClick={() => {
+                    const a = risky.a;
+                    setRisky(null);
+                    void attachment(a, "open_anyway");
+                  }}
+                >
+                  {t("read.openAnyway")}
+                </button>
+              )}
+              <button
+                type="button"
+                className="btn btn-primary"
+                autoFocus
+                onClick={() => {
+                  const a = risky.a;
+                  setRisky(null);
+                  void attachment(a, "save");
+                }}
+              >
+                {t("read.save")}
+              </button>
+            </>
+          }
+        >
+          <p className="dialog-text">{t(risky.risk === "blocked" ? "read.blockedText" : "read.macroText", { name: risky.a.filename ?? t("read.unnamed") })}</p>
+        </Dialog>
+      )}
       {preview && (
         <div className="overlay preview-overlay" onMouseDown={(e) => e.target === e.currentTarget && setPreview(null)} onKeyDown={(e) => e.key === "Escape" && setPreview(null)}>
           <figure className="preview" role="dialog" aria-modal="true" aria-label={preview.name}>

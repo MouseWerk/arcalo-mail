@@ -386,6 +386,7 @@ async fn the_worker_end_to_end() {
             sent_mailbox: Some("Sent".into()),
             draft: None,
             answered: Some(("INBOX".into(), 1)),
+            copies: vec![],
         },
     )
     .unwrap();

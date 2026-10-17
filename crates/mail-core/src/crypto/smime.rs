@@ -215,6 +215,35 @@ fn content_of(der_bytes: &[u8], expected: const_oid::ObjectIdentifier) -> Result
     ci.content.to_der().map_err(cms_error)
 }
 
+/// A digest by its algorithm's OID.
+fn digest_of(oid: const_oid::ObjectIdentifier) -> Option<Box<dyn sha2::digest::DynDigest + Send + Sync>> {
+    Some(match oid {
+        o if o == rfc5912::ID_SHA_1 => Box::new(sha1::Sha1::default()),
+        o if o == rfc5912::ID_SHA_224 => Box::new(sha2::Sha224::default()),
+        o if o == rfc5912::ID_SHA_256 => Box::new(sha2::Sha256::default()),
+        o if o == rfc5912::ID_SHA_384 => Box::new(sha2::Sha384::default()),
+        o if o == rfc5912::ID_SHA_512 => Box::new(sha2::Sha512::default()),
+        _ => return None,
+    })
+}
+
+/// RSAES-OAEP with the hash and the mask generation hash its parameters name (RFC 8017 A.2.1;
+/// both SHA-1 by default). `None` for parameters this does not support (a label, another MGF).
+fn oaep_of(params: Option<&Any>) -> Option<rsa::Oaep> {
+    let (hash, mgf) = match params {
+        None => (rfc5912::ID_SHA_1, rfc5912::ID_SHA_1),
+        Some(p) => {
+            let der = p.to_der().ok()?;
+            let ps = rsa::pkcs1::RsaOaepParams::from_der(&der).ok()?;
+            if ps.mask_gen.oid != rfc5912::ID_MGF_1 || ps.p_source.parameters.is_some_and(|l| !l.value().is_empty()) {
+                return None;
+            }
+            (ps.hash.oid, ps.mask_gen.parameters.map(|a| a.oid).unwrap_or(rfc5912::ID_SHA_1))
+        }
+    };
+    Some(rsa::Oaep { digest: digest_of(hash)?, mgf_digest: digest_of(mgf)?, label: None })
+}
+
 /// Decrypts an `EnvelopedData` with one of the user's identities.
 pub fn decrypt(der_bytes: &[u8], ids: &[Identity]) -> Result<Vec<u8>> {
     use aes::cipher::block_padding::Pkcs7;
@@ -241,7 +270,9 @@ pub fn decrypt(der_bytes: &[u8], ids: &[Identity]) -> Result<Vec<u8>> {
                 continue;
             }
             let plain = if k.key_enc_alg.oid == rfc5912::ID_RSAES_OAEP {
-                id.key.decrypt(rsa::Oaep::new::<sha1::Sha1>(), k.enc_key.as_bytes())
+                // The hashes the parameters name (SHA-1 when they name none).
+                let Some(oaep) = oaep_of(k.key_enc_alg.parameters.as_ref()) else { continue };
+                id.key.decrypt(oaep, k.enc_key.as_bytes())
             } else {
                 id.key.decrypt(rsa::Pkcs1v15Encrypt, k.enc_key.as_bytes())
             };

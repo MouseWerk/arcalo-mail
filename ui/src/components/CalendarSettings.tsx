@@ -377,6 +377,24 @@ function ImportKeyDialog({ onDone, onClose }: { onDone: () => void; onClose: () 
   const t = useT();
   const [text, setText] = useState("");
   const [error, setError] = useState<string | null>(null);
+  /** A protected secret key: its passphrase, checked on import. */
+  const [passphrase, setPassphrase] = useState<string | null>(null);
+  const [remember, setRemember] = useState(false);
+  const run = async () => {
+    setError(null);
+    try {
+      if (passphrase == null && (await api.pgpNeedsPassphrase(text))) {
+        setPassphrase("");
+        return;
+      }
+      const keys = await api.pgpImport(text, passphrase, remember);
+      showToast({ title: t("crypto.imported", { n: keys.length }), tone: "success", duration: 3000 });
+      onDone();
+      onClose();
+    } catch (e) {
+      setError(String(e));
+    }
+  };
   return (
     <Dialog
       title={t("crypto.importPgp")}
@@ -388,27 +406,36 @@ function ImportKeyDialog({ onDone, onClose }: { onDone: () => void; onClose: () 
           <button type="button" className="btn btn-quiet" onClick={onClose}>
             {t("common.cancel")}
           </button>
-          <button
-            type="button"
-            className="btn btn-primary"
-            disabled={!text.trim()}
-            onClick={() =>
-              void api.pgpImport(text).then(
-                (keys) => {
-                  showToast({ title: t("crypto.imported", { n: keys.length }), tone: "success", duration: 3000 });
-                  onDone();
-                  onClose();
-                },
-                (e) => setError(String(e)),
-              )
-            }
-          >
+          <button type="button" className="btn btn-primary" disabled={!text.trim() || passphrase === ""} onClick={() => void run()}>
             {t("crypto.import")}
           </button>
         </>
       }
     >
-      <textarea className="input crypto-armor" value={text} spellCheck={false} placeholder="-----BEGIN PGP PUBLIC KEY BLOCK-----" onChange={(e) => setText(e.target.value)} aria-label={t("crypto.importPgp")} />
+      <textarea
+        className="input crypto-armor"
+        value={text}
+        spellCheck={false}
+        placeholder="-----BEGIN PGP PUBLIC KEY BLOCK-----"
+        onChange={(e) => {
+          setText(e.target.value);
+          setPassphrase(null);
+        }}
+        aria-label={t("crypto.importPgp")}
+      />
+      {passphrase != null && (
+        <>
+          <label className="stack-field">
+            <span className="field-label">{t("crypto.passphraseNeeded")}</span>
+            <input className="input" type="password" autoFocus aria-label={t("protect.passphrase")} value={passphrase} onChange={(e) => setPassphrase(e.target.value)} onKeyDown={(e) => e.key === "Enter" && passphrase && void run()} />
+          </label>
+          <div className="set-control-row passphrase-remember">
+            <Switch label={t("protect.rememberPassphrase")} checked={remember} onChange={setRemember} />
+            <span>{t("protect.rememberPassphrase")}</span>
+          </div>
+          <p className="muted">{remember ? t("protect.rememberHint") : t("protect.forNowHint")}</p>
+        </>
+      )}
       {error && (
         <p className="field-error" role="alert">
           {error}

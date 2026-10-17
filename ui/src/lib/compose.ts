@@ -32,6 +32,8 @@ export type ComposeState = {
   revision: number;
   /** Signed and/or encrypted when sent (OpenPGP or S/MIME). */
   protect?: Protect | null;
+  /** A reply to or forward of a decrypted message: the quote stays encrypted, or the sheet warns. */
+  fromEncrypted?: Protect["method"] | null;
 };
 
 export const escapeHtml = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -105,7 +107,15 @@ export function replyDraft(m: MessageView, mode: "reply" | "replyAll" | "forward
   const d = base(account, rich);
   d.mode = mode;
   const from = m.summary.from;
-  const original = (m.text ?? m.summary.snippet).replace(/\s+$/, "");
+  const p = m.protection;
+  const decrypted = !!(p?.encrypted && p.decrypted);
+  // Decrypted text from a block inside someone else's text is never quoted back (it could be a
+  // captured message sent to get its content).
+  const original = decrypted && p?.partial ? t("protect.quoteLeftOut", undefined, lang) : (m.text ?? m.summary.snippet).replace(/\s+$/, "");
+  if (decrypted && p) {
+    d.fromEncrypted = p.method;
+    d.protect = { method: p.method, sign: false, encrypt: true };
+  }
   const sig = signatureText(account);
   if (mode === "forward") {
     d.subject = prefixed("Fwd", m.summary.subject);

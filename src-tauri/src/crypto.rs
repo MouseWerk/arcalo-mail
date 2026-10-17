@@ -3,6 +3,10 @@
 //! their domain's Web Key Directory), the user's S/MIME certificate from a PKCS#12 file (file and
 //! password in the credential store), what can be done for a message's recipients, and the files
 //! inside an encrypted message. The core reads the secrets through [`ShellKeys`].
+//!
+//! An own key protected with a passphrase (as GnuPG and Thunderbird export them) is kept as it
+//! is. Its passphrase, once the user gave it, stays in memory for [`PASSPHRASE_TTL`] only, or in
+//! the credential store when the user chose that.
 
 use base64::Engine;
 use mail_core::Error;
@@ -13,10 +17,38 @@ use crate::{AppState, secrets};
 
 type Res<T> = Result<T, Error>;
 
+/// How long a passphrase the user gave stays in memory.
+const PASSPHRASE_TTL: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+/// Passphrases given in this session, with when they were given.
+static PASSPHRASES: std::sync::Mutex<Vec<(String, String, std::time::Instant)>> = std::sync::Mutex::new(Vec::new());
+
+fn remember_for_now(fingerprint: &str, passphrase: &str) {
+    let mut list = PASSPHRASES.lock().unwrap_or_else(|e| e.into_inner());
+    list.retain(|(fp, _, _)| fp != fingerprint);
+    list.push((fingerprint.to_string(), passphrase.to_string(), std::time::Instant::now()));
+}
+
+fn forget(fingerprint: &str) {
+    PASSPHRASES.lock().unwrap_or_else(|e| e.into_inner()).retain(|(fp, _, _)| fp != fingerprint);
+    let _ = secrets::delete(&crypto::pgp_passphrase_key(fingerprint));
+}
+
 /// The credential store as the core's [`Keys`].
 pub struct ShellKeys;
 
 impl Keys for ShellKeys {
+    fn pgp_passphrase(&self, fingerprint: &str) -> Option<String> {
+        {
+            let mut list = PASSPHRASES.lock().unwrap_or_else(|e| e.into_inner());
+            list.retain(|(_, _, at)| at.elapsed() < PASSPHRASE_TTL);
+            if let Some((_, p, _)) = list.iter().find(|(fp, _, _)| fp == fingerprint) {
+                return Some(p.clone());
+            }
+        }
+        secrets::get(&crypto::pgp_passphrase_key(fingerprint)).ok().flatten()
+    }
+
     fn pgp_secret(&self, fingerprint: &str) -> Option<String> {
         secrets::get(&crypto::pgp_secret_key(fingerprint)).ok().flatten()
     }
@@ -50,15 +82,54 @@ pub fn pgp_generate(state: State<'_, AppState>, account_id: i64) -> Res<pgp::Key
     crypto::save_pgp(&state.store(), &public, true, "generated", true)
 }
 
-/// Imports keys from text (armored public keys of others, or an own secret key).
+fn wrong_passphrase() -> Error {
+    Error::Invalid(mail_core::tr!("Die Passphrase stimmt nicht.", "The passphrase is not right.").into())
+}
+
+/// Keeps a passphrase the user gave: in memory for a while, and in the credential store when
+/// the user chose so (else an earlier stored one is removed).
+fn keep_passphrase(fingerprint: &str, passphrase: &str, remember: bool) -> Res<()> {
+    remember_for_now(fingerprint, passphrase);
+    if remember {
+        secrets::set(&crypto::pgp_passphrase_key(fingerprint), passphrase)
+    } else {
+        let _ = secrets::delete(&crypto::pgp_passphrase_key(fingerprint));
+        Ok(())
+    }
+}
+
+/// Whether the text holds an own secret key protected with a passphrase (the import dialog
+/// asks for it then).
 #[tauri::command]
-pub fn pgp_import(state: State<'_, AppState>, text: String) -> Res<Vec<pgp::KeyInfo>> {
+pub fn pgp_needs_passphrase(text: String) -> bool {
+    text.contains("-----BEGIN PGP PRIVATE KEY BLOCK-----")
+        && pgp::read_secret(text.trim()).is_ok_and(|k| pgp::is_protected(&k))
+}
+
+/// Imports keys from text (armored public keys of others, or an own secret key; a protected
+/// one with its `passphrase`, checked here, kept as `remember` says).
+#[tauri::command]
+pub fn pgp_import(
+    state: State<'_, AppState>,
+    text: String,
+    passphrase: Option<String>,
+    remember: Option<bool>,
+) -> Res<Vec<pgp::KeyInfo>> {
     let text = text.trim();
     if text.contains("-----BEGIN PGP PRIVATE KEY BLOCK-----") {
         let secret = pgp::read_secret(text)?;
         let public = secret.to_public_key();
         let fp = pgp::fingerprint_of(&public);
-        secrets::set(&crypto::pgp_secret_key(&fp), text)?;
+        if pgp::is_protected(&secret) {
+            let p = passphrase.unwrap_or_default();
+            if !pgp::unlocks(&secret, &p) {
+                return Err(wrong_passphrase());
+            }
+            secrets::set(&crypto::pgp_secret_key(&fp), text)?;
+            keep_passphrase(&fp, &p, remember.unwrap_or(false))?;
+        } else {
+            secrets::set(&crypto::pgp_secret_key(&fp), text)?;
+        }
         return Ok(vec![crypto::save_pgp(&state.store(), &public, true, "imported", true)?]);
     }
     let mut out = vec![];
@@ -74,6 +145,36 @@ pub fn pgp_import(state: State<'_, AppState>, text: String) -> Res<Vec<pgp::KeyI
         ));
     }
     Ok(out)
+}
+
+/// Unlocks an own protected key with its passphrase (checked here) for a while, or for good in
+/// the credential store when `remember`.
+#[tauri::command]
+pub fn pgp_unlock(fingerprint: String, passphrase: String, remember: bool) -> Res<()> {
+    let armored = secrets::get(&crypto::pgp_secret_key(&fingerprint))?
+        .ok_or_else(|| Error::NotFound(mail_core::tr!("Der Schlüssel fehlt.", "The key is missing.").into()))?;
+    if !pgp::unlocks(&pgp::read_secret(&armored)?, &passphrase) {
+        return Err(wrong_passphrase());
+    }
+    keep_passphrase(&fingerprint, &passphrase, remember)
+}
+
+/// The own key of the account that needs its passphrase before it can sign (the compose sheet
+/// asks for it before sending).
+#[tauri::command]
+pub fn pgp_locked(state: State<'_, AppState>, account_id: i64) -> Res<Option<String>> {
+    let store = state.store();
+    let from = store.account(account_id)?.email;
+    crypto::locked_pgp(&store, &from, &ShellKeys)
+}
+
+/// Trusts the S/MIME certificate a message was signed with (the user checked it).
+#[tauri::command]
+pub fn smime_trust(state: State<'_, AppState>, message_id: i64) -> Res<smime::CertInfo> {
+    let store = state.store();
+    let raw = store.raw_message(message_id)?.ok_or_else(|| Error::NotFound("message".into()))?;
+    let sender = store.message(message_id)?.summary.from.map(|a| a.email).unwrap_or_default();
+    crypto::trust_signer(&store, &raw, &sender, &ShellKeys)
 }
 
 /// The armored public key (to send or publish it).
@@ -119,7 +220,7 @@ fn wkd_urls(email: &str) -> Res<Vec<String>> {
 pub fn smime_import(state: State<'_, AppState>, path: String, password: String) -> Res<smime::CertInfo> {
     let data = std::fs::read(&path).map_err(|e| Error::Invalid(e.to_string()))?;
     let id = smime::read_p12(&data, &password)?;
-    let info = crypto::save_cert(&state.store(), &id.cert, true)?;
+    let info = crypto::save_cert(&state.store(), &id.cert, true, true)?;
     let value =
         serde_json::json!({ "p12": base64::engine::general_purpose::STANDARD.encode(&data), "password": password });
     if let Err(e) = secrets::set(&crypto::smime_secret_key(&info.fingerprint), &value.to_string()) {
@@ -135,6 +236,9 @@ pub fn crypto_remove(state: State<'_, AppState>, kind: String, fingerprint: Stri
     let key =
         if kind == "smime" { crypto::smime_secret_key(&fingerprint) } else { crypto::pgp_secret_key(&fingerprint) };
     let _ = secrets::delete(&key);
+    if kind != "smime" {
+        forget(&fingerprint);
+    }
     Ok(())
 }
 
@@ -159,5 +263,5 @@ pub fn save_protected_attachment(state: State<'_, AppState>, message_id: i64, in
         Error::Invalid(mail_core::tr!("Die Nachricht lässt sich nicht öffnen.", "The message cannot be opened.").into())
     })?;
     let data = mail_core::parse::attachment_data(&opened, index).ok_or_else(|| Error::NotFound("attachment".into()))?;
-    std::fs::write(&path, data).map_err(|e| Error::Invalid(e.to_string()))
+    mail_core::files::write_marked(std::path::Path::new(&path), &data).map_err(|e| Error::Invalid(e.to_string()))
 }

@@ -157,7 +157,7 @@ export const api = {
   discardDraft: (accountId: number, messageId: string) => call<void>("discard_draft", { accountId, messageId }, () => undefined),
   fileInfos: (paths: string[]) => call<FileInfo[]>("file_infos", { paths }, () => []),
 
-  openAttachment: (id: number) => call<string>("open_attachment", { id }, () => ""),
+  openAttachment: (id: number, confirmed = false) => call<{ opened: boolean; risk: "none" | "macro" | "blocked" }>("open_attachment", { id, confirmed }, () => ({ opened: true, risk: "none" })),
   saveAttachment: (id: number, path: string) => call<void>("save_attachment", { id, path }, () => undefined),
   previewAttachment: (id: number) => call<{ mime_type: string; data_b64: string }>("attachment_preview", { id }, () => demo.preview()),
 
@@ -226,13 +226,17 @@ export const api = {
   // Signed and encrypted mail (src-tauri/src/crypto.rs).
   cryptoKeys: () => call<StoredKey[]>("crypto_keys", {}, () => []),
   pgpGenerate: (accountId: number) => call<PgpKeyInfo>("pgp_generate", { accountId }, () => ({ fingerprint: "", name: "", email: "", created: 0, can_encrypt: true })),
-  pgpImport: (text: string) => call<PgpKeyInfo[]>("pgp_import", { text }, () => []),
+  pgpImport: (text: string, passphrase: string | null = null, remember = false) => call<PgpKeyInfo[]>("pgp_import", { text, passphrase, remember }, () => []),
+  pgpNeedsPassphrase: (text: string) => call<boolean>("pgp_needs_passphrase", { text }, () => false),
+  pgpUnlock: (fingerprint: string, passphrase: string, remember: boolean) => call<void>("pgp_unlock", { fingerprint, passphrase, remember }, () => undefined),
+  pgpLocked: (accountId: number) => call<string | null>("pgp_locked", { accountId }, () => null),
+  smimeTrust: (messageId: number) => call<CertInfo>("smime_trust", { messageId }, () => ({ fingerprint: "", subject: "", issuer: "", emails: [], not_after: 0 })),
   pgpExport: (fingerprint: string) => call<string>("pgp_export", { fingerprint }, () => ""),
   pgpLookup: (email: string) => call<PgpKeyInfo | null>("pgp_lookup", { email }, () => null),
   smimeImport: (path: string, password: string) => call<CertInfo>("smime_import", { path, password }, () => ({ fingerprint: "", subject: "", issuer: "", emails: [], not_after: 0 })),
   cryptoRemove: (kind: "pgp" | "smime", fingerprint: string) => call<void>("crypto_remove", { kind, fingerprint }, () => undefined),
   cryptoAbilities: (accountId: number, recipients: string[]) =>
-    call<Abilities>("crypto_abilities", { accountId, recipients }, () => ({ pgp_sign: false, pgp_encrypt: false, pgp_missing: recipients, smime_sign: false, smime_encrypt: false, smime_missing: recipients })),
+    call<Abilities>("crypto_abilities", { accountId, recipients }, () => ({ pgp_sign: false, pgp_encrypt: false, pgp_missing: recipients, smime_sign: false, smime_encrypt: false, smime_missing: recipients, pgp_prefer_encrypt: false })),
   saveProtectedAttachment: (messageId: number, index: number, path: string) => call<void>("save_protected_attachment", { messageId, index, path }, () => undefined),
 
   // „An Arcalo senden“ (src-tauri/src/arcalo.rs).

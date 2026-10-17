@@ -19,6 +19,7 @@ pub mod crypto;
 pub mod diag;
 pub mod engine;
 pub mod error;
+pub mod files;
 pub mod graph;
 pub mod hub;
 pub mod i18n;

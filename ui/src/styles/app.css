@@ -3638,6 +3638,8 @@ button.rule-text:hover {
 .protect-badge.warn { background: var(--warning-soft); color: var(--text); }
 .protect-badge.warn > svg { color: var(--warning); }
 .protect-note { font-size: var(--fs-xs); }
+.protect-fingerprint { font-family: var(--font-mono); font-size: var(--fs-xs); overflow-wrap: anywhere; }
+.passphrase-remember { display: flex; justify-content: flex-start; align-items: center; margin-top: var(--sp-3); color: var(--text-2); font-size: var(--fs-sm); }
 .protect-btn { padding: 0 var(--sp-2); }
 .protect-on { background: var(--bg-current); color: var(--text); }
 

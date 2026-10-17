@@ -13,8 +13,9 @@ use ::pgp::composed::{
 use ::pgp::crypto::ecc_curve::ECCCurve;
 use ::pgp::crypto::hash::HashAlgorithm;
 use ::pgp::crypto::sym::SymmetricKeyAlgorithm;
+use ::pgp::packet::SignatureType;
 use ::pgp::ser::Serialize as _;
-use ::pgp::types::{CompressionAlgorithm, KeyDetails, Password, VerifyingKey};
+use ::pgp::types::{CompressionAlgorithm, KeyDetails, Password, SigningKey, VerifyingKey};
 use base64::Engine;
 use serde::Serialize;
 
@@ -60,14 +61,66 @@ pub fn users(key: &SignedPublicKey) -> Vec<(String, String)> {
     key.details.users.iter().map(|u| split_user(&String::from_utf8_lossy(u.id.id()))).collect()
 }
 
+/// Unix seconds now.
+fn now_secs() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
+}
+
+/// The newest of these signatures of one type (by creation time).
+fn newest(sigs: &[::pgp::packet::Signature], typ: SignatureType) -> Option<&::pgp::packet::Signature> {
+    sigs.iter().filter(|g| g.typ() == Some(typ)).max_by_key(|g| g.created().map(|t| t.as_secs()).unwrap_or(0))
+}
+
+/// Whether a key made at `created` and bound by `binding` has expired at `at`.
+fn expired(created: i64, binding: &::pgp::packet::Signature, at: i64) -> bool {
+    let secs = binding.key_expiration_time().map(|d| std::time::Duration::from(d).as_secs() as i64).unwrap_or(0);
+    secs > 0 && created + secs <= at
+}
+
+/// The primary key's newest self-signature (on a user id, or directly on the key).
+fn primary_binding(key: &SignedPublicKey) -> Option<&::pgp::packet::Signature> {
+    key.details
+        .users
+        .iter()
+        .flat_map(|u| u.signatures.iter())
+        .chain(key.details.direct_signatures.iter())
+        .max_by_key(|g| g.created().map(|t| t.as_secs()).unwrap_or(0))
+}
+
+/// The primary key is usable at `at`: not revoked, not expired.
+fn primary_usable(key: &SignedPublicKey, at: i64) -> bool {
+    key.details.revocation_signatures.is_empty()
+        && !primary_binding(key).is_some_and(|b| expired(key.primary_key.created_at().as_secs() as i64, b, at))
+}
+
+/// A subkey's flags when it is usable at `at` (bound, not revoked, not expired).
+fn subkey_flags(sigs: &[::pgp::packet::Signature], created: i64, at: i64) -> Option<::pgp::packet::KeyFlags> {
+    if sigs.iter().any(|g| g.typ() == Some(SignatureType::SubkeyRevocation)) {
+        return None;
+    }
+    let binding = newest(sigs, SignatureType::SubkeyBinding)?;
+    (!expired(created, binding, at)).then(|| binding.key_flags())
+}
+
+/// The subkey to encrypt to at `at`: the newest one that is bound for encryption, not revoked
+/// and not expired. `None` when only the primary key (or nothing) can encrypt.
+pub fn encryption_subkey_at(key: &SignedPublicKey, at: i64) -> Option<&::pgp::composed::SignedPublicSubKey> {
+    if !primary_usable(key, at) {
+        return None;
+    }
+    key.public_subkeys
+        .iter()
+        .filter(|s| s.key.algorithm().can_encrypt())
+        .filter(|s| {
+            subkey_flags(&s.signatures, s.key.created_at().as_secs() as i64, at)
+                .is_some_and(|f| f.encrypt_comms() || f.encrypt_storage())
+        })
+        .max_by_key(|s| s.key.created_at().as_secs())
+}
+
 fn encryption_capable(key: &SignedPublicKey) -> bool {
-    key.public_subkeys.iter().any(|s| {
-        s.key.algorithm().can_encrypt()
-            && s.signatures.iter().any(|g| {
-                let f = g.key_flags();
-                f.encrypt_comms() || f.encrypt_storage()
-            })
-    }) || key.primary_key.algorithm().can_encrypt()
+    let at = now_secs();
+    encryption_subkey_at(key, at).is_some() || (primary_usable(key, at) && key.primary_key.algorithm().can_encrypt())
 }
 
 pub fn info(key: &SignedPublicKey) -> KeyInfo {
@@ -139,6 +192,49 @@ pub fn read_secret(armored: &str) -> Result<SignedSecretKey> {
     Ok(key)
 }
 
+/// The secret key is protected with a passphrase (GnuPG and Thunderbird export it so).
+pub fn is_protected(key: &SignedSecretKey) -> bool {
+    key.primary_key.secret_params().is_encrypted()
+        || key.secret_subkeys.iter().any(|s| s.key.secret_params().is_encrypted())
+}
+
+/// The passphrase unlocks the primary key and every subkey.
+pub fn unlocks(key: &SignedSecretKey, passphrase: &str) -> bool {
+    let pw = Password::from(passphrase);
+    key.primary_key.unlock(&pw, |_, _| Ok(())).is_ok_and(|r| r.is_ok())
+        && key.secret_subkeys.iter().all(|s| s.key.unlock(&pw, |_, _| Ok(())).is_ok_and(|r| r.is_ok()))
+}
+
+/// An own secret key with what unlocks it (empty for an unprotected key).
+pub struct Secret {
+    pub key: SignedSecretKey,
+    pub password: Password,
+}
+
+impl Secret {
+    pub fn plain(key: SignedSecretKey) -> Secret {
+        Secret { key, password: Password::empty() }
+    }
+}
+
+/// The key that makes signatures at `at`: the newest signing subkey that is bound, not revoked
+/// and not expired, else the primary key (keys whose primary key only certifies sign with a
+/// subkey; RNP and Sequoia reject other signatures).
+pub fn signing_key_at(secret: &SignedSecretKey, at: i64) -> &dyn SigningKey {
+    let public = secret.to_public_key();
+    if primary_usable(&public, at) {
+        let sub = secret
+            .secret_subkeys
+            .iter()
+            .filter(|s| subkey_flags(&s.signatures, s.key.created_at().as_secs() as i64, at).is_some_and(|f| f.sign()))
+            .max_by_key(|s| s.key.created_at().as_secs());
+        if let Some(s) = sub {
+            return &s.key;
+        }
+    }
+    &secret.primary_key
+}
+
 pub fn armored_public(key: &SignedPublicKey) -> Result<String> {
     key.to_armored_string(ArmorOptions::default()).map_err(pgp_error)
 }
@@ -148,11 +244,12 @@ pub fn binary_public(key: &SignedPublicKey) -> Result<Vec<u8>> {
 }
 
 /// A detached signature (armored) over `data` with the secret key.
-pub fn sign_detached(secret: &SignedSecretKey, data: &[u8]) -> Result<String> {
+pub fn sign_detached(secret: &Secret, data: &[u8]) -> Result<String> {
+    let key = signing_key_at(&secret.key, now_secs());
     let sig = DetachedSignature::sign_binary_data(
         rand::thread_rng(),
-        &secret.primary_key,
-        &Password::empty(),
+        &Box::new(key),
+        &secret.password,
         HashAlgorithm::Sha256,
         data,
     )
@@ -166,6 +263,8 @@ pub enum Verdict {
     Valid {
         fingerprint: String,
         signer: String,
+        /// Every address the key's user ids name (lower case).
+        emails: Vec<String>,
     },
     /// No known key made it; the signature names this key.
     UnknownKey {
@@ -177,6 +276,14 @@ pub enum Verdict {
 fn signer_of(key: &SignedPublicKey) -> String {
     let i = info(key);
     if i.name.is_empty() { i.email } else { format!("{} <{}>", i.name, i.email) }
+}
+
+fn valid(key: &SignedPublicKey) -> Verdict {
+    Verdict::Valid {
+        fingerprint: fingerprint_of(key),
+        signer: signer_of(key),
+        emails: users(key).into_iter().map(|(_, e)| e).filter(|e| !e.is_empty()).collect(),
+    }
 }
 
 /// The verifying keys of a certificate: the primary and its subkeys.
@@ -197,7 +304,7 @@ pub fn verify_detached(signature: &[u8], data: &[u8], keys: &[SignedPublicKey]) 
         if sig.signature.verify(k, data).is_ok()
             || k.public_subkeys.iter().any(|s| sig.signature.verify(s, data).is_ok())
         {
-            return Verdict::Valid { fingerprint: fingerprint_of(k), signer: signer_of(k) };
+            return valid(k);
         }
     }
     let named = sig.signature.issuer_fingerprint().first().map(|f| format!("{f:X}"));
@@ -209,25 +316,17 @@ pub fn verify_detached(signature: &[u8], data: &[u8], keys: &[SignedPublicKey]) 
 
 /// Encrypts `data` (a MIME entity) to the recipients' keys, signed with `signer` when given.
 /// Returns the armored message.
-pub fn encrypt(data: &[u8], recipients: &[SignedPublicKey], signer: Option<&SignedSecretKey>) -> Result<String> {
+pub fn encrypt(data: &[u8], recipients: &[SignedPublicKey], signer: Option<&Secret>) -> Result<String> {
     let mut rng = rand::thread_rng();
+    let at = now_secs();
     let mut b = MessageBuilder::from_bytes("", data.to_vec()).seipd_v1(&mut rng, SymmetricKeyAlgorithm::AES256);
     let mut any = false;
     for k in recipients {
-        let mut used = false;
-        for s in &k.public_subkeys {
-            let flags = s.signatures.iter().any(|g| {
-                let f = g.key_flags();
-                f.encrypt_comms() || f.encrypt_storage()
-            });
-            if flags && s.key.algorithm().can_encrypt() {
-                b.encrypt_to_key(&mut rng, &s.key).map_err(pgp_error)?;
-                used = true;
-                any = true;
-                break;
-            }
-        }
-        if !used && k.primary_key.algorithm().can_encrypt() {
+        // The newest valid encryption subkey: never an expired or revoked one.
+        if let Some(s) = encryption_subkey_at(k, at) {
+            b.encrypt_to_key(&mut rng, &s.key).map_err(pgp_error)?;
+            any = true;
+        } else if primary_usable(k, at) && k.primary_key.algorithm().can_encrypt() {
             b.encrypt_to_key(&mut rng, &k.primary_key).map_err(pgp_error)?;
             any = true;
         }
@@ -235,8 +334,9 @@ pub fn encrypt(data: &[u8], recipients: &[SignedPublicKey], signer: Option<&Sign
     if !any {
         return Err(Error::Invalid(tr!("Kein Schlüssel kann verschlüsseln.", "No key can encrypt.").into()));
     }
-    if let Some(s) = signer {
-        b.sign(&s.primary_key, Password::empty(), HashAlgorithm::Sha256);
+    let pw = signer.map(|s| Password::from(s.password.read().as_slice()));
+    if let (Some(s), Some(pw)) = (signer, pw) {
+        b.sign(signing_key_at(&s.key, at), pw, HashAlgorithm::Sha256);
     }
     b.to_armored_string(&mut rng, ArmorOptions::default()).map_err(pgp_error)
 }
@@ -250,7 +350,7 @@ pub struct Decrypted {
 
 /// Decrypts an armored (or binary) message with one of `secrets`, verifying a signature inside
 /// against `keys`.
-pub fn decrypt(message: &[u8], secrets: &[SignedSecretKey], keys: &[SignedPublicKey]) -> Result<Decrypted> {
+pub fn decrypt(message: &[u8], secrets: &[Secret], keys: &[SignedPublicKey]) -> Result<Decrypted> {
     let not_for_me = || {
         Error::Invalid(
             tr!(
@@ -275,9 +375,8 @@ pub fn decrypt(message: &[u8], secrets: &[SignedSecretKey], keys: &[SignedPublic
     if !msg.is_encrypted() {
         return Err(pgp_error("not encrypted"));
     }
-    let pw = Password::empty();
     let mut dec = msg
-        .decrypt_with_keys(secrets.iter().map(|_| &pw).collect(), secrets.iter().collect())
+        .decrypt_with_keys(secrets.iter().map(|s| &s.password).collect(), secrets.iter().map(|s| &s.key).collect())
         .map_err(|_| not_for_me())?;
     if dec.is_compressed() {
         dec = dec.decompress().map_err(pgp_error)?;
@@ -287,7 +386,7 @@ pub fn decrypt(message: &[u8], secrets: &[SignedSecretKey], keys: &[SignedPublic
         let mut verdict = Verdict::UnknownKey { fingerprint: None };
         for k in keys {
             if verifies(k, |v| dec.verify(v).is_ok()) {
-                verdict = Verdict::Valid { fingerprint: fingerprint_of(k), signer: signer_of(k) };
+                verdict = valid(k);
                 break;
             }
         }
@@ -298,20 +397,33 @@ pub fn decrypt(message: &[u8], secrets: &[SignedSecretKey], keys: &[SignedPublic
     Ok(Decrypted { data, signature })
 }
 
-/// Checks a cleartext-signed text (`-----BEGIN PGP SIGNED MESSAGE-----`); returns the text
-/// without its armor and the verdict.
-pub fn verify_cleartext(text: &str, keys: &[SignedPublicKey]) -> Option<(String, Verdict)> {
+/// A cleartext signature found in a text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Cleartext {
+    /// The signed text without its armor.
+    pub text: String,
+    pub verdict: Verdict,
+    /// The signed block is the whole text (nothing unsigned before or after it).
+    pub whole: bool,
+    /// The unsigned text before and after the block.
+    pub around: (String, String),
+}
+
+/// Checks a cleartext-signed text (`-----BEGIN PGP SIGNED MESSAGE-----`).
+pub fn verify_cleartext(text: &str, keys: &[SignedPublicKey]) -> Option<Cleartext> {
     let start = text.find("-----BEGIN PGP SIGNED MESSAGE-----")?;
     let end = text.find("-----END PGP SIGNATURE-----")? + "-----END PGP SIGNATURE-----".len();
     let (msg, _) = CleartextSignedMessage::from_string(&text[start..end]).ok()?;
     let plain = msg.text().to_string();
+    let whole = text[..start].trim().is_empty() && text[end..].trim().is_empty();
+    let around = (text[..start].to_string(), text[end..].to_string());
     for k in keys {
         if msg.verify(k).is_ok() || k.public_subkeys.iter().any(|s| msg.verify(s).is_ok()) {
-            return Some((plain, Verdict::Valid { fingerprint: fingerprint_of(k), signer: signer_of(k) }));
+            return Some(Cleartext { text: plain, verdict: valid(k), whole, around });
         }
     }
     let named = msg.signatures().first().and_then(|s| s.issuer_fingerprint().first().map(|f| format!("{f:X}")));
-    Some((plain, Verdict::UnknownKey { fingerprint: named }))
+    Some(Cleartext { text: plain, verdict: Verdict::UnknownKey { fingerprint: named }, whole, around })
 }
 
 // ---------------------------------------------------------------------------- Autocrypt

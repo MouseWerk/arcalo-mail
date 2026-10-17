@@ -235,7 +235,7 @@ function MessageCard({ view, theme, p, onCollapse }: { view: MessageView; theme:
       </header>
       {p.stream && <h2 className="stream-subject">{m.subject || t("list.noSubject")}</h2>}
       <MarkNotes view={view} p={p} />
-      {view.protection && <ProtectionBadges p={view.protection} />}
+      {view.protection && <ProtectionBadges p={view.protection} messageId={m.id} onChanged={() => p.onRetry(m.id)} />}
       {view.invitation && <InvitationCard view={view} onAnswered={() => p.onRetry(m.id)} onOpenCalendar={(key, start) => p.onOpenCalendar?.(key, start)} />}
       {!view.invitation && view.meeting && (
         <div className="meeting-row">

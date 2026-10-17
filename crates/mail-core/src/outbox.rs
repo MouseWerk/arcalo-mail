@@ -35,6 +35,10 @@ pub enum Op {
         /// The message answered (folder, UID): gets `\Answered`.
         #[serde(default)]
         answered: Option<(String, u32)>,
+        /// Copies of an encrypted message for its Bcc recipients, each encrypted for its
+        /// recipient alone; sent after the message, one by one.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        copies: Vec<Copy>,
     },
     /// The second half of [`Op::Send`] after the message went out: never sent twice.
     AppendSent {
@@ -109,6 +113,13 @@ impl Op {
             Op::DeleteFolder { .. } => "delete_folder",
         }
     }
+}
+
+/// A copy of a message with its own envelope (an encrypted message's copy for a Bcc recipient).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Copy {
+    pub raw_b64: String,
+    pub recipients: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -304,6 +315,7 @@ mod tests {
             sent_mailbox: None,
             draft: None,
             answered: None,
+            copies: vec![],
         };
         let t = now();
         assert_eq!(sending(&s, t).unwrap(), 0);

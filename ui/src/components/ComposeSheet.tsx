@@ -75,7 +75,11 @@ function useAbilities(draft: ComposeState, onChange: (d: ComposeState) => void, 
           if (gone) return;
           setAbilities(a);
           const d = latest.current;
-          if (!defaulted.current && d.protect === undefined && signByDefault && (signByDefault === "pgp" ? a.pgp_sign : a.smime_sign)) {
+          if (!defaulted.current && d.protect === undefined && a.pgp_prefer_encrypt) {
+            // Every recipient asked for encrypted mail (Autocrypt), and the sender can.
+            defaulted.current = true;
+            onChange({ ...d, protect: { method: "pgp", sign: signByDefault === "pgp", encrypt: true } });
+          } else if (!defaulted.current && d.protect === undefined && signByDefault && (signByDefault === "pgp" ? a.pgp_sign : a.smime_sign)) {
             defaulted.current = true;
             onChange({ ...d, protect: { method: signByDefault, sign: true, encrypt: false } });
           }
@@ -729,6 +733,12 @@ export function ComposeSheet({ draft, accounts, error, sending, onChange, onSend
               </button>
             </div>
           )}
+        </div>
+      )}
+      {draft.fromEncrypted && !protect?.encrypt && (
+        <div className="notice notice-warning compose-quote-warning" role="status">
+          <TriangleAlert size={16} strokeWidth={1.75} aria-hidden />
+          <span>{t("protect.quotesEncrypted")}</span>
         </div>
       )}
       {error && (

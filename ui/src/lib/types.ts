@@ -223,10 +223,14 @@ export type Protection = {
   encrypted: boolean;
   decrypted: boolean;
   signed: boolean;
-  signature: "valid" | "untrusted" | "mismatch" | "unknown_key" | "invalid" | null;
+  signature: "valid" | "untrusted" | "mismatch" | "unknown_key" | "invalid" | "partial" | null;
   signer: string | null;
   fingerprint: string | null;
   error: string | null;
+  /** An own key that could open it waits for its passphrase. */
+  locked: string | null;
+  /** Text outside the signed or encrypted block is shown too. */
+  partial: boolean;
 };
 
 export type ProtectedFile = { index: number; filename: string | null; mime_type: string; size: number };
@@ -235,7 +239,16 @@ export type ProtectMethod = "pgp" | "smime";
 
 export type Protect = { method: ProtectMethod; sign: boolean; encrypt: boolean };
 
-export type Abilities = { pgp_sign: boolean; pgp_encrypt: boolean; pgp_missing: string[]; smime_sign: boolean; smime_encrypt: boolean; smime_missing: string[] };
+export type Abilities = {
+  pgp_sign: boolean;
+  pgp_encrypt: boolean;
+  pgp_missing: string[];
+  smime_sign: boolean;
+  smime_encrypt: boolean;
+  smime_missing: string[];
+  /** Every recipient asked for encrypted mail (Autocrypt): the sheet starts encrypted. */
+  pgp_prefer_encrypt: boolean;
+};
 
 export type StoredKey = { kind: "pgp" | "smime"; fingerprint: string; email: string; name: string; own: boolean; source: string; expires: number | null };
 

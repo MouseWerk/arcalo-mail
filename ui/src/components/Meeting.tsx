@@ -3,6 +3,7 @@
 // online meeting, and the lock and check of a signed or encrypted message with the files inside it.
 
 import { useState } from "react";
+import { Dialog, Switch } from "./ui";
 import { CalendarCheck, CalendarDays, CalendarX, Check, CircleHelp, Download, FileLock2, Lock, MapPin, ShieldAlert, ShieldCheck, Users, Video, X } from "lucide-react";
 import { api, openExternal, pickSavePath } from "../lib/api";
 import { currentLang, useT, type TKey } from "../lib/i18n";
@@ -161,14 +162,68 @@ const SIGNATURE: Record<NonNullable<Protection["signature"]>, TKey> = {
   mismatch: "protect.sigMismatch",
   unknown_key: "protect.sigUnknown",
   invalid: "protect.sigInvalid",
+  partial: "protect.sigPartial",
 };
 
-/** The lock and the check of a protected message, quiet when all is well. */
-export function ProtectionBadges({ p }: { p: Protection }) {
+/** Asks for the passphrase of an own OpenPGP key: kept in memory for a while, or in the system's keychain when the user chooses so. */
+export function PassphraseDialog({ fingerprint, onDone, onClose, above }: { fingerprint: string; onDone: () => void; onClose: () => void; above?: boolean }) {
   const t = useT();
+  const [value, setValue] = useState("");
+  const [remember, setRemember] = useState(false);
+  const [state, setState] = useState<{ busy: boolean; error: string | null }>({ busy: false, error: null });
+  const submit = () => {
+    if (!value || state.busy) return;
+    setState({ busy: true, error: null });
+    void api.pgpUnlock(fingerprint, value, remember).then(
+      () => {
+        onClose();
+        onDone();
+      },
+      (e) => setState({ busy: false, error: String(e) }),
+    );
+  };
+  return (
+    <Dialog
+      title={t("protect.unlockTitle")}
+      description={t("protect.unlockHint", { fingerprint: fingerprint.replace(/(.{4})/g, "$1 ").trim() })}
+      onClose={onClose}
+      above={above}
+      footer={
+        <>
+          <button type="button" className="btn btn-quiet" onClick={onClose}>
+            {t("common.cancel")}
+          </button>
+          <button type="button" className="btn btn-primary" disabled={!value || state.busy} onClick={submit}>
+            {t("protect.unlock")}
+          </button>
+        </>
+      }
+    >
+      <label className="stack-field">
+        <span className="field-label">{t("protect.passphrase")}</span>
+        <input className="input" type="password" autoFocus value={value} onChange={(e) => setValue(e.target.value)} onKeyDown={(e) => e.key === "Enter" && submit()} />
+      </label>
+      <div className="set-control-row passphrase-remember">
+        <Switch label={t("protect.rememberPassphrase")} checked={remember} onChange={setRemember} />
+        <span>{t("protect.rememberPassphrase")}</span>
+      </div>
+      <p className="muted">{remember ? t("protect.rememberHint") : t("protect.forNowHint")}</p>
+      {state.error && (
+        <p className="field-error" role="alert">
+          {state.error}
+        </p>
+      )}
+    </Dialog>
+  );
+}
+
+/** The lock and the check of a protected message, quiet when all is well. A locked own key can be unlocked here; an untrusted S/MIME certificate trusted after a look at it. */
+export function ProtectionBadges({ p, messageId, onChanged }: { p: Protection; messageId?: number; onChanged?: () => void }) {
+  const t = useT();
+  const [ask, setAsk] = useState<"unlock" | "trust" | null>(null);
   const method = p.method === "pgp" ? "OpenPGP" : "S/MIME";
   const good = p.signature === "valid";
-  const bad = p.signature === "invalid" || p.signature === "mismatch";
+  const bad = p.signature === "invalid" || p.signature === "mismatch" || p.signature === "partial";
   return (
     <div className="protect-badges" role="status">
       {p.encrypted && (
@@ -184,7 +239,50 @@ export function ProtectionBadges({ p }: { p: Protection }) {
         </span>
       )}
       {p.encrypted && p.decrypted && <span className="muted protect-note">{t("protect.noRemote")}</span>}
-      {p.error && !p.decrypted && <span className="muted protect-note">{p.error}</span>}
+      {p.error && !p.decrypted && !p.locked && <span className="muted protect-note">{p.error}</span>}
+      {p.locked && onChanged && (
+        <button type="button" className="btn btn-sm" onClick={() => setAsk("unlock")}>
+          <Lock size={14} strokeWidth={1.75} aria-hidden />
+          <span>{t("protect.enterPassphrase")}</span>
+        </button>
+      )}
+      {p.method === "smime" && p.signature === "untrusted" && messageId != null && onChanged && (
+        <button type="button" className="btn btn-sm btn-quiet" onClick={() => setAsk("trust")}>
+          {t("protect.trustCert")}
+        </button>
+      )}
+      {ask === "unlock" && p.locked && <PassphraseDialog fingerprint={p.locked} onDone={onChanged!} onClose={() => setAsk(null)} />}
+      {ask === "trust" && messageId != null && (
+        <Dialog
+          title={t("protect.trustTitle")}
+          onClose={() => setAsk(null)}
+          footer={
+            <>
+              <button type="button" className="btn btn-quiet" onClick={() => setAsk(null)}>
+                {t("common.cancel")}
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={() =>
+                  void api.smimeTrust(messageId).then(
+                    () => {
+                      setAsk(null);
+                      onChanged?.();
+                    },
+                    (e) => showToast({ title: t("crypto.failed"), detail: String(e), tone: "danger" }),
+                  )
+                }
+              >
+                {t("protect.trust")}
+              </button>
+            </>
+          }
+        >
+          <p className="dialog-text">{t("protect.trustText", { signer: p.signer ?? "–" })}</p>
+          <p className="muted protect-fingerprint">{p.fingerprint}</p>
+        </Dialog>
+      )}
     </div>
   );
 }

@@ -793,30 +793,47 @@ async fn attachment_bytes(state: &AppState, id: i64) -> Res<(mail_core::store::A
     Ok((a, data))
 }
 
-fn safe_name(name: &str) -> String {
-    let n: String = name.chars().map(|c| if c.is_control() || "/\\:*?\"<>|".contains(c) { '_' } else { c }).collect();
-    if n.trim().is_empty() || n.starts_with('.') { format!("attachment{n}") } else { n }
+/// What „Öffnen“ did: opened, or held back because of the file's type (`risk`).
+#[derive(Serialize)]
+pub struct OpenedFile {
+    opened: bool,
+    risk: mail_core::files::Risk,
 }
 
-/// Opens an attachment in its program (a copy in the app's cache folder).
+/// Opens an attachment in its program (a copy in the app's cache folder, marked as coming from
+/// the internet). Programs, scripts and shortcuts are never opened, only saved; an Office file
+/// with macros opens only once the user `confirmed` the warning.
 #[tauri::command]
-pub async fn open_attachment(app: AppHandle, state: State<'_, AppState>, id: i64) -> Res<String> {
+pub async fn open_attachment(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: i64,
+    confirmed: Option<bool>,
+) -> Res<OpenedFile> {
+    use mail_core::files::{self, Risk};
     use tauri_plugin_opener::OpenerExt;
-    let (a, data) = attachment_bytes(&state, id).await?;
+    let a = state.store().attachment(id)?;
+    let name = files::safe_name(a.filename.as_deref().unwrap_or("attachment"));
+    let risk = files::risk(&name);
+    if risk == Risk::Blocked || (risk == Risk::Macro && confirmed != Some(true)) {
+        return Ok(OpenedFile { opened: false, risk });
+    }
+    let (_, data) = attachment_bytes(&state, id).await?;
     let dir = state.data_dir.join("attachments").join(id.to_string());
     std::fs::create_dir_all(&dir).map_err(|e| Error::Invalid(e.to_string()))?;
-    let path = dir.join(safe_name(a.filename.as_deref().unwrap_or("attachment")));
-    std::fs::write(&path, &data).map_err(|e| Error::Invalid(e.to_string()))?;
+    let path = dir.join(name);
+    files::write_marked(&path, &data).map_err(|e| Error::Invalid(e.to_string()))?;
     let p = path.to_string_lossy().into_owned();
     app.opener().open_path(&p, None::<&str>).map_err(|e| Error::Invalid(e.to_string()))?;
-    Ok(p)
+    Ok(OpenedFile { opened: true, risk })
 }
 
-/// Saves an attachment where the user chose (the save dialog of the UI).
+/// Saves an attachment where the user chose (the save dialog of the UI), marked as coming from
+/// the internet.
 #[tauri::command]
 pub async fn save_attachment(state: State<'_, AppState>, id: i64, path: String) -> Res<()> {
     let (_, data) = attachment_bytes(&state, id).await?;
-    std::fs::write(&path, &data).map_err(|e| Error::Invalid(e.to_string()))?;
+    mail_core::files::write_marked(std::path::Path::new(&path), &data).map_err(|e| Error::Invalid(e.to_string()))?;
     state.store().set_attachment_path(id, &path)
 }
 
