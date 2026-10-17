@@ -22,4 +22,7 @@ object MailNative {
 
     /** A notification or the widget opened the app on a message (to read it or to reply). */
     @JvmStatic external fun openMessage(id: Long, reply: Boolean)
+
+    /** An e-mail link (mailto:) of another app: the compose sheet opens with it. */
+    @JvmStatic external fun openMailto(url: String)
 }

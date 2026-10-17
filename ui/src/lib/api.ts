@@ -66,6 +66,12 @@ import type {
   InvitationAnswer,
   PgpKeyInfo,
   StoredKey,
+  ApkStatus,
+  DefaultMail,
+  Mailto,
+  UpdateInfo,
+  UpdateProgress,
+  UpdateStatus,
 } from "./types";
 
 export const inApp = (): boolean => typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -236,6 +242,24 @@ export const api = {
   saveMarkdown: (path: string, text: string) => call<void>("save_markdown", { path, text }, () => undefined),
   /** The message a notification asked to open before the UI was ready. */
   takePendingOpen: () => call<{ id: number; reply: boolean } | null>("take_pending_open", {}, () => null),
+  takePendingMailto: () => call<Mailto | null>("take_pending_mailto", {}, () => null),
+  defaultMailStatus: () => call<DefaultMail>("default_mail_status", {}, () => ({ supported: false, is_default: null, how: "settings" as const, note: null })),
+  setDefaultMail: () => call<DefaultMail>("default_mail_set", {}, () => ({ supported: false, is_default: null, how: "settings" as const, note: null })),
+  // Desktop updates (src-tauri/src/updates.rs). The browser preview has none.
+  updateStatus: () => call<UpdateStatus | null>("update_status", {}, () => null),
+  updateCheck: (manual: boolean) => call<UpdateInfo | null>("update_check", { manual }, () => null),
+  updateDownload: () => call<void>("update_download", {}, () => undefined),
+  updatePause: () => call<void>("update_pause", {}, () => undefined),
+  updateInstall: () => call<void>("update_install", {}, () => undefined),
+  updateRestartNow: () => call<void>("update_restart_now", {}, () => undefined),
+  updateSkip: (version: string) => call<void>("update_skip", { version }, () => undefined),
+  updateUnskip: () => call<void>("update_unskip", {}, () => undefined),
+  updateRemind: (days: number) => call<string>("update_remind", { days }, () => new Date(Date.now() + days * 86_400_000).toISOString()),
+  updateWhatsNewSeen: (version: string) => call<void>("update_whats_new_seen", { version }, () => undefined),
+  // The Android app's update notice (src-tauri/src/mobile/apknotice.rs).
+  apkUpdateStatus: () => call<ApkStatus | null>("apk_update_status", {}, () => null),
+  apkUpdateCheck: (manual: boolean) => call<ApkStatus | null>("apk_update_check", { manual }, () => null),
+  apkWhatsNewSeen: () => call<ApkStatus | null>("apk_whats_new_seen", {}, () => null),
 
   // Rules.
   rules: () => call<Rule[]>("rules_list", {}, () => demo.rules),
@@ -389,6 +413,27 @@ export function onOpenMessage(f: () => void): () => void {
     off?.();
   };
 }
+
+/** Calls `f` with each event `name` of the backend (no payload needed); returns the unsubscribe
+ *  function. */
+export function onEvent<T = unknown>(name: string, f: (payload: T) => void): () => void {
+  if (!inApp()) return () => {};
+  let off: (() => void) | null = null;
+  let gone = false;
+  void import("@tauri-apps/api/event").then(({ listen }) =>
+    listen<T>(name, (e) => f(e.payload)).then((un) => {
+      if (gone) un();
+      else off = un;
+    }),
+  );
+  return () => {
+    gone = true;
+    off?.();
+  };
+}
+
+/** The update's download progress (desktop). */
+export const onUpdateProgress = (f: (p: UpdateProgress) => void) => onEvent<UpdateProgress>("update://progress", f);
 
 export async function openExternal(url: string): Promise<void> {
   if (inApp()) {

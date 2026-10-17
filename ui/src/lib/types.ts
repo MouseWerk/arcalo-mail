@@ -464,7 +464,72 @@ export type Settings = {
   sign_by_default: ProtectMethod | null;
   /** „An Arcalo senden“ makes a page or a task. */
   arcalo_target: "page" | "task";
+  /** Desktop updates: installed when the app quits, or only announced. */
+  updates: UpdateMode;
 };
+
+export type UpdateMode = "auto" | "notify";
+
+/** Why a copy offers the release page instead of installing an update itself. */
+export type ManualUpdate = "portable" | "package" | "translocated" | "read_only" | "not_writable" | "no_appimage";
+
+export type UpdateInfo = {
+  version: string;
+  /** Release notes (Markdown) without the testers' checklist. */
+  notes: string | null;
+  date: string | null;
+  /** The release page. */
+  url: string;
+};
+
+export type UpdateProgress = { downloaded: number; total: number | null; percent: number | null };
+
+export type UpdateStatus = {
+  /** A release build with the update key: checking and installing work. */
+  enabled: boolean;
+  current_version: string;
+  available: UpdateInfo | null;
+  manual: ManualUpdate | null;
+  manual_text: string | null;
+  /** The first start after an update (reported once). */
+  restarted: { version: string; installed: boolean; from: string | null; notes: string | null; url: string } | null;
+  mode: UpdateMode;
+  skipped: string | null;
+  remind_after: string | null;
+  whats_new_seen: string | null;
+  download: UpdateProgress & { phase: "idle" | "downloading" | "paused" | "ready" | "failed"; error: string | null };
+  /** A downloaded, verified update waits for the quit (its version). */
+  ready: string | null;
+  /** The install waits for this many messages that are being sent. */
+  waiting: number | null;
+  release_page: string;
+};
+
+/** The Android app's update notice (the APK of the GitHub release; never the Play build). */
+export type ApkStatus = {
+  enabled: boolean;
+  store: boolean;
+  current: string;
+  phase: "idle" | "checking" | "available" | "blocked" | "error";
+  offered: { version: string; notes: string | null; size: number | null; pub_date: string | null; apk: string; page: string } | null;
+  error: string | null;
+  blocked: string | null;
+  last_check: string | null;
+  updated_from: string | null;
+  notes: string | null;
+};
+
+/** „Als Standard-Mail-App festlegen“. */
+export type DefaultMail = {
+  supported: boolean;
+  is_default: boolean | null;
+  /** `set`: the app asks the system; `settings`: the system's settings open. */
+  how: "set" | "settings";
+  note: string | null;
+};
+
+/** What an e-mail link (mailto:) asked for. */
+export type Mailto = { to: string[]; cc: string[]; bcc: string[]; subject: string; body: string };
 
 export type CalendarSettings = {
   /** Where new appointments go (the first writable calendar without one). */

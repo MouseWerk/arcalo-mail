@@ -53,7 +53,8 @@ pub fn setup(app: &AppHandle) -> tauri::Result<()> {
                 }
             }
             "show" => show_main(app),
-            "quit" => app.exit(0),
+            // A downloaded update is installed first (`updates::quit`).
+            "quit" => crate::updates::quit(app),
             _ => {}
         })
         .on_tray_icon_event(|tray, event| {

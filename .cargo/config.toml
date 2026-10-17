@@ -1,0 +1,7 @@
+# Windows (MSVC): the C runtime linked into arcalo-mail.exe, so it starts on a Windows without the
+# Visual C++ Redistributable (the setup, the portable ZIP and a Store package alike), as Arcalo
+# does. With crt-static every C library built from source here (cc: SQLite, aws-lc, ring) is
+# compiled with /MT as well; src-tauri/build.rs switches Tauri's own replacement of the runtime
+# libraries off then.
+[target.'cfg(all(windows, target_env = "msvc"))']
+rustflags = ["-C", "target-feature=+crt-static"]

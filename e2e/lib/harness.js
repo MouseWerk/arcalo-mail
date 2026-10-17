@@ -180,6 +180,8 @@ export async function launch({ width = 1440, height = 900, locale = "de-DE", env
   const app = {
     browser,
     dataDir,
+    /** The environment the app runs in (a second start of the program needs the same). */
+    env,
     async shot(name, dir = SHOTS) {
       await sleep(300);
       fs.mkdirSync(dir, { recursive: true });

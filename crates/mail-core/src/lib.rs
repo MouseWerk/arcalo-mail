@@ -26,6 +26,7 @@ pub mod imap;
 pub mod itip;
 pub mod jmap;
 pub mod later;
+pub mod mailto;
 pub mod netwatch;
 pub mod network;
 pub mod oauth;
@@ -47,6 +48,9 @@ pub mod thread;
 pub mod tracking;
 pub mod triage;
 pub mod unsubscribe;
+pub mod update;
+pub mod update_android;
+pub mod update_feed;
 pub mod widget;
 
 pub use error::{Error, Result};

@@ -2,15 +2,17 @@
 //! through JNI, in both directions.
 //!
 //! Rust → Kotlin: static methods of `KeystoreCipher` (the secrets, `secrets.rs`), `AuthTab`
-//! (Custom Tabs for the sign-in), `MailNotifier` (the unread count on the notification) and
-//! `MailWidget` (the home-screen widget reads `widget.json` again). They are called from any
+//! (Custom Tabs for the sign-in), `MailNotifier` (the unread count on the notification),
+//! `MailWidget` (the home-screen widget reads `widget.json` again) and `AppFacts` (version,
+//! signing key and installer of the app, for the update notice). They are called from any
 //! thread: the classes come from the app's class loader, kept from the first call on a Java
 //! thread.
 //!
 //! Kotlin → Rust: `MailNative.backgroundCheck` (WorkManager's check, in a process that may have
 //! no activity and no Tauri), `MailNative.onRedirect` (the sign-in's redirect reached the
-//! activity), `MailNative.notificationAction` (archive or mark read from a notification) and
-//! `MailNative.openMessage` (a notification opened the app to read or answer a message).
+//! activity), `MailNative.notificationAction` (archive or mark read from a notification),
+//! `MailNative.openMessage` (a notification opened the app to read or answer a message) and
+//! `MailNative.openMailto` (an e-mail link of another app).
 //!
 //! Plain JNI rather than a Tauri plugin: the background check runs without Tauri, and the
 //! Keystore must answer there too.
@@ -29,6 +31,7 @@ const CIPHER: &str = "de.mousewerk.arcalo.mail.KeystoreCipher";
 const AUTH_TAB: &str = "de.mousewerk.arcalo.mail.AuthTab";
 const NOTIFIER: &str = "de.mousewerk.arcalo.mail.MailNotifier";
 const WIDGET: &str = "de.mousewerk.arcalo.mail.MailWidget";
+const FACTS: &str = "de.mousewerk.arcalo.mail.AppFacts";
 
 /// WorkManager gives a worker ten minutes; the check takes at most this.
 const BACKGROUND_BUDGET: Duration = Duration::from_secs(90);
@@ -192,6 +195,26 @@ pub fn refresh_widget() {
     }
 }
 
+/// The installed app as Android's package manager reads it (`AppFacts.kt`): version, signing
+/// certificate and the package that installed it.
+pub fn installed() -> Result<mail_core::update_android::Installed, String> {
+    let json = with_env(|env, java| {
+        let c = class(env, java, FACTS)?;
+        let out = env
+            .call_static_method(
+                &c,
+                "facts",
+                "(Landroid/content/Context;)Ljava/lang/String;",
+                &[JValue::Object(java.context.as_obj())],
+            )
+            .and_then(|v| v.l())
+            .map_err(|e| failure(env, e))?;
+        let text: String = env.get_string(&JString::from(out)).map_err(|e| e.to_string())?.into();
+        Ok(text)
+    })?;
+    serde_json::from_str(&json).map_err(|e| e.to_string())
+}
+
 /// `MailNative.notificationAction(context, dataDir, id, action)`: archive (`archive`) or mark
 /// read (`read`) from a notification's button. With the app running through its state (the
 /// worker carries it to the server at once); else in the store, for the next check. Answers the
@@ -232,6 +255,19 @@ pub extern "system" fn Java_de_mousewerk_arcalo_mail_MailNative_openMessage<'l>(
     reply: jni::sys::jboolean,
 ) {
     crate::commands::open_message(super::app(), id, reply != 0);
+}
+
+/// `MailNative.openMailto(url)`: an e-mail link of another app opens the compose sheet.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_de_mousewerk_arcalo_mail_MailNative_openMailto<'l>(
+    mut env: JNIEnv<'l>,
+    _class: JClass<'l>,
+    url: JString<'l>,
+) {
+    let url: String = env.get_string(&url).map(Into::into).unwrap_or_default();
+    if let Some(m) = mail_core::mailto::parse(&url) {
+        crate::defaultmail::open(super::app(), m);
+    }
 }
 
 /// `MailNative.backgroundCheck(context, dataDir)`: one check of every account (WorkManager);

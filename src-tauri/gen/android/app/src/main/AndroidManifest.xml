@@ -51,6 +51,19 @@
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="de.mousewerk.arcalo.mail" android:host="oauth" />
             </intent-filter>
+            <!-- E-mail links of other apps (mailto:) open the compose sheet; Android asks which
+                 app takes them (src-tauri/src/defaultmail.rs). -->
+            <intent-filter>
+                <action android:name="android.intent.action.SENDTO" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="mailto" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="mailto" />
+            </intent-filter>
         </activity>
         <!-- The buttons of a new-mail notification (archive, mark read): only the app's own
              notifications send these. -->

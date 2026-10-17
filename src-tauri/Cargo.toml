@@ -42,9 +42,27 @@ keyring = { version = "3", features = ["windows-native", "apple-native"] }
 [target.'cfg(target_os = "linux")'.dependencies]
 keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }
 
-# One window per user: a second start brings the first one to the front.
+# One window per user: a second start brings the first one to the front. The updater
+# (`updates.rs`): the plugin for its configuration and target names, temp folders for the install.
 [target.'cfg(any(windows, target_os = "macos", target_os = "linux"))'.dependencies]
 tauri-plugin-single-instance = "2"
+tauri-plugin-updater = "2"
+tempfile = "3"
+
+# The update installer unpacks the macOS `.app.tar.gz` (and a packed AppImage).
+[target.'cfg(any(target_os = "macos", target_os = "linux"))'.dependencies]
+flate2 = "1"
+tar = "0.4"
+
+# Windows: the update's setup is started with ShellExecute; the default mail app is read from
+# the registry.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_System_Registry",
+  "Win32_UI_Shell",
+  "Win32_UI_WindowsAndMessaging",
+] }
 
 # Buttons on the new-mail notification (archive, mark read, reply): the notification server's
 # actions on Linux, the toast's buttons on Windows.

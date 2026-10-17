@@ -161,6 +161,7 @@ let settings: Settings = {
   autocrypt: true,
   sign_by_default: null,
   arcalo_target: "page",
+  updates: "auto",
 };
 const listeners = new Set<(n: Notice) => void>();
 

@@ -3,6 +3,8 @@ import { useEffect, useState, type ReactNode } from "react";
 import { useT, type TKey } from "../lib/i18n";
 import { api, pickSavePath } from "../lib/api";
 import { showToast } from "../lib/toasts";
+import type { DefaultMail } from "../lib/types";
+import { UpdateSettings } from "./Updates";
 import type { AccountInfo, AppInfo, ImapTransport, LanguageChoice, MicrosoftSignIn, NetworkSettings, Pop3Transport, Prefetch, ProxyMode, ProxyProfile, RouteGroup, Security, Server, Settings as SettingsT, SwipeAction, SystemProxy, ThemeChoice } from "../lib/types";
 import { AiSection, ContactsSection, RulesSection, TemplatesSection } from "./PowerSettings";
 import { CalendarSection, CryptoSection } from "./CalendarSettings";
@@ -81,6 +83,42 @@ export async function exportDiagnostics(t: ReturnType<typeof useT>): Promise<voi
   } catch (e) {
     showToast({ title: String(e), tone: "danger" });
   }
+}
+
+/** „Als Standard-Mail-App festlegen“ where the system lets an app ask (src-tauri/src/defaultmail.rs). */
+function DefaultMailCard() {
+  const t = useT();
+  const [dm, setDm] = useState<DefaultMail | null>(null);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    void api.defaultMailStatus().then(setDm, () => setDm(null));
+  }, []);
+  if (!dm || (!dm.supported && !dm.note)) return null;
+  const set = async () => {
+    setBusy(true);
+    try {
+      const after = await api.setDefaultMail();
+      setDm(after);
+      if (after.how === "settings") showToast({ title: t("dm.chooseInSettings") });
+    } catch (e) {
+      showToast({ title: t("dm.setFailed"), detail: String(e), tone: "danger" });
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="set-card" data-default-mail>
+      <Row label={t("dm.label")} description={dm.note ?? (dm.is_default ? t("dm.isDefault") : t("dm.hint"))}>
+        {dm.supported && !dm.is_default && (
+          <button type="button" className="btn btn-sm" disabled={busy} onClick={() => void set()}>
+            {busy && <Spinner />}
+            <span>{t("dm.set")}</span>
+          </button>
+        )}
+        {dm.is_default && <span className="set-badge">{t("dm.default")}</span>}
+      </Row>
+    </div>
+  );
 }
 
 function Row({ label, description, children }: { label: string; description?: string; children: ReactNode }) {
@@ -908,19 +946,23 @@ export function SettingsView({ settings, accounts, info, section, onSection, onC
               </div>
             )}
             {section === "about" && (
-              <div className="set-card">
-                <Row label={t("app.name")} description={t("settings.aboutText")}>
-                  <span className="set-badge">{info?.version ?? ""}</span>
-                </Row>
-                <Row label={t("settings.license")} description={t("settings.licenseText")}>
-                  <span />
-                </Row>
-                <Row label={t("settings.diagnostics")} description={t("settings.diagnosticsHint")}>
-                  <button type="button" className="btn" onClick={() => void exportDiagnostics(t)}>
-                    {t("settings.exportDiagnostics")}
-                  </button>
-                </Row>
-              </div>
+              <>
+                <div className="set-card">
+                  <Row label={t("app.name")} description={t("settings.aboutText")}>
+                    <span className="set-badge">{info?.version ?? ""}</span>
+                  </Row>
+                  <Row label={t("settings.license")} description={t("settings.licenseText")}>
+                    <span />
+                  </Row>
+                  <Row label={t("settings.diagnostics")} description={t("settings.diagnosticsHint")}>
+                    <button type="button" className="btn" onClick={() => void exportDiagnostics(t)}>
+                      {t("settings.exportDiagnostics")}
+                    </button>
+                  </Row>
+                </div>
+                <UpdateSettings mode={settings.updates} onMode={(updates) => onChange({ updates })} platform={info?.platform ?? "browser"} version={info?.version ?? ""} />
+                <DefaultMailCard />
+              </>
             )}
           </div>
         </div>

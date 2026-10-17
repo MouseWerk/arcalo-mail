@@ -5,7 +5,9 @@
 //! and iOS apps; what the phones do differently is in `mobile` (the workers run while the app is
 //! in front, a background check of its own otherwise, the browser session of the sign-in). A
 //! clock thread does what the time tools have due (`run_clock`); the calendar has a loop of its
-//! own (`calendar`).
+//! own (`calendar`). Desktop updates are `updates` (with `installer` and `portable`), the
+//! Android app's update notice `mobile::apknotice`, `mailto:` links and the default mail app
+//! `defaultmail`.
 
 mod arcalo;
 mod assistant;
@@ -13,12 +15,19 @@ mod background;
 mod calendar;
 mod commands;
 mod crypto;
+mod defaultmail;
+#[cfg(desktop)]
+mod installer;
 #[cfg(mobile)]
 mod mobile;
+#[cfg(desktop)]
+mod portable;
 mod secrets;
 mod tools;
 #[cfg(desktop)]
 mod tray;
+#[cfg(desktop)]
+mod updates;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -89,10 +98,15 @@ pub fn apply_language(choice: LanguageChoice) {
     });
 }
 
-/// The app's data folder (`ARCALO_MAIL_DATA_DIR` for tests and portable use).
+/// The app's data folder: `ARCALO_MAIL_DATA_DIR` (tests), `data` next to a portable copy
+/// (`portable.rs`), else the user's application data folder.
 fn data_dir(app: &AppHandle) -> Result<PathBuf, Box<dyn std::error::Error>> {
     if let Some(d) = std::env::var_os("ARCALO_MAIL_DATA_DIR").filter(|d| !d.is_empty()) {
         return Ok(PathBuf::from(d));
+    }
+    #[cfg(desktop)]
+    if let Some(d) = portable::detect() {
+        return Ok(d);
     }
     Ok(app.path().app_data_dir()?)
 }
@@ -465,9 +479,21 @@ pub fn stop_worker(app: &AppHandle, account_id: i64) {
 pub fn run() {
     #[cfg(mobile)]
     mobile::before_launch();
-    let builder = tauri::Builder::default();
     #[cfg(desktop)]
-    let builder = { builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| tray::show_main(app))) };
+    portable::prepare();
+    let builder = tauri::Builder::default();
+    // A second start brings the window up; with a `mailto:` address it opens the compose sheet.
+    #[cfg(desktop)]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+        tray::show_main(app);
+        defaultmail::open_from_args(Some(app), &args);
+    }));
+    // Only in release builds with the update key; others never contact the update feed.
+    #[cfg(desktop)]
+    let builder = match updates::plugin() {
+        Some(updater) => builder.plugin(updater),
+        None => builder,
+    };
     #[cfg(mobile)]
     let builder = builder.on_window_event(|window, event| mobile::window_event(window.app_handle(), event));
     builder
@@ -496,6 +522,23 @@ pub fn run() {
                 ai_jobs: Mutex::default(),
                 pictures: Mutex::default(),
             });
+            // Started by an update (or after a setup that did not finish), and a download of an
+            // earlier session that waits for the quit.
+            let dir = app.state::<AppState>().data_dir.clone();
+            #[cfg(desktop)]
+            {
+                let after = mail_core::update::take_restart_marker(&dir, &updates::current_version(app.handle()));
+                app.manage(updates::Updates::after(after));
+                updates::load_staged(app.handle());
+            }
+            #[cfg(target_os = "android")]
+            {
+                app.manage(mobile::apknotice::Notice::new(app.handle(), &dir));
+                mobile::apknotice::spawn_scheduler(app.handle().clone());
+            }
+            // Started for an e-mail link (Windows, Linux): the UI takes it once it is ready.
+            #[cfg(desktop)]
+            defaultmail::open_from_args(None, &std::env::args().collect::<Vec<_>>());
             // A phone launched in the background for its check starts no workers.
             #[cfg(mobile)]
             let in_front = mobile::launched_in_front();
@@ -676,7 +719,63 @@ pub fn run() {
             tools::pop3_preset,
             tools::hub_list,
             tools::hub_senders,
+            defaultmail::take_pending_mailto,
+            defaultmail::default_mail_status,
+            defaultmail::default_mail_set,
+            #[cfg(desktop)]
+            updates::update_status,
+            #[cfg(desktop)]
+            updates::update_check,
+            #[cfg(desktop)]
+            updates::update_download,
+            #[cfg(desktop)]
+            updates::update_pause,
+            #[cfg(desktop)]
+            updates::update_install,
+            #[cfg(desktop)]
+            updates::update_restart_now,
+            #[cfg(desktop)]
+            updates::update_skip,
+            #[cfg(desktop)]
+            updates::update_unskip,
+            #[cfg(desktop)]
+            updates::update_remind,
+            #[cfg(desktop)]
+            updates::update_whats_new_seen,
+            #[cfg(target_os = "android")]
+            mobile::apknotice::apk_update_status,
+            #[cfg(target_os = "android")]
+            mobile::apknotice::apk_update_check,
+            #[cfg(target_os = "android")]
+            mobile::apknotice::apk_whats_new_seen,
         ])
-        .run(tauri::generate_context!())
-        .expect("Arcalo Mail failed to start");
+        .build(tauri::generate_context!())
+        .expect("Arcalo Mail failed to start")
+        .run(on_run_event);
+}
+
+/// The app's life: closing the window or quitting installs a downloaded update first (desktop);
+/// macOS hands over `mailto:` addresses here.
+#[allow(unused_variables)]
+fn on_run_event(app: &AppHandle, event: tauri::RunEvent) {
+    match event {
+        // The window was closed (not `app.exit`): with an update to install, the app stays until
+        // it is in place.
+        #[cfg(desktop)]
+        tauri::RunEvent::ExitRequested { code: None, api, .. } if updates::installs_on_quit(app) => {
+            api.prevent_exit();
+            updates::quit(app);
+        }
+        #[cfg(desktop)]
+        tauri::RunEvent::Exit => updates::on_exit(app),
+        #[cfg(target_os = "macos")]
+        tauri::RunEvent::Opened { urls } => {
+            for url in urls {
+                if let Some(m) = mail_core::mailto::parse(url.as_str()) {
+                    defaultmail::open(Some(app), m);
+                }
+            }
+        }
+        _ => {}
+    }
 }

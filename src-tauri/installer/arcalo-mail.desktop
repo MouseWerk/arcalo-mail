@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name={{name}}
+{{#if comment}}
+Comment={{comment}}
+{{/if}}
+Exec={{exec}} %u
+StartupWMClass={{exec}}
+Icon={{icon}}
+Terminal=false
+Categories=Network;Email;Office;
+MimeType=x-scheme-handler/mailto;
+Keywords=mail;e-mail;email;imap;smtp;jmap;calendar;

@@ -131,6 +131,8 @@ pub struct Settings {
     /// „An Arcalo senden“: the mail becomes a page or a task in Arcalo (through its `arcalo`
     /// command), else a Markdown file is saved.
     pub arcalo_target: ArcaloTarget,
+    /// Desktop updates: downloaded in the background and installed on quit, or only announced.
+    pub updates: crate::update::UpdateMode,
 }
 
 /// The calendar's settings.
@@ -191,6 +193,7 @@ impl Default for Settings {
             autocrypt: true,
             sign_by_default: None,
             arcalo_target: ArcaloTarget::Page,
+            updates: crate::update::UpdateMode::Auto,
         }
     }
 }

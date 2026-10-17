@@ -254,6 +254,17 @@ pub fn cancel(store: &Store, id: i64) -> Result<Option<Op>> {
     Ok(Some(serde_json::from_str(&payload)?))
 }
 
+/// Messages being sent at `at`: a send that started, or one that is due within the next half
+/// minute (its undo window is running out). A send that failed and waits for the server does not
+/// count. An update waits for these before it installs, so a quit does not cut one off.
+pub fn sending(store: &Store, at: i64) -> Result<u32> {
+    Ok(store.conn().query_row(
+        "SELECT COUNT(*) FROM outbox WHERE kind = 'send' AND (state = 'running' OR (state = 'queued' AND next_try <= ?1))",
+        [at + 30],
+        |r| r.get(0),
+    )?)
+}
+
 pub fn pending(store: &Store, account_id: i64) -> Result<u32> {
     Ok(store.conn().query_row("SELECT COUNT(*) FROM outbox WHERE account_id = ?1", [account_id], |r| r.get(0))?)
 }
@@ -281,6 +292,35 @@ pub fn entries(store: &Store) -> Result<Vec<Entry>> {
 mod tests {
     use super::*;
     use crate::store::tests::store_with_inbox;
+
+    #[test]
+    fn messages_being_sent_are_counted_until_they_are_out() {
+        let (s, account, _) = store_with_inbox();
+        let send = Op::Send {
+            raw_b64: String::new(),
+            from: "maria@example.org".into(),
+            recipients: vec!["jonas@example.org".into()],
+            sent_b64: None,
+            sent_mailbox: None,
+            draft: None,
+            answered: None,
+        };
+        let t = now();
+        assert_eq!(sending(&s, t).unwrap(), 0);
+        let soon = enqueue_at(&s, account, &send, t + 5).unwrap();
+        let later = enqueue_at(&s, account, &send, t + 3600).unwrap();
+        enqueue(&s, account, &Op::Flags { mailbox: "INBOX".into(), uids: vec![1], seen: Some(true), flagged: None })
+            .unwrap();
+        assert_eq!(sending(&s, t).unwrap(), 1, "the one in its undo window; not the one sent later, not a flag");
+        start(&s, soon).unwrap();
+        assert_eq!(sending(&s, t).unwrap(), 1, "running");
+        failed(&s, soon, "offline", t).unwrap();
+        assert_eq!(sending(&s, t).unwrap(), 0, "waiting for the server: no reason to hold an update");
+        retry(&s, later).unwrap();
+        assert_eq!(sending(&s, t).unwrap(), 1);
+        done(&s, later).unwrap();
+        assert_eq!(sending(&s, t).unwrap(), 0);
+    }
 
     #[test]
     fn backoff_grows_and_is_capped() {

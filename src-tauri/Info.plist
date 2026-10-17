@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- macOS only (bundle.macOS.infoPlist; the iPhone and iPad app have Info.ios.plist): Arcalo
+     Mail takes e-mail links (mailto:), so it can be the default mail app (src/defaultmail.rs). -->
+<plist version="1.0">
+<dict>
+  <key>CFBundleURLTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleURLName</key>
+      <string>E-mail address</string>
+      <key>CFBundleTypeRole</key>
+      <string>Viewer</string>
+      <key>CFBundleURLSchemes</key>
+      <array>
+        <string>mailto</string>
+      </array>
+    </dict>
+  </array>
+</dict>
+</plist>

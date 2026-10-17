@@ -12,7 +12,7 @@
 use serde_json::{Map, Value};
 
 /// Version written by this release.
-pub const SETTINGS_VERSION: u32 = 7;
+pub const SETTINGS_VERSION: u32 = 8;
 
 /// One step `from → from + 1`: changes the settings object and says what it did (`None`:
 /// nothing to do for these settings).
@@ -31,6 +31,7 @@ pub const STEPS: [Step; SETTINGS_VERSION as usize] = [
     Step { from: 4, name: "inbox_tools", run: inbox_tools },
     Step { from: 5, name: "power_tools", run: power_tools },
     Step { from: 6, name: "calendar_crypto", run: calendar_crypto },
+    Step { from: 7, name: "updates", run: updates },
 ];
 
 /// Version 0 is settings written before versions existed (development builds): nothing to
@@ -147,6 +148,16 @@ fn calendar_crypto(map: &mut Map<String, Value>) -> Option<String> {
     (!added.is_empty()).then(|| format!("added {}", added.join(", ")))
 }
 
+/// Version 8 (the first release): desktop updates download in the background and install when
+/// the app quits.
+fn updates(map: &mut Map<String, Value>) -> Option<String> {
+    if map.contains_key("updates") {
+        return None;
+    }
+    map.insert("updates".into(), Value::from("auto"));
+    Some("added updates".into())
+}
+
 /// Runs the steps the settings still need; returns what they did.
 pub fn migrate(map: &mut Map<String, Value>) -> Vec<String> {
     let from = map.get("version").and_then(Value::as_u64).unwrap_or(0) as u32;
@@ -179,7 +190,7 @@ mod tests {
         let mut m: Map<String, Value> = serde_json::from_str(r#"{"version":1,"undo_send_secs":10}"#).unwrap();
         let done = migrate(&mut m);
         // mail_basics, fetch_threads_network and the later steps.
-        assert_eq!(done.len(), 6, "{done:?}");
+        assert_eq!(done.len(), 7, "{done:?}");
         assert!(done[0].starts_with("mail_basics: "), "{done:?}");
         assert_eq!(m["undo_send_secs"], 10);
         assert_eq!(m["notifications"], true);
@@ -191,7 +202,7 @@ mod tests {
         let mut m: Map<String, Value> = serde_json::from_str(r#"{"version":2,"prefetch":"none"}"#).unwrap();
         let done = migrate(&mut m);
         assert_eq!(done[0], "fetch_threads_network: added subject_threads, network");
-        assert_eq!(done.len(), 5, "and the later steps: {done:?}");
+        assert_eq!(done.len(), 6, "and the later steps: {done:?}");
         assert_eq!(m["prefetch"], "none", "kept");
         assert_eq!(m["network"]["profiles"][0]["id"], "standard");
         assert!(migrate(&mut m).is_empty(), "idempotent");
@@ -217,7 +228,8 @@ mod tests {
             [
                 "inbox_tools: added screener, unified_inbox, bundles",
                 "power_tools: added ai, bimi, gravatar",
-                "calendar_crypto: added calendar, autocrypt, sign_by_default, arcalo_target"
+                "calendar_crypto: added calendar, autocrypt, sign_by_default, arcalo_target",
+                "updates: added updates"
             ]
         );
         assert_eq!(m["focus"], true, "kept");
@@ -240,10 +252,21 @@ mod tests {
     fn version_7_adds_the_calendar_and_autocrypt_once() {
         let mut m: Map<String, Value> = serde_json::from_str(r#"{"version":6,"autocrypt":false}"#).unwrap();
         let done = migrate(&mut m);
-        assert_eq!(done, ["calendar_crypto: added calendar, sign_by_default, arcalo_target"]);
+        assert_eq!(done, ["calendar_crypto: added calendar, sign_by_default, arcalo_target", "updates: added updates"]);
         assert_eq!(m["autocrypt"], false, "kept");
         assert_eq!(m["calendar"]["entry_minutes"], 30);
         assert_eq!(m["calendar"]["workdays"], serde_json::json!([1, 2, 3, 4, 5]));
+        assert!(migrate(&mut m).is_empty(), "idempotent");
+    }
+
+    #[test]
+    fn version_8_adds_the_update_mode_once() {
+        let mut m: Map<String, Value> = serde_json::from_str(r#"{"version":7}"#).unwrap();
+        assert_eq!(migrate(&mut m), ["updates: added updates"]);
+        assert_eq!(m["updates"], "auto");
+        let mut kept: Map<String, Value> = serde_json::from_str(r#"{"version":7,"updates":"notify"}"#).unwrap();
+        assert!(migrate(&mut kept).is_empty());
+        assert_eq!(kept["updates"], "notify", "kept");
         assert!(migrate(&mut m).is_empty(), "idempotent");
     }
 

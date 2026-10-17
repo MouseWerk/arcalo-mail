@@ -34,11 +34,11 @@ import {
   UserPlus,
   X,
 } from "lucide-react";
-import { api, inApp, onNotice, onOpenMessage, onReminders, onTrayAction, openExternal, pickSavePath } from "./lib/api";
+import { api, inApp, onEvent, onNotice, onOpenMessage, onReminders, onTrayAction, openExternal, pickSavePath } from "./lib/api";
 import { openCalendar, setWeekLocale, type CalendarRequest } from "./lib/calendar";
 import { applyTheme, onSystemThemeChange, type Theme } from "./lib/theme";
 import { currentLang, langFromLocale, setLang, useT } from "./lib/i18n";
-import { draftFromMessage, emptyDraft, fromComposeDraft, isEmpty, isValidAddress, replaceOwnText, replyDraft, toDraft, type ComposeState } from "./lib/compose";
+import { draftFromMessage, emptyDraft, fromComposeDraft, isEmpty, isValidAddress, replaceOwnText, replyDraft, textToEditorHtml, toDraft, type ComposeState } from "./lib/compose";
 import { clickSelect, isTyping, keyAction, pagesFor, type Selection } from "./lib/listing";
 import { closeToast, runUndo, setUndo, showToast } from "./lib/toasts";
 import { displayName, now as clockNow, setClock } from "./lib/format";
@@ -85,6 +85,7 @@ import { SettingsView, exportDiagnostics, type SettingsSection } from "./compone
 import { CommandPalette, type Command } from "./components/CommandPalette";
 import { ProblemCard } from "./components/Setup";
 import { Toasts } from "./components/Toasts";
+import { UpdateLayer, setBeforeRestart, startUpdates } from "./components/Updates";
 import { Outbox } from "./components/Outbox";
 import { ConfirmDialog, Dialog, Menu, PromptDialog, type MenuItem } from "./components/ui";
 
@@ -230,6 +231,10 @@ export function App() {
       setSettings(s);
     });
   }, []);
+
+  // Updates: the desktop's checks and notices, the Android app's notice (components/Updates.tsx).
+  const platform = info?.platform;
+  useEffect(() => (platform ? startUpdates(platform) : undefined), [platform]);
 
   useEffect(() => {
     if (!settings || !info) return;
@@ -1098,6 +1103,46 @@ export function App() {
     return onOpenMessage(() => void openRequestedRef.current());
   }, [!!accounts?.length]);
 
+  // E-mail links of other apps (mailto:, src-tauri/src/defaultmail.rs): the compose sheet with
+  // what the link names. A link that started the app waits until the accounts are there.
+  const mailtoRequested = async () => {
+    const m = await api.takePendingMailto().catch(() => null);
+    if (!m) return;
+    const account = accountById(mailbox?.account_id) ?? accounts?.[0] ?? null;
+    const d = emptyDraft(account, rich, m.to);
+    d.cc = m.cc;
+    d.bcc = m.bcc;
+    d.showCc = m.cc.length > 0;
+    d.showBcc = m.bcc.length > 0;
+    d.subject = m.subject;
+    if (m.body) {
+      if (rich) d.html = `${textToEditorHtml(m.body)}${d.html}`;
+      else d.text = `${m.body}${d.text}`;
+    }
+    void startCompose(d);
+  };
+  const mailtoRequestedRef = useRef(mailtoRequested);
+  mailtoRequestedRef.current = mailtoRequested;
+  useEffect(() => {
+    if (!accounts?.length) return;
+    void mailtoRequestedRef.current();
+    return onEvent("compose-mailto", () => void mailtoRequestedRef.current());
+  }, [!!accounts?.length]);
+
+  // Before the app restarts for an update: the open message is kept as a draft.
+  const composeRef = useRef(compose);
+  composeRef.current = compose;
+  const saveDraftRef = useRef(saveDraft);
+  saveDraftRef.current = saveDraft;
+  useEffect(
+    () =>
+      setBeforeRestart(async () => {
+        const c = composeRef.current;
+        if (c && !isEmpty(c)) await saveDraftRef.current(c, true);
+      }),
+    [],
+  );
+
   // Back in front after a while (the window got the focus again): check for mail now.
   useEffect(() => {
     const onFocus = () => {
@@ -1438,6 +1483,7 @@ export function App() {
             })
           }
         />
+        <UpdateLayer />
         <Toasts />
       </div>
     );
@@ -1872,6 +1918,7 @@ export function App() {
           onSave={(f) => void hubAttachment(f, "save")}
         />
       )}
+      <UpdateLayer />
       <Toasts />
     </div>
   );

@@ -7,3 +7,5 @@
 -keep class de.mousewerk.arcalo.mail.MailNotifier { *; }
 -keep class de.mousewerk.arcalo.mail.MailNative { *; }
 -keep class de.mousewerk.arcalo.mail.MailCheckWorker { *; }
+-keep class de.mousewerk.arcalo.mail.MailWidget { *; }
+-keep class de.mousewerk.arcalo.mail.AppFacts { *; }

@@ -30,11 +30,18 @@
     "publisher": "MouseWerk",
     "copyright": "MouseWerk, Maurice Kleindienst",
     "license": "MIT",
-    "homepage": "https://github.com/MouseWerk/arcalo-mail",
+    "homepage": "https://arcalo.mousewerk.de/mail/",
     "category": "Productivity",
     "shortDescription": "Local-first e-mail",
-    "longDescription": "E-mail for IMAP/SMTP, Microsoft 365, Gmail and JMAP accounts. Your mail is stored and searched on your device; no telemetry.",
-    "targets": ["nsis", "deb", "appimage", "app", "dmg"],
+    "longDescription": "E-mail for IMAP/SMTP, Microsoft 365, Outlook.com, Gmail and JMAP accounts, with a calendar. Your mail is stored and searched on your device; no telemetry.",
+    "targets": [
+      "nsis",
+      "deb",
+      "rpm",
+      "appimage",
+      "app",
+      "dmg"
+    ],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -45,22 +52,56 @@
     ],
     "macOS": {
       "minimumSystemVersion": "11.0",
-      "signingIdentity": "-"
+      "signingIdentity": "-",
+      "infoPlist": "Info.plist"
     },
     "iOS": {
       "minimumSystemVersion": "14.0",
-      "frameworks": ["AuthenticationServices", "BackgroundTasks", "UserNotifications"]
+      "frameworks": [
+        "AuthenticationServices",
+        "BackgroundTasks",
+        "UserNotifications"
+      ]
     },
     "android": {
       "minSdkVersion": 24
     },
     "windows": {
-      "webviewInstallMode": { "type": "embedBootstrapper", "silent": true },
+      "webviewInstallMode": {
+        "type": "embedBootstrapper",
+        "silent": true
+      },
       "nsis": {
         "installMode": "currentUser",
         "startMenuFolder": "Arcalo Mail",
-        "languages": ["German", "English"],
-        "displayLanguageSelector": false
+        "languages": [
+          "German",
+          "English"
+        ],
+        "displayLanguageSelector": false,
+        "installerHooks": "installer/hooks.nsh",
+        "installerIcon": "icons/icon.ico"
+      }
+    },
+    "createUpdaterArtifacts": false,
+    "linux": {
+      "deb": {
+        "desktopTemplate": "installer/arcalo-mail.desktop",
+        "section": "mail"
+      },
+      "rpm": {
+        "desktopTemplate": "installer/arcalo-mail.desktop"
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "REPLACE_WITH_THE_UPDATE_PUBLIC_KEY",
+      "endpoints": [
+        "https://github.com/MouseWerk/arcalo-mail/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
       }
     }
   }

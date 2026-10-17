@@ -2,6 +2,7 @@ package de.mousewerk.arcalo.mail
 
 import android.content.Intent
 import android.content.res.Configuration
+import android.net.Uri
 import android.os.Bundle
 import android.view.View
 import android.webkit.WebView
@@ -29,12 +30,34 @@ class MainActivity : TauriActivity() {
     MailCheckWorker.schedule(this)
     takeRedirect(intent)
     takeOpen(intent)
+    takeMailto(intent)
   }
 
   override fun onNewIntent(intent: Intent) {
     super.onNewIntent(intent)
     takeRedirect(intent)
     takeOpen(intent)
+    takeMailto(intent)
+  }
+
+  /**
+   * An e-mail link of another app (mailto:, as VIEW or SENDTO): handed to Rust, which opens the
+   * compose sheet. The subject and text another app may pass as extras go into the address.
+   */
+  private fun takeMailto(intent: Intent?) {
+    val data = intent?.data ?: return
+    if (data.scheme != "mailto") return
+    if (intent.action != Intent.ACTION_VIEW && intent.action != Intent.ACTION_SENDTO) return
+    var url = data.toString()
+    if (!url.contains('?')) {
+      val extras = listOfNotNull(
+        intent.getStringExtra(Intent.EXTRA_SUBJECT)?.let { "subject=" + Uri.encode(it) },
+        intent.getStringExtra(Intent.EXTRA_TEXT)?.let { "body=" + Uri.encode(it) },
+      )
+      if (extras.isNotEmpty()) url += "?" + extras.joinToString("&")
+    }
+    MailNative.openMailto(url)
+    intent.data = null
   }
 
   /** A notification or the widget asked to open a message (to read it or to reply): handed to Rust. */

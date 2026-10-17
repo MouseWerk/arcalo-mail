@@ -3665,3 +3665,41 @@ button.rule-text:hover {
 .crypto-lookup { display: flex; gap: var(--sp-2); margin-top: var(--sp-3); }
 .crypto-lookup .input { flex: 1; min-width: 0; }
 .set-section .set-actions-left { flex-wrap: wrap; gap: var(--sp-2); }
+
+/* ---- updates (components/Updates.tsx): a quiet card at the bottom left, above the folders */
+
+.update-layer {
+  position: fixed;
+  left: var(--sp-4);
+  bottom: var(--sp-4);
+  z-index: var(--z-float);
+  display: grid;
+  gap: var(--sp-2);
+  width: min(var(--toast-w), calc(100vw - 2 * var(--sp-4)));
+  pointer-events: none;
+}
+.update-card {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-2) var(--sp-3) var(--sp-3);
+  border-radius: var(--r-md);
+  background: var(--bg-overlay);
+  box-shadow: var(--shadow-md);
+  pointer-events: auto;
+  animation: rise-in var(--dur) var(--ease-out);
+}
+.update-card-icon { flex: none; margin-top: 1px; color: var(--text-2); }
+.update-card-body { flex: 1; min-width: 0; }
+.update-card-title { font-weight: var(--fw-medium); }
+.update-card-detail { margin-top: var(--sp-half); color: var(--text-2); font-size: var(--fs-sm); overflow-wrap: anywhere; }
+.update-card-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); margin-top: var(--sp-3); }
+.update-bar { height: 4px; margin-top: var(--sp-2); border-radius: var(--r-pill); background: var(--bg-hover); overflow: hidden; }
+.update-bar > span { display: block; height: 100%; border-radius: inherit; background: var(--text-2); transition: width var(--dur) var(--ease-out); }
+.update-notes { display: grid; gap: var(--sp-2); max-height: min(60vh, 520px); overflow: auto; }
+.update-notes h3 { margin: var(--sp-2) 0 0; font-size: var(--fs-sm); font-weight: var(--fw-semibold); }
+.update-notes h3:first-child { margin-top: 0; }
+.update-notes p { margin: 0; color: var(--text-2); }
+.update-notes ul { display: grid; gap: var(--sp-1); margin: 0; padding-left: var(--sp-5); }
+.app[data-touch] .update-layer { bottom: calc(var(--touch-bar-h) + var(--sp-4) + var(--safe-bottom)); }
+.app[data-layout="phone"] .update-layer { left: 50%; transform: translateX(-50%); }
