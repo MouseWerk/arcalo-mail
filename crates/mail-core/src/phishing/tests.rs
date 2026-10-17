@@ -17,11 +17,7 @@ fn kinds(reasons: &[Reason]) -> Vec<String> {
 }
 
 fn header_value(raw: &str, name: &str) -> String {
-    raw.lines()
-        .find_map(|l| l.strip_prefix(&format!("{name}: ")))
-        .unwrap_or_default()
-        .trim()
-        .to_string()
+    raw.lines().find_map(|l| l.strip_prefix(&format!("{name}: "))).unwrap_or_default().trim().to_string()
 }
 
 /// The people the corpus's user wrote to.
@@ -52,7 +48,8 @@ fn the_corpus_gets_exactly_the_expected_reasons() {
         let p = parse(raw.as_bytes()).unwrap();
         let from = p.from.clone().unwrap();
         let auth = p.list.authentication.as_deref().map(|a| auth_failures(a, &from.email, &own).join(" "));
-        let dmarc_pass = p.list.authentication.as_deref().is_some_and(|a| crate::avatars::dmarc_passed(a, &from.email, &own));
+        let dmarc_pass =
+            p.list.authentication.as_deref().is_some_and(|a| crate::avatars::dmarc_passed(a, &from.email, &own));
         let input = Input {
             from: Some(&from),
             reply_to: &p.reply_to,
@@ -120,7 +117,14 @@ fn only_the_users_own_provider_counts_for_dmarc_and_spf() {
     assert!(auth_failures(ar, "info@other.example", &own).contains(&"spf"), "SPF is about the envelope");
     assert!(!auth_failures(ar, "info@other.example", &own).contains(&"dmarc"), "DMARC for the From's domain only");
     assert!(auth_failures(&ar.replace("mx.example.org", "mx.evil.example"), "info@bank.example", &own).is_empty());
-    assert!(auth_failures(&ar.replace("spf=fail", "spf=softfail").replace("dmarc=fail", "dmarc=pass"), "info@bank.example", &own).is_empty());
+    assert!(
+        auth_failures(
+            &ar.replace("spf=fail", "spf=softfail").replace("dmarc=fail", "dmarc=pass"),
+            "info@bank.example",
+            &own
+        )
+        .is_empty()
+    );
 }
 
 fn store_with(account_email: &str) -> (Store, i64) {

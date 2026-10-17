@@ -8,7 +8,11 @@
 //!   the message count says something was removed.
 //! * **Plain**: new headers above the stored UIDNEXT, all flags, and the UID list.
 //! * **Full**: first sync, or UIDVALIDITY changed (the old UIDs mean nothing): the folder is
-//!   cleared and fetched again.
+//!   cleared and fetched again, the newest [`SyncOptions::first_headers`] first (a large mailbox
+//!   is usable within seconds); the older mail follows a part per round ([`backfill`]).
+//!
+//! New headers come with their preview line (the beginning of the body), so the list shows the
+//! first lines before any body is fetched.
 //!
 //! Bodies are not part of a folder sync; they are fetched when a message is opened
 //! ([`fetch_body`]): whole up to [`FULL_FETCH_LIMIT`] (the message is kept, so its attachments
@@ -26,8 +30,20 @@ use crate::parse::{AttachmentInfo, ParsedMessage, parse, snippet_of};
 use crate::store::{PartialBody, Store, SyncState};
 use crate::tr;
 
-/// Headers fetched per round trip in a first sync.
+/// Headers fetched per round trip.
 pub const HEADER_BATCH: u32 = 500;
+/// The first round trip of a folder's first sync is small: the newest mail shows within
+/// seconds, also on a slow phone network.
+pub const FIRST_BATCH: u32 = 100;
+/// Headers a first sync fetches per folder (the newest); the older ones follow a part per round
+/// ([`backfill`]). The setting `initial_headers` changes it.
+pub const FIRST_HEADERS: u32 = 1000;
+/// Older headers fetched per round while a folder's older mail waits.
+pub const BACKFILL_PER_ROUND: u32 = 2000;
+/// The newest messages of a folder whose preview line comes with the header.
+pub const PREVIEW_COUNT: usize = 200;
+/// Headers stored per transaction: between two, work the user waits for goes first ([`Gate`]).
+pub const STORE_CHUNK: usize = 100;
 /// IDLE is renewed after this long (servers drop it after 30 minutes, RFC 2177).
 pub const IDLE_RENEW: Duration = Duration::from_secs(25 * 60);
 /// How often a server without IDLE (or a folder other than the inbox) is checked.
@@ -88,29 +104,217 @@ pub fn strategy(local: SyncState, server: SelectInfo, caps: Capabilities, used_q
     }
 }
 
-/// Fetches and stores the headers of `from:*`, in batches; returns the new ids and whether
-/// each is unread.
+/// Lets what the user waits for go first: the on-demand connection holds it while it fetches a
+/// body (it runs on the worker's thread too), and the sync waits at each step until it is free.
+#[derive(Debug, Default)]
+pub struct Gate {
+    busy: std::cell::Cell<u32>,
+    free: Notify,
+}
+
+impl Gate {
+    pub fn enter(&self) {
+        self.busy.set(self.busy.get() + 1);
+    }
+
+    pub fn leave(&self) {
+        self.busy.set(self.busy.get().saturating_sub(1));
+        if self.busy.get() == 0 {
+            self.free.notify_waiters();
+        }
+    }
+
+    pub fn busy(&self) -> bool {
+        self.busy.get() > 0
+    }
+
+    /// Gives other tasks a turn, then waits while the gate is held.
+    pub async fn pass(&self) {
+        tokio::task::yield_now().await;
+        loop {
+            let free = self.free.notified();
+            tokio::pin!(free);
+            free.as_mut().enable();
+            if !self.busy() {
+                return;
+            }
+            free.await;
+        }
+    }
+}
+
+/// How a folder sync goes besides the connection and the store.
+#[derive(Clone, Copy)]
+pub struct SyncOptions<'a> {
+    /// Headers the first sync of a folder fetches (the newest); older mail waits for [`backfill`].
+    pub first_headers: u32,
+    /// Called with the folder after each stored part of a first sync or a backfill, so the list
+    /// shows the newest mail before the rest arrived.
+    pub on_chunk: Option<&'a dyn Fn(i64)>,
+    pub gate: Option<&'a Gate>,
+}
+
+impl Default for SyncOptions<'_> {
+    fn default() -> Self {
+        SyncOptions { first_headers: FIRST_HEADERS, on_chunk: None, gate: None }
+    }
+}
+
+impl SyncOptions<'_> {
+    async fn pass(&self) {
+        if let Some(g) = self.gate {
+            g.pass().await;
+        }
+    }
+}
+
+/// Fetches and stores the headers of one UID range (with the preview lines when `previews`);
+/// returns the ids and whether each is unread.
+async fn fetch_range<C: ImapClient>(
+    client: &mut C,
+    store: &Store,
+    mailbox_id: i64,
+    range: UidRange,
+    previews: bool,
+    opts: &SyncOptions<'_>,
+) -> Result<Vec<(i64, bool)>> {
+    let headers = client.fetch_headers(range).await?;
+    let previews: std::collections::HashMap<u32, Vec<u8>> = if previews && !headers.is_empty() {
+        client.fetch_previews(range).await?.into_iter().collect()
+    } else {
+        Default::default()
+    };
+    let mut added = vec![];
+    // The newest first, so a pause between two parts leaves the newest stored.
+    let mut headers = headers;
+    headers.sort_by_key(|h| std::cmp::Reverse(h.uid));
+    for part in headers.chunks(STORE_CHUNK) {
+        opts.pass().await;
+        store.batch(|| {
+            for h in part {
+                // A header that does not parse still gets a row (with an empty subject).
+                let mut p = parse(&h.header).unwrap_or_default();
+                if let Some(body) = previews.get(&h.uid) {
+                    p.snippet = crate::parse::preview(&h.header, body);
+                }
+                added.push((store.insert_message(mailbox_id, h, &p)?, !h.flags.seen));
+            }
+            Ok(())
+        })?;
+    }
+    Ok(added)
+}
+
+/// Whether the preview lines of a folder come with its headers (not for Gmail's All Mail,
+/// Starred and Important: their messages are the other folders' again).
+fn wants_previews(store: &Store, mailbox_id: i64) -> Result<bool> {
+    Ok(!store.mailbox(mailbox_id)?.role.is_some_and(crate::imap::Role::is_virtual))
+}
+
+/// Fetches and stores the given UIDs (ascending, all on the server), the newest first in
+/// parts; the first part is small. The parts among the newest `previews` come with their
+/// preview lines.
+async fn fetch_uids<C: ImapClient>(
+    client: &mut C,
+    store: &Store,
+    mailbox_id: i64,
+    uids: &[u32],
+    first: bool,
+    previews: usize,
+    opts: &SyncOptions<'_>,
+) -> Result<Vec<(i64, bool)>> {
+    let previews = if wants_previews(store, mailbox_id)? { previews } else { 0 };
+    let mut added = vec![];
+    let mut end = uids.len();
+    let mut batch = if first { FIRST_BATCH } else { HEADER_BATCH } as usize;
+    while end > 0 {
+        let start = end.saturating_sub(batch);
+        // The UIDs between two listed ones are not on the server: a range fetches just these.
+        let range = UidRange { from: uids[start], to: Some(uids[end - 1]) };
+        let with_previews = uids.len() - end < previews;
+        added.extend(fetch_range(client, store, mailbox_id, range, with_previews, opts).await?);
+        if let Some(f) = opts.on_chunk {
+            f(mailbox_id);
+        }
+        end = start;
+        batch = HEADER_BATCH as usize;
+    }
+    Ok(added)
+}
+
+/// Fetches and stores the headers of `from:*` (new mail since the last sync); a large gap goes
+/// by the server's UID list, the newest first.
 async fn fetch_new<C: ImapClient>(
     client: &mut C,
     store: &Store,
     mailbox_id: i64,
     from: u32,
     uid_next: u32,
+    opts: &SyncOptions<'_>,
 ) -> Result<Vec<(i64, bool)>> {
-    let mut added = vec![];
-    let mut start = from.max(1);
-    while start < uid_next {
-        let to = start.saturating_add(HEADER_BATCH - 1).min(uid_next - 1);
-        let headers = client.fetch_headers(UidRange { from: start, to: Some(to) }).await?;
-        store.batch(|| {
-            for h in &headers {
-                // A header that does not parse still gets a row (with an empty subject).
-                let p = parse(&h.header).unwrap_or_default();
-                added.push((store.insert_message(mailbox_id, h, &p)?, !h.flags.seen));
-            }
-            Ok(())
-        })?;
-        start = to + 1;
+    let from = from.max(1);
+    if from >= uid_next {
+        return Ok(vec![]);
+    }
+    if uid_next - from <= HEADER_BATCH {
+        let previews = wants_previews(store, mailbox_id)?;
+        return fetch_range(client, store, mailbox_id, UidRange { from, to: Some(uid_next - 1) }, previews, opts).await;
+    }
+    let uids: Vec<u32> = client.uids().await?.into_iter().filter(|u| *u >= from && *u < uid_next).collect();
+    fetch_uids(client, store, mailbox_id, &uids, false, PREVIEW_COUNT, opts).await
+}
+
+/// The first fetch of a folder: the newest [`SyncOptions::first_headers`] headers, the newest
+/// first; what is older waits for [`backfill`].
+async fn fetch_first<C: ImapClient>(
+    client: &mut C,
+    store: &Store,
+    mailbox_id: i64,
+    exists: u32,
+    opts: &SyncOptions<'_>,
+) -> Result<Vec<(i64, bool)>> {
+    if exists == 0 {
+        store.set_backfill(mailbox_id, None, 0)?;
+        return Ok(vec![]);
+    }
+    let all = client.uids().await?;
+    let take = all.len().min(opts.first_headers.max(1) as usize);
+    let newest = &all[all.len() - take..];
+    let added = fetch_uids(client, store, mailbox_id, newest, true, PREVIEW_COUNT, opts).await?;
+    let left = (all.len() - take) as u32;
+    store.set_backfill(mailbox_id, (left > 0).then(|| newest[0]), left)?;
+    Ok(added)
+}
+
+/// Fetches up to `max` older headers of a folder whose first sync left them on the server, the
+/// newest of them first; returns how many were stored. Nothing waits: nothing to do.
+pub async fn backfill<C: ImapClient>(
+    client: &mut C,
+    store: &Store,
+    mailbox_id: i64,
+    max: u32,
+    opts: &SyncOptions<'_>,
+) -> Result<usize> {
+    let Some((below, _)) = store.backfill(mailbox_id)? else { return Ok(0) };
+    let mb = store.mailbox(mailbox_id)?;
+    let sel = client.select(&mb.name, None).await?;
+    if mb.sync.uid_validity != Some(sel.info.uid_validity) {
+        // Renumbered on the server: the next sync of the folder starts over.
+        return Ok(0);
+    }
+    let older: Vec<u32> = client.uids().await?.into_iter().filter(|u| *u < below).collect();
+    let stop = older.len() - older.len().min(max as usize);
+    let mut end = older.len();
+    let mut added = 0;
+    if older.is_empty() {
+        store.set_backfill(mailbox_id, None, 0)?;
+    }
+    // Part by part, each noted when stored: an app closed meanwhile goes on from there.
+    while end > stop {
+        let start = end.saturating_sub(HEADER_BATCH as usize).max(stop);
+        added += fetch_uids(client, store, mailbox_id, &older[start..end], false, 0, opts).await?.len();
+        store.set_backfill(mailbox_id, (start > 0).then(|| older[start]), start as u32)?;
+        end = start;
     }
     Ok(added)
 }
@@ -121,6 +325,17 @@ pub async fn sync_mailbox<C: ImapClient>(
     store: &Store,
     caps: Capabilities,
     mailbox_id: i64,
+) -> Result<SyncReport> {
+    sync_mailbox_with(client, store, caps, mailbox_id, &SyncOptions::default()).await
+}
+
+/// [`sync_mailbox`] with the options of the account's worker.
+pub async fn sync_mailbox_with<C: ImapClient>(
+    client: &mut C,
+    store: &Store,
+    caps: Capabilities,
+    mailbox_id: i64,
+    opts: &SyncOptions<'_>,
 ) -> Result<SyncReport> {
     let mb = store.mailbox(mailbox_id)?;
     let local = mb.sync;
@@ -144,7 +359,7 @@ pub async fn sync_mailbox<C: ImapClient>(
         Strategy::Full => {
             report.removed = store.uids(mailbox_id)?.len();
             store.clear_mailbox(mailbox_id)?;
-            fetch_new(client, store, mailbox_id, 1, server.uid_next).await?
+            fetch_first(client, store, mailbox_id, server.exists, opts).await?
         }
         Strategy::Qresync => {
             report.removed = store.remove_uids(mailbox_id, &selected.vanished)?;
@@ -156,7 +371,7 @@ pub async fn sync_mailbox<C: ImapClient>(
                 }
                 Ok(())
             })?;
-            fetch_new(client, store, mailbox_id, known_next, server.uid_next).await?
+            fetch_new(client, store, mailbox_id, known_next, server.uid_next, opts).await?
         }
         Strategy::Condstore => {
             let mut new = vec![];
@@ -173,10 +388,12 @@ pub async fn sync_mailbox<C: ImapClient>(
                     }
                     Ok(())
                 })?;
-                new = fetch_new(client, store, mailbox_id, known_next, server.uid_next).await?;
+                new = fetch_new(client, store, mailbox_id, known_next, server.uid_next, opts).await?;
             }
-            // Without QRESYNC the server does not say what was removed: compare the counts first.
-            if store.uids(mailbox_id)?.len() as u32 != server.exists {
+            // Without QRESYNC the server does not say what was removed: compare the counts first
+            // (with the older messages that wait for the backfill).
+            let waiting = store.backfill(mailbox_id)?.map_or(0, |(_, left)| left);
+            if store.uids(mailbox_id)?.len() as u32 + waiting != server.exists {
                 report.removed = remove_gone(client, store, mailbox_id).await?;
             }
             new
@@ -191,7 +408,7 @@ pub async fn sync_mailbox<C: ImapClient>(
                 }
                 Ok(())
             })?;
-            let new = fetch_new(client, store, mailbox_id, known_next, server.uid_next).await?;
+            let new = fetch_new(client, store, mailbox_id, known_next, server.uid_next, opts).await?;
             report.removed = remove_gone(client, store, mailbox_id).await?;
             new
         }
@@ -213,9 +430,15 @@ pub async fn sync_mailbox<C: ImapClient>(
     Ok(report)
 }
 
-/// Removes the stored UIDs the server no longer lists.
+/// Removes the stored UIDs the server no longer lists (and counts again what waits for the
+/// backfill).
 async fn remove_gone<C: ImapClient>(client: &mut C, store: &Store, mailbox_id: i64) -> Result<usize> {
-    let on_server: std::collections::HashSet<u32> = client.uids().await?.into_iter().collect();
+    let listed = client.uids().await?;
+    if let Some((below, _)) = store.backfill(mailbox_id)? {
+        let left = listed.iter().filter(|u| **u < below).count() as u32;
+        store.set_backfill(mailbox_id, (left > 0).then_some(below), left)?;
+    }
+    let on_server: std::collections::HashSet<u32> = listed.into_iter().collect();
     let gone: Vec<u32> = store.uids(mailbox_id)?.into_iter().filter(|u| !on_server.contains(u)).collect();
     store.remove_uids(mailbox_id, &gone)
 }
@@ -299,6 +522,17 @@ pub async fn prefetch_bodies<C: ImapClient>(
     mailbox_id: i64,
     policy: crate::settings::Prefetch,
 ) -> Result<usize> {
+    prefetch_bodies_with(client, store, mailbox_id, policy, None).await
+}
+
+/// [`prefetch_bodies`] that steps aside at the [`Gate`] before each message.
+pub async fn prefetch_bodies_with<C: ImapClient>(
+    client: &mut C,
+    store: &Store,
+    mailbox_id: i64,
+    policy: crate::settings::Prefetch,
+    gate: Option<&Gate>,
+) -> Result<usize> {
     use crate::settings::Prefetch;
     let ids = match policy {
         Prefetch::None => vec![],
@@ -315,10 +549,19 @@ pub async fn prefetch_bodies<C: ImapClient>(
     }
     let mb = store.mailbox(mailbox_id)?;
     client.select(&mb.name, None).await?;
+    let mut fetched = 0;
     for &id in &ids {
+        if let Some(g) = gate {
+            g.pass().await;
+        }
+        // Its copy in another folder brought it meanwhile.
+        if store.message(id)?.has_body {
+            continue;
+        }
         fetch_selected(client, store, id).await?;
+        fetched += 1;
     }
-    Ok(ids.len())
+    Ok(fetched)
 }
 
 /// The most a folder fetches ahead in one round with [`crate::settings::Prefetch::Month`].
@@ -332,7 +575,9 @@ async fn fetch_selected<C: ImapClient>(client: &mut C, store: &Store, message_id
         let raw = client.fetch_message(uid).await?;
         let p = parse(&raw)?;
         let keep = raw.len() as u64 <= FULL_FETCH_LIMIT as u64 * 2;
-        return store.set_body_raw(message_id, &p, keep.then_some(&raw[..]));
+        store.set_body_raw(message_id, &p, keep.then_some(&raw[..]))?;
+        store.share_body(message_id)?;
+        return Ok(());
     }
     let mut body = PartialBody::default();
     let first = |mime: &str| parts.iter().find(|p| p.mime_type == mime && !p.is_attachment()).cloned();
@@ -347,8 +592,15 @@ async fn fetch_selected<C: ImapClient>(client: &mut C, store: &Store, message_id
         body.html = html.html;
     }
     body.snippet = snippet_of(body.text.as_deref().unwrap_or_default());
-    for p in parts.iter().filter(|p| !p.is_attachment() && p.content_id.is_some() && p.mime_type.starts_with("image/"))
-    {
+    // The pictures the HTML shows: inline ones, and those it names by Content-ID whatever their
+    // disposition says (some mailers mark them as attachments, some as octet streams).
+    let shown = body.html.as_deref().map(crate::parse::cid_refs).unwrap_or_default();
+    for p in parts.iter().filter(|p| {
+        let Some(cid) = &p.content_id else { return false };
+        let named = shown.contains(&crate::parse::cid_key(cid));
+        let picture = p.mime_type.starts_with("image/") || p.mime_type == "application/octet-stream";
+        picture && (named || !p.is_attachment() && p.mime_type.starts_with("image/"))
+    }) {
         if p.size <= INLINE_IMAGE_LIMIT {
             let data = part_content(&client.fetch_section(uid, &p.section).await?);
             body.inline.push((p.content_id.clone().unwrap_or_default(), p.mime_type.clone(), data));
@@ -379,6 +631,7 @@ async fn fetch_selected<C: ImapClient>(client: &mut C, store: &Store, message_id
     for (section, data) in calendar {
         store.set_attachment_data(message_id, &section, &data)?;
     }
+    store.share_body(message_id)?;
     Ok(())
 }
 
@@ -1018,6 +1271,366 @@ Content-Transfer-Encoding: base64\r\n\r\nJVBERi0xLjQK\r\n--X--\r\n";
         assert_eq!(role("Spam"), Some(Role::Junk));
         assert_eq!(role("Kunden/Spam"), None);
         assert_eq!(role("Archiv/Papierkorb"), None);
+    }
+
+    /// A message as Gmail keeps them: numbered, the oldest first, with its body as given.
+    fn gmail_mail(i: u32, body: &str) -> Vec<u8> {
+        format!(
+            "From: Absender {i} <a{i}@example.net>\r\nTo: maria@example.org\r\nSubject: Mail {i}\r\n\
+Message-ID: <m{i}@example.net>\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n{body}\r\n"
+        )
+        .into_bytes()
+    }
+
+    fn gmail_caps() -> Capabilities {
+        FakeImap::gmail().caps
+    }
+
+    fn gmail_setup() -> (FakeImap, Store, i64) {
+        let (_, store, account) = setup(all_caps());
+        (FakeImap::gmail(), store, account)
+    }
+
+    fn folder(store: &Store, account: i64, name: &str) -> i64 {
+        store.mailbox_by_name(account, name).unwrap().unwrap_or_else(|| panic!("no folder {name}")).id
+    }
+
+    /// A large Gmail inbox: the first sync fetches the newest headers first (a small first part,
+    /// shown at once), stops after `first_headers`, and the older mail follows a part per round;
+    /// the list is newest first all along.
+    #[tokio::test]
+    async fn a_large_inbox_comes_newest_first_and_the_rest_follows() {
+        let (mut server, store, account) = gmail_setup();
+        for i in 1..=3000u32 {
+            // From 2015 on, one message a day.
+            server.deliver_gmail(&gmail_mail(i, "Hallo"), 1_440_000_000 + i as i64 * 86_400, &["INBOX"]);
+        }
+        sync_folders(&mut server, &store, account).await.unwrap();
+        let ib = folder(&store, account, "INBOX");
+        let seen: std::cell::RefCell<Vec<(usize, String)>> = Default::default();
+        let shown = |m: i64| {
+            let top = store.messages(m, 1, 0).unwrap().first().map(|s| s.subject.clone()).unwrap_or_default();
+            seen.borrow_mut().push((store.uids(m).unwrap().len(), top));
+        };
+        let opts = SyncOptions { first_headers: 1000, on_chunk: Some(&shown), gate: None };
+        server.log.clear();
+        let r = sync_mailbox_with(&mut server, &store, gmail_caps(), ib, &opts).await.unwrap();
+        assert_eq!((r.strategy, r.added), (Strategy::Full, 1000));
+        let fetches: Vec<&String> = server.log.iter().filter(|l| l.contains("(HEADER)")).collect();
+        assert_eq!(fetches[0], "UID FETCH 2901:3000 (HEADER)", "the newest first: {fetches:?}");
+        assert_eq!(seen.borrow()[0], (FIRST_BATCH as usize, "Mail 3000".to_string()), "shown after the first part");
+        let list = store.messages(ib, 2000, 0).unwrap();
+        assert_eq!(list.len(), 1000);
+        assert_eq!((list[0].subject.as_str(), list[999].subject.as_str()), ("Mail 3000", "Mail 2001"));
+        assert_eq!(store.backfill(ib).unwrap(), Some((2001, 2000)), "the older mail waits");
+
+        // New mail meanwhile comes as usual and is news.
+        server.deliver_gmail(&gmail_mail(3001, "Neu"), 1_440_000_000 + 3001 * 86_400, &["INBOX"]);
+        let r = sync_mailbox_with(&mut server, &store, gmail_caps(), ib, &opts).await.unwrap();
+        assert_eq!((r.strategy, r.added, r.new_unread.len(), r.removed), (Strategy::Condstore, 1, 1, 0));
+
+        // The older mail, a part per round, the newest of it first.
+        server.log.clear();
+        assert_eq!(backfill(&mut server, &store, ib, 1500, &opts).await.unwrap(), 1500);
+        let fetches: Vec<&String> = server.log.iter().filter(|l| l.contains("(HEADER)")).collect();
+        assert_eq!(fetches[0], "UID FETCH 1501:2000 (HEADER)", "{fetches:?}");
+        assert_eq!(store.backfill(ib).unwrap(), Some((501, 500)));
+        assert_eq!(backfill(&mut server, &store, ib, 1500, &opts).await.unwrap(), 500);
+        assert_eq!(store.backfill(ib).unwrap(), None, "all here");
+        assert_eq!(backfill(&mut server, &store, ib, 1500, &opts).await.unwrap(), 0);
+        let list = store.messages(ib, 5000, 0).unwrap();
+        assert_eq!(list.len(), 3001);
+        assert_eq!((list[0].subject.as_str(), list[3000].subject.as_str()), ("Mail 3001", "Mail 1"));
+        assert!(list.windows(2).all(|w| w[0].date >= w[1].date), "newest first");
+        // Nothing removed, nothing fetched again: the counts agree.
+        server.log.clear();
+        let r = sync_mailbox_with(&mut server, &store, gmail_caps(), ib, &opts).await.unwrap();
+        assert_eq!((r.added, r.removed), (0, 0));
+        assert!(!server.log.iter().any(|l| l == "UID SEARCH ALL"), "{:?}", server.log);
+    }
+
+    /// A Gmail inbox of 50,000 messages: the first sync asks for the newest 1000 headers in
+    /// three round trips of at most 500, with one UID list; nothing else is fetched.
+    #[tokio::test]
+    async fn fifty_thousand_messages_start_small() {
+        let (mut server, store, account) = gmail_setup();
+        let inbox = server.mailboxes.get_mut("INBOX").unwrap();
+        for i in 1..=50_000u32 {
+            inbox.messages.insert(
+                i,
+                crate::imap::fake::FakeMessage {
+                    raw: gmail_mail(i, "x"),
+                    flags: Flags::default(),
+                    modseq: 1,
+                    internal_date: 1_440_000_000 + i as i64 * 600,
+                    gm_msgid: Some(i as u64),
+                },
+            );
+        }
+        inbox.uid_next = 50_001;
+        sync_folders(&mut server, &store, account).await.unwrap();
+        let ib = folder(&store, account, "INBOX");
+        server.log.clear();
+        let r = sync_mailbox(&mut server, &store, gmail_caps(), ib).await.unwrap();
+        assert_eq!(r.added, FIRST_HEADERS as usize);
+        let fetches: Vec<&String> = server.log.iter().filter(|l| l.contains("(HEADER)")).collect();
+        assert_eq!(
+            fetches,
+            ["UID FETCH 49901:50000 (HEADER)", "UID FETCH 49401:49900 (HEADER)", "UID FETCH 49001:49400 (HEADER)"]
+        );
+        assert_eq!(server.log.iter().filter(|l| *l == "UID SEARCH ALL").count(), 1);
+        assert_eq!(store.backfill(ib).unwrap(), Some((49_001, 49_000)));
+        assert_eq!(store.messages(ib, 1, 0).unwrap()[0].subject, "Mail 50000");
+    }
+
+    /// Mail removed on the server while older mail still waits is removed here too, and the
+    /// count of what waits stays right.
+    #[tokio::test]
+    async fn removals_while_older_mail_waits() {
+        let (mut server, store, account) = gmail_setup();
+        for i in 1..=30u32 {
+            server.deliver_gmail(&gmail_mail(i, "x"), 1_440_000_000 + i as i64, &["INBOX"]);
+        }
+        sync_folders(&mut server, &store, account).await.unwrap();
+        let ib = folder(&store, account, "INBOX");
+        let opts = SyncOptions { first_headers: 10, ..SyncOptions::default() };
+        sync_mailbox_with(&mut server, &store, gmail_caps(), ib, &opts).await.unwrap();
+        assert_eq!(store.backfill(ib).unwrap(), Some((21, 20)));
+        server.expunge("INBOX", 30);
+        server.expunge("INBOX", 3);
+        let r = sync_mailbox_with(&mut server, &store, gmail_caps(), ib, &opts).await.unwrap();
+        assert_eq!(r.removed, 1);
+        assert_eq!(store.backfill(ib).unwrap(), Some((21, 19)));
+        assert_eq!(backfill(&mut server, &store, ib, 100, &opts).await.unwrap(), 19);
+        assert_eq!(store.uids(ib).unwrap().len(), 28);
+    }
+
+    /// Gmail keeps a message once per label and once more in All Mail, all with one
+    /// X-GM-MSGID: one body fetch serves every copy, search shows one. Messages that only look
+    /// alike (six receipts of one day) stay six.
+    #[tokio::test]
+    async fn gmail_copies_are_one_message_and_look_alikes_stay_apart() {
+        let (mut server, store, account) = gmail_setup();
+        let receipt = |n: u32| {
+            format!(
+                "From: PlayStation Network <Sony@email.sonyentertainmentnetwork.com>\r\nTo: maria@example.org\r\n\
+Subject: Danke für Ihren Einkauf\r\nDate: Mon, 24 Aug 2015 10:00:00 +0000\r\nMessage-ID: <psn{n}@sony.example>\r\n\
+MIME-Version: 1.0\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nArtikel {n}\r\n"
+            )
+            .into_bytes()
+        };
+        for n in 1..=6 {
+            server.deliver_gmail(&receipt(n), 1_440_400_000, &["INBOX"]);
+        }
+        let confirm = sample("konto@x", "Bestätige dein Konto", None, "Bitte bestätigen");
+        let gm = server.deliver_gmail(&confirm, 1_760_000_000, &["INBOX", "Account Confirmations"]);
+        sync_account(&mut server, &store, account).await.unwrap();
+        let ib = folder(&store, account, "INBOX");
+        let rows = store.messages(ib, 50, 0).unwrap();
+        assert_eq!(rows.len(), 7, "six receipts and one more: {rows:?}");
+        assert_eq!(rows.iter().filter(|m| m.subject == "Danke für Ihren Einkauf").count(), 6);
+        let copies: i64 = store
+            .conn()
+            .query_row("SELECT COUNT(*) FROM messages WHERE gm_msgid = ?1", [gm as i64], |r| r.get(0))
+            .unwrap();
+        assert_eq!(copies, 3, "inbox, label and All Mail");
+        let hits = crate::search::search(&store, "Bestätige", Some(account), 10).unwrap();
+        assert_eq!(hits.len(), 1, "{hits:?}");
+        assert_eq!(hits[0].mailbox_id, ib, "the inbox copy");
+        let id = hits[0].id;
+        fetch_body(&mut server, &store, id).await.unwrap();
+        let label = folder(&store, account, "Account Confirmations");
+        let twin = store.messages(label, 1, 0).unwrap()[0].id;
+        assert!(store.message(twin).unwrap().has_body, "the label's copy has it too");
+        server.log.clear();
+        assert_eq!(prefetch_bodies(&mut server, &store, label, Prefetch::Recent).await.unwrap(), 0);
+        assert!(!server.log.iter().any(|l| l.contains("BODY.PEEK[]")), "not fetched again: {:?}", server.log);
+        // Only X-GM-MSGID makes copies one: the six receipts are six.
+        let psn = crate::search::search(&store, "Einkauf", Some(account), 10).unwrap();
+        assert_eq!(psn.len(), 6, "{psn:?}");
+    }
+
+    /// The preview line comes with the header (a part of the body), before any body is fetched:
+    /// plain, quoted-printable, base64, HTML only, and a long text cut in the middle.
+    #[tokio::test]
+    async fn preview_lines_come_with_the_headers() {
+        let (mut server, store, account) = gmail_setup();
+        let mail = |id: &str, subject: &str, rest: &str| {
+            format!(
+                "From: Lea <lea@example.org>\r\nTo: maria@example.org\r\nSubject: {subject}\r\nMessage-ID: <{id}>\r\n\
+MIME-Version: 1.0\r\n{rest}"
+            )
+            .into_bytes()
+        };
+        let long = "Erste Zeile der langen Nachricht. ".repeat(200);
+        let b64 = base64::engine::general_purpose::STANDARD.encode(format!("Base64 kommt an. {long}"));
+        let b64_lines: Vec<String> =
+            b64.as_bytes().chunks(76).map(|c| String::from_utf8_lossy(c).into_owned()).collect();
+        use base64::Engine;
+        for raw in [
+            mail("p1@x", "Plain", "Content-Type: text/plain; charset=utf-8\r\n\r\nGanz einfach.\r\n"),
+            mail(
+                "p2@x",
+                "QP",
+                "Content-Type: multipart/alternative; boundary=\"A\"\r\n\r\n--A\r\nContent-Type: text/plain; charset=utf-8\r\n\
+Content-Transfer-Encoding: quoted-printable\r\n\r\nGr=C3=BC=C3=9Fe aus K=C3=B6ln\r\n--A\r\nContent-Type: text/html\r\n\r\n<p>x</p>\r\n--A--\r\n",
+            ),
+            mail(
+                "p3@x",
+                "Base64",
+                &format!(
+                    "Content-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: base64\r\n\r\n{}\r\n",
+                    b64_lines.join("\r\n")
+                ),
+            ),
+            mail(
+                "p4@x",
+                "HTML",
+                "Content-Type: text/html; charset=utf-8\r\n\r\n<html><head><style>p{color:red}</style></head><body><p>Nur HTML hier</p></body></html>\r\n",
+            ),
+            mail("p5@x", "Lang", &format!("Content-Type: text/plain; charset=utf-8\r\n\r\n{long}\r\n")),
+        ] {
+            server.deliver_gmail(&raw, 1_760_000_000, &["INBOX"]);
+        }
+        sync_folders(&mut server, &store, account).await.unwrap();
+        let ib = folder(&store, account, "INBOX");
+        sync_mailbox(&mut server, &store, gmail_caps(), ib).await.unwrap();
+        let rows = store.messages(ib, 10, 0).unwrap();
+        let snippet = |subject: &str| rows.iter().find(|m| m.subject == subject).unwrap().snippet.clone();
+        assert_eq!(snippet("Plain"), "Ganz einfach.");
+        assert_eq!(snippet("QP"), "Grüße aus Köln");
+        assert!(snippet("Base64").starts_with("Base64 kommt an. Erste Zeile"), "{}", snippet("Base64"));
+        assert_eq!(snippet("HTML"), "Nur HTML hier");
+        assert!(snippet("Lang").starts_with("Erste Zeile der langen Nachricht."));
+        assert!(rows.iter().all(|m| !store.message(m.id).unwrap().has_body), "no body fetched");
+        // All Mail's copies need none of their own.
+        let all = folder(&store, account, "[Gmail]/Alle Nachrichten");
+        server.log.clear();
+        sync_mailbox(&mut server, &store, gmail_caps(), all).await.unwrap();
+        assert!(!server.log.iter().any(|l| l.contains("BODY.PEEK[TEXT]")), "{:?}", server.log);
+    }
+
+    /// Gmail in German: the special folders below „[Gmail]“ by their attributes, a label with
+    /// brackets as it is, and a user's own label „Entwürfe“ next to the real drafts is no second
+    /// drafts folder.
+    #[tokio::test]
+    async fn gmail_folders_in_german() {
+        let (mut server, store, account) = gmail_setup();
+        sync_account(&mut server, &store, account).await.unwrap();
+        let boxes = store.mailboxes(account).unwrap();
+        let role = |r: Role| boxes.iter().filter(|m| m.role == Some(r)).map(|m| m.name.as_str()).collect::<Vec<_>>();
+        assert_eq!(role(Role::Drafts), ["[Gmail]/Entwürfe"]);
+        assert_eq!(role(Role::Sent), ["[Gmail]/Gesendet"]);
+        assert_eq!(role(Role::Trash), ["[Gmail]/Papierkorb"]);
+        assert_eq!(role(Role::Junk), ["[Gmail]/Spam"]);
+        assert_eq!(role(Role::All), ["[Gmail]/Alle Nachrichten"]);
+        assert_eq!(role(Role::Flagged), ["[Gmail]/Markiert"]);
+        assert_eq!(role(Role::Important), ["[Gmail]/Wichtig"]);
+        let label = |n: &str| boxes.iter().find(|m| m.name == n).unwrap_or_else(|| panic!("{n}: {boxes:?}"));
+        assert_eq!(label("[Notion]").role, None);
+        assert_eq!(label("Entwürfe").role, None, "the user's label");
+        assert!(!label("[Gmail]").selectable);
+    }
+
+    /// A 1×1 PNG, base64.
+    const PNG: &str =
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+
+    fn html_with_picture(id: &str, src: &str, part_header: &str, extra: &str) -> Vec<u8> {
+        format!(
+            "From: Lea <lea@example.org>\r\nTo: maria@example.org\r\nSubject: Bild {id}\r\nMessage-ID: <{id}@x>\r\n\
+MIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=\"M\"\r\n\r\n\
+--M\r\nContent-Type: multipart/related; boundary=\"R\"\r\n\r\n\
+--R\r\nContent-Type: text/html; charset=utf-8\r\n\r\n<p>Hier ist es: <img src=\"{src}\" alt=\"Bild\"></p>\r\n\
+--R\r\n{part_header}Content-Transfer-Encoding: base64\r\n\r\n{PNG}\r\n--R--\r\n{extra}--M--\r\n"
+        )
+        .into_bytes()
+    }
+
+    /// Pictures inside a message always show: Gmail's inline ones, ones a mailer marks as an
+    /// attachment or as an octet stream, `cid:` addresses in another case or %-escaped, and in a
+    /// large message fetched part by part. Remote pictures the user allowed load over https.
+    #[tokio::test]
+    async fn pictures_inside_messages_always_show() {
+        use crate::settings::RemoteContent;
+        let (mut server, store, account) = gmail_setup();
+        let big = format!(
+            "--M\r\nContent-Type: application/zip\r\nContent-Disposition: attachment; filename=\"gross.zip\"\r\n\
+Content-Transfer-Encoding: base64\r\n\r\n{}\r\n",
+            "QUJD".repeat((FULL_FETCH_LIMIT as usize) / 3)
+        );
+        let cases = [
+            (
+                "gmail",
+                html_with_picture(
+                    "gmail",
+                    "cid:ii_kx1",
+                    "Content-Type: image/png; name=\"image.png\"\r\nContent-Disposition: inline; filename=\"image.png\"\r\n\
+Content-ID: <ii_kx1>\r\nX-Attachment-Id: ii_kx1\r\n",
+                    "",
+                ),
+            ),
+            (
+                "octet",
+                html_with_picture(
+                    "octet",
+                    "CID:Logo%40shop.example",
+                    "Content-Type: application/octet-stream; name=\"logo\"\r\n\
+Content-Disposition: attachment; filename=\"logo\"\r\nContent-ID: <Logo@shop.example>\r\n",
+                    "",
+                ),
+            ),
+            (
+                "large",
+                html_with_picture(
+                    "large",
+                    "cid:chart@x",
+                    "Content-Type: image/png\r\nContent-Disposition: attachment; filename=\"chart.png\"\r\n\
+Content-ID: <chart@x>\r\n",
+                    &big,
+                ),
+            ),
+        ];
+        for (_, raw) in &cases {
+            server.deliver_gmail(raw, 1_760_000_000, &["INBOX"]);
+        }
+        sync_account(&mut server, &store, account).await.unwrap();
+        let ib = folder(&store, account, "INBOX");
+        for (name, _) in &cases {
+            let id = store
+                .messages(ib, 10, 0)
+                .unwrap()
+                .into_iter()
+                .find(|m| m.subject == format!("Bild {name}"))
+                .unwrap()
+                .id;
+            fetch_body(&mut server, &store, id).await.unwrap();
+            let view = crate::actions::message_view(&store, id, RemoteContent::Ask).unwrap();
+            assert!(view.body.html.contains("src=\"data:image/png;base64,iVBORw0KGgo"), "{name}: {}", view.body.html);
+            assert_eq!(view.body.blocked_remote, 0, "{name}");
+        }
+        let large = store.messages(ib, 10, 0).unwrap().into_iter().find(|m| m.subject == "Bild large").unwrap().id;
+        assert!(store.raw_message(large).unwrap().is_none(), "fetched in parts");
+
+        // Remote pictures: blocked until allowed, then over https (the app loads no plain http).
+        let remote = "From: Shop <news@shop.example>\r\nTo: maria@example.org\r\nSubject: Remote\r\nMessage-ID: <r@x>\r\n\
+MIME-Version: 1.0\r\nContent-Type: text/html; charset=utf-8\r\n\r\n\
+<p><img src=\"http://img.shop.example/a.jpg\" width=\"300\"><img src=\"//cdn.shop.example/b.png\" width=\"300\">\
+<img src=\"https://cdn.shop.example/c.png\" width=\"300\"></p>\r\n";
+        server.deliver_gmail(remote.as_bytes(), 1_760_000_100, &["INBOX"]);
+        sync_mailbox(&mut server, &store, gmail_caps(), ib).await.unwrap();
+        let id = store.messages(ib, 1, 0).unwrap()[0].id;
+        fetch_body(&mut server, &store, id).await.unwrap();
+        let blocked = crate::actions::message_view(&store, id, RemoteContent::Ask).unwrap();
+        assert_eq!(blocked.body.blocked_remote, 3);
+        store.allow_remote(id).unwrap();
+        let shown = crate::actions::message_view(&store, id, RemoteContent::Ask).unwrap().body.html;
+        for url in
+            ["https://img.shop.example/a.jpg", "https://cdn.shop.example/b.png", "https://cdn.shop.example/c.png"]
+        {
+            assert!(shown.contains(&format!("src=\"{url}\"")), "{url}: {shown}");
+        }
+        assert!(!shown.contains("http:"), "{shown}");
     }
 
     /// Failed rounds wait longer each time, also when connecting works (a folder or the

@@ -92,6 +92,9 @@ pub struct Settings {
     /// The preview line under the subject in the list.
     pub show_snippets: bool,
     pub prefetch: Prefetch,
+    /// Headers a first sync fetches per folder, the newest first (a large mailbox is usable
+    /// within seconds); the older mail follows in the background (`sync::backfill`).
+    pub initial_headers: u32,
     /// Replies without reply headers join their conversation by subject (`thread.rs`).
     pub subject_threads: bool,
     /// Proxy profiles and which service uses which (`network::NetworkSettings`).
@@ -183,6 +186,7 @@ impl Default for Settings {
             compose_rich_text: true,
             show_snippets: true,
             prefetch: Prefetch::Recent,
+            initial_headers: crate::sync::FIRST_HEADERS,
             subject_threads: true,
             network: crate::network::NetworkSettings::default(),
             swipe_left: SwipeAction::Archive,

@@ -914,10 +914,13 @@ fn smime_oaep_with_sha256_opens() {
 /// The draft of an encrypted message as the server gets it, and back in Drafts: queued
 /// ([`crate::actions::queue_draft_with`]), then stored as the sync brings it back.
 fn saved_draft(s: &Store, keys: &Vault, d: &Draft, files: &[crate::compose::FileAttachment]) -> (Vec<u8>, i64) {
-    use base64::Engine;
     use crate::imap::MailboxEntry;
+    use base64::Engine;
     let drafts = s
-        .upsert_mailbox(d.account_id, &MailboxEntry { name: "Drafts".into(), delimiter: Some('/'), attributes: vec!["\\Drafts".into()] })
+        .upsert_mailbox(
+            d.account_id,
+            &MailboxEntry { name: "Drafts".into(), delimiter: Some('/'), attributes: vec!["\\Drafts".into()] },
+        )
         .unwrap();
     let mid = crate::actions::queue_draft_with(s, d, files, keys).unwrap();
     let payload: String = s
@@ -942,7 +945,11 @@ fn drafts_of_encrypted_messages_are_encrypted_to_the_own_key_and_open_again() {
     let (maria, mut maria_keys, maria_acc) = person("maria@example.org");
     own_pgp_key(&maria, &mut maria_keys, "maria@example.org");
     // Jonas's key is not needed for the draft: it is encrypted to Maria only.
-    let file = crate::compose::FileAttachment { name: "zahlen.txt".into(), mime_type: "text/plain".into(), data: b"Umsatz 4711".to_vec() };
+    let file = crate::compose::FileAttachment {
+        name: "zahlen.txt".into(),
+        mime_type: "text/plain".into(),
+        data: b"Umsatz 4711".to_vec(),
+    };
     let d = Draft {
         account_id: maria_acc.id,
         to: vec!["jonas@example.org".into()],
@@ -990,7 +997,11 @@ fn drafts_of_encrypted_messages_are_encrypted_to_the_own_key_and_open_again() {
     assert!(!e.is_empty());
 
     // Signed only: kept readable, the wish to sign comes back.
-    let signed = Draft { protect: Some(Protect { method: Method::Pgp, sign: true, encrypt: false }), message_id: None, ..d.clone() };
+    let signed = Draft {
+        protect: Some(Protect { method: Method::Pgp, sign: true, encrypt: false }),
+        message_id: None,
+        ..d.clone()
+    };
     let (raw3, id3) = saved_draft(&maria, &maria_keys, &signed, &[]);
     assert!(String::from_utf8_lossy(&raw3).contains("geheime"));
     let back = crate::actions::draft_of_with(&maria, id3, &maria_keys).unwrap();

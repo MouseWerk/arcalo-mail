@@ -290,7 +290,12 @@ pub async fn start(opts: Options) -> io::Result<Running> {
     } else {
         (None, None)
     };
-    let fake = FakeImap::new(opts.caps).with_all_folders();
+    // Gmail (`X-GM-EXT-1`): its folders below „[Gmail]“ (in German) and labels as folders.
+    let fake = if opts.caps.gmail {
+        FakeImap { caps: opts.caps, ..FakeImap::gmail() }
+    } else {
+        FakeImap::new(opts.caps).with_all_folders()
+    };
     let shared = Arc::new(Shared {
         fake: Mutex::new(fake),
         sent: Mutex::default(),

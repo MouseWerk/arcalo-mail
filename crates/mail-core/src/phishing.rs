@@ -80,15 +80,55 @@ pub struct Brand {
 
 /// The companies phishing mail most often claims to be, in Germany and beyond.
 pub const BRANDS: &[Brand] = &[
-    Brand { name: "PayPal", tokens: &["paypal"], domains: &["paypal.com", "paypal.de", "paypal.at", "paypal.ch", "paypal-communication.com"], kind: ClaimKind::Payment },
+    Brand {
+        name: "PayPal",
+        tokens: &["paypal"],
+        domains: &["paypal.com", "paypal.de", "paypal.at", "paypal.ch", "paypal-communication.com"],
+        kind: ClaimKind::Payment,
+    },
     Brand { name: "Klarna", tokens: &["klarna"], domains: &["klarna.com", "klarna.de"], kind: ClaimKind::Payment },
-    Brand { name: "Visa", tokens: &["visa card", "visa secure"], domains: &["visa.com", "visa.de"], kind: ClaimKind::Payment },
-    Brand { name: "Mastercard", tokens: &["mastercard"], domains: &["mastercard.com", "mastercard.de"], kind: ClaimKind::Payment },
-    Brand { name: "American Express", tokens: &["american express", "amex"], domains: &["americanexpress.com", "aexp.com", "americanexpress.de"], kind: ClaimKind::Payment },
-    Brand { name: "Sparkasse", tokens: &["sparkasse"], domains: &["sparkasse.de", "s-servicecenter.de", "starfinanz.de", "sparkasse.at"], kind: ClaimKind::Bank },
-    Brand { name: "Volksbank", tokens: &["volksbank", "raiffeisenbank", "vr-bank", "vr bank"], domains: &["vr.de", "volksbank.de", "atruvia.de", "fiduciagad.de"], kind: ClaimKind::Bank },
-    Brand { name: "Deutsche Bank", tokens: &["deutsche bank", "deutschebank"], domains: &["db.com", "deutsche-bank.de"], kind: ClaimKind::Bank },
-    Brand { name: "Commerzbank", tokens: &["commerzbank"], domains: &["commerzbank.de", "commerzbank.com"], kind: ClaimKind::Bank },
+    Brand {
+        name: "Visa",
+        tokens: &["visa card", "visa secure"],
+        domains: &["visa.com", "visa.de"],
+        kind: ClaimKind::Payment,
+    },
+    Brand {
+        name: "Mastercard",
+        tokens: &["mastercard"],
+        domains: &["mastercard.com", "mastercard.de"],
+        kind: ClaimKind::Payment,
+    },
+    Brand {
+        name: "American Express",
+        tokens: &["american express", "amex"],
+        domains: &["americanexpress.com", "aexp.com", "americanexpress.de"],
+        kind: ClaimKind::Payment,
+    },
+    Brand {
+        name: "Sparkasse",
+        tokens: &["sparkasse"],
+        domains: &["sparkasse.de", "s-servicecenter.de", "starfinanz.de", "sparkasse.at"],
+        kind: ClaimKind::Bank,
+    },
+    Brand {
+        name: "Volksbank",
+        tokens: &["volksbank", "raiffeisenbank", "vr-bank", "vr bank"],
+        domains: &["vr.de", "volksbank.de", "atruvia.de", "fiduciagad.de"],
+        kind: ClaimKind::Bank,
+    },
+    Brand {
+        name: "Deutsche Bank",
+        tokens: &["deutsche bank", "deutschebank"],
+        domains: &["db.com", "deutsche-bank.de"],
+        kind: ClaimKind::Bank,
+    },
+    Brand {
+        name: "Commerzbank",
+        tokens: &["commerzbank"],
+        domains: &["commerzbank.de", "commerzbank.com"],
+        kind: ClaimKind::Bank,
+    },
     Brand { name: "Postbank", tokens: &["postbank"], domains: &["postbank.de"], kind: ClaimKind::Bank },
     Brand { name: "ING", tokens: &["ing-diba", "ing diba"], domains: &["ing.de", "ing.com"], kind: ClaimKind::Bank },
     Brand { name: "DKB", tokens: &["dkb"], domains: &["dkb.de"], kind: ClaimKind::Bank },
@@ -96,24 +136,113 @@ pub const BRANDS: &[Brand] = &[
     Brand { name: "N26", tokens: &["n26"], domains: &["n26.com"], kind: ClaimKind::Bank },
     Brand { name: "Consorsbank", tokens: &["consorsbank"], domains: &["consorsbank.de"], kind: ClaimKind::Bank },
     Brand { name: "Targobank", tokens: &["targobank"], domains: &["targobank.de"], kind: ClaimKind::Bank },
-    Brand { name: "Santander", tokens: &["santander"], domains: &["santander.de", "santander.com"], kind: ClaimKind::Bank },
-    Brand { name: "DHL", tokens: &["dhl"], domains: &["dhl.de", "dhl.com", "deutschepost.de", "dpdhl.com"], kind: ClaimKind::Parcel },
-    Brand { name: "Deutsche Post", tokens: &["deutsche post"], domains: &["deutschepost.de", "dhl.de"], kind: ClaimKind::Parcel },
-    Brand { name: "Hermes", tokens: &["hermes"], domains: &["myhermes.de", "hermesworld.com", "hermes-europe.eu"], kind: ClaimKind::Parcel },
+    Brand {
+        name: "Santander",
+        tokens: &["santander"],
+        domains: &["santander.de", "santander.com"],
+        kind: ClaimKind::Bank,
+    },
+    Brand {
+        name: "DHL",
+        tokens: &["dhl"],
+        domains: &["dhl.de", "dhl.com", "deutschepost.de", "dpdhl.com"],
+        kind: ClaimKind::Parcel,
+    },
+    Brand {
+        name: "Deutsche Post",
+        tokens: &["deutsche post"],
+        domains: &["deutschepost.de", "dhl.de"],
+        kind: ClaimKind::Parcel,
+    },
+    Brand {
+        name: "Hermes",
+        tokens: &["hermes"],
+        domains: &["myhermes.de", "hermesworld.com", "hermes-europe.eu"],
+        kind: ClaimKind::Parcel,
+    },
     Brand { name: "DPD", tokens: &["dpd"], domains: &["dpd.de", "dpd.com"], kind: ClaimKind::Parcel },
-    Brand { name: "GLS", tokens: &["gls"], domains: &["gls-pakete.de", "gls-group.eu", "gls-group.com"], kind: ClaimKind::Parcel },
+    Brand {
+        name: "GLS",
+        tokens: &["gls"],
+        domains: &["gls-pakete.de", "gls-group.eu", "gls-group.com"],
+        kind: ClaimKind::Parcel,
+    },
     Brand { name: "UPS", tokens: &["ups"], domains: &["ups.com"], kind: ClaimKind::Parcel },
     Brand { name: "FedEx", tokens: &["fedex"], domains: &["fedex.com"], kind: ClaimKind::Parcel },
-    Brand { name: "Amazon", tokens: &["amazon"], domains: &["amazon.de", "amazon.com", "amazon.co.uk", "amazon.at", "amazonses.com", "amazonaws.com", "amazon.fr", "amazon.it", "amazon.es"], kind: ClaimKind::Company },
-    Brand { name: "Apple", tokens: &["apple id", "icloud"], domains: &["apple.com", "icloud.com", "me.com", "mac.com"], kind: ClaimKind::Company },
-    Brand { name: "Microsoft", tokens: &["microsoft", "outlook team", "office 365"], domains: &["microsoft.com", "microsoftonline.com", "office.com", "outlook.com", "live.com", "hotmail.com", "office365.com", "msn.com"], kind: ClaimKind::Company },
-    Brand { name: "Google", tokens: &["google"], domains: &["google.com", "gmail.com", "googlemail.com", "youtube.com", "google.de"], kind: ClaimKind::Company },
+    Brand {
+        name: "Amazon",
+        tokens: &["amazon"],
+        domains: &[
+            "amazon.de",
+            "amazon.com",
+            "amazon.co.uk",
+            "amazon.at",
+            "amazonses.com",
+            "amazonaws.com",
+            "amazon.fr",
+            "amazon.it",
+            "amazon.es",
+        ],
+        kind: ClaimKind::Company,
+    },
+    Brand {
+        name: "Apple",
+        tokens: &["apple id", "icloud"],
+        domains: &["apple.com", "icloud.com", "me.com", "mac.com"],
+        kind: ClaimKind::Company,
+    },
+    Brand {
+        name: "Microsoft",
+        tokens: &["microsoft", "outlook team", "office 365"],
+        domains: &[
+            "microsoft.com",
+            "microsoftonline.com",
+            "office.com",
+            "outlook.com",
+            "live.com",
+            "hotmail.com",
+            "office365.com",
+            "msn.com",
+        ],
+        kind: ClaimKind::Company,
+    },
+    Brand {
+        name: "Google",
+        tokens: &["google"],
+        domains: &["google.com", "gmail.com", "googlemail.com", "youtube.com", "google.de"],
+        kind: ClaimKind::Company,
+    },
     Brand { name: "Netflix", tokens: &["netflix"], domains: &["netflix.com"], kind: ClaimKind::Company },
-    Brand { name: "eBay", tokens: &["ebay"], domains: &["ebay.de", "ebay.com", "kleinanzeigen.de"], kind: ClaimKind::Company },
-    Brand { name: "Telekom", tokens: &["telekom", "t-online"], domains: &["telekom.de", "t-online.de", "telekom.com"], kind: ClaimKind::Company },
-    Brand { name: "Vodafone", tokens: &["vodafone"], domains: &["vodafone.de", "vodafone.com"], kind: ClaimKind::Company },
-    Brand { name: "1&1", tokens: &["1&1", "1und1"], domains: &["1und1.de", "ionos.de", "ionos.com"], kind: ClaimKind::Company },
-    Brand { name: "GMX", tokens: &["gmx"], domains: &["gmx.de", "gmx.net", "gmx.at", "gmx.ch", "gmx.com"], kind: ClaimKind::Company },
+    Brand {
+        name: "eBay",
+        tokens: &["ebay"],
+        domains: &["ebay.de", "ebay.com", "kleinanzeigen.de"],
+        kind: ClaimKind::Company,
+    },
+    Brand {
+        name: "Telekom",
+        tokens: &["telekom", "t-online"],
+        domains: &["telekom.de", "t-online.de", "telekom.com"],
+        kind: ClaimKind::Company,
+    },
+    Brand {
+        name: "Vodafone",
+        tokens: &["vodafone"],
+        domains: &["vodafone.de", "vodafone.com"],
+        kind: ClaimKind::Company,
+    },
+    Brand {
+        name: "1&1",
+        tokens: &["1&1", "1und1"],
+        domains: &["1und1.de", "ionos.de", "ionos.com"],
+        kind: ClaimKind::Company,
+    },
+    Brand {
+        name: "GMX",
+        tokens: &["gmx"],
+        domains: &["gmx.de", "gmx.net", "gmx.at", "gmx.ch", "gmx.com"],
+        kind: ClaimKind::Company,
+    },
     Brand { name: "WEB.DE", tokens: &["web.de"], domains: &["web.de"], kind: ClaimKind::Company },
     Brand { name: "Elster", tokens: &["elster", "finanzamt"], domains: &["elster.de"], kind: ClaimKind::Company },
 ];
@@ -138,19 +267,71 @@ const CLAIM_WORDS: &[(&str, ClaimKind)] = &[
 /// Mail providers whose names are close to each other on purpose or by chance (`gmail`, `email`,
 /// `gmx`): never taken for look-alikes of one another.
 const PROVIDERS: &[&str] = &[
-    "gmail.com", "googlemail.com", "email.de", "mail.de", "mail.com", "gmx.de", "gmx.net", "gmx.at", "gmx.ch", "web.de",
-    "yahoo.com", "yahoo.de", "outlook.com", "outlook.de", "hotmail.com", "hotmail.de", "live.com", "live.de", "icloud.com",
-    "me.com", "mac.com", "posteo.de", "posteo.net", "mailbox.org", "aol.com", "aol.de", "proton.me", "protonmail.com",
-    "t-online.de", "freenet.de", "arcor.de", "online.de", "fastmail.com", "tutanota.com", "tuta.io",
+    "gmail.com",
+    "googlemail.com",
+    "email.de",
+    "mail.de",
+    "mail.com",
+    "gmx.de",
+    "gmx.net",
+    "gmx.at",
+    "gmx.ch",
+    "web.de",
+    "yahoo.com",
+    "yahoo.de",
+    "outlook.com",
+    "outlook.de",
+    "hotmail.com",
+    "hotmail.de",
+    "live.com",
+    "live.de",
+    "icloud.com",
+    "me.com",
+    "mac.com",
+    "posteo.de",
+    "posteo.net",
+    "mailbox.org",
+    "aol.com",
+    "aol.de",
+    "proton.me",
+    "protonmail.com",
+    "t-online.de",
+    "freenet.de",
+    "arcor.de",
+    "online.de",
+    "fastmail.com",
+    "tutanota.com",
+    "tuta.io",
 ];
 
 /// Hosts of mailing services whose click-counting links stand between a link's text and its
 /// address (not look-alikes of anything).
 const CLICK_HOSTS: &[&str] = &[
-    "list-manage.com", "mailchimp.com", "mcusercontent.com", "sendgrid.net", "mandrillapp.com", "sparkpostmail.com",
-    "rs6.net", "createsend.com", "cmail19.com", "cmail20.com", "exacttarget.com", "hubspotlinks.com", "hs-sites.com",
-    "mailgun.org", "mlsend.com", "brevo.com", "sendibt2.com", "sendinblue.com", "newsletter2go.com", "cleverreach.com",
-    "rapidmail.de", "awstrack.me", "klclick.com", "klclick1.com", "ct.sendgrid.net",
+    "list-manage.com",
+    "mailchimp.com",
+    "mcusercontent.com",
+    "sendgrid.net",
+    "mandrillapp.com",
+    "sparkpostmail.com",
+    "rs6.net",
+    "createsend.com",
+    "cmail19.com",
+    "cmail20.com",
+    "exacttarget.com",
+    "hubspotlinks.com",
+    "hs-sites.com",
+    "mailgun.org",
+    "mlsend.com",
+    "brevo.com",
+    "sendibt2.com",
+    "sendinblue.com",
+    "newsletter2go.com",
+    "cleverreach.com",
+    "rapidmail.de",
+    "awstrack.me",
+    "klclick.com",
+    "klclick1.com",
+    "ct.sendgrid.net",
 ];
 
 /// Two-label public suffixes common in mail (a registrable domain under them has three labels).
@@ -200,12 +381,42 @@ pub fn unicode_domain(domain: &str) -> String {
 fn confusable(c: char) -> Option<&'static str> {
     Some(match c {
         // Cyrillic
-        'а' => "a", 'в' => "b", 'е' | 'ё' => "e", 'к' => "k", 'м' => "m", 'н' => "h", 'о' => "o", 'р' => "p",
-        'с' => "c", 'т' => "t", 'у' => "y", 'х' => "x", 'ѕ' => "s", 'і' | 'ї' => "i", 'ј' => "j", 'ԁ' => "d",
-        'һ' => "h", 'ӏ' => "l", 'ԛ' => "q", 'ԝ' => "w", 'ɡ' => "g", 'ո' => "n", 'ս' => "u",
+        'а' => "a",
+        'в' => "b",
+        'е' | 'ё' => "e",
+        'к' => "k",
+        'м' => "m",
+        'н' => "h",
+        'о' => "o",
+        'р' => "p",
+        'с' => "c",
+        'т' => "t",
+        'у' => "y",
+        'х' => "x",
+        'ѕ' => "s",
+        'і' | 'ї' => "i",
+        'ј' => "j",
+        'ԁ' => "d",
+        'һ' => "h",
+        'ӏ' => "l",
+        'ԛ' => "q",
+        'ԝ' => "w",
+        'ɡ' => "g",
+        'ո' => "n",
+        'ս' => "u",
         // Greek
-        'α' => "a", 'β' => "b", 'ε' => "e", 'ι' => "i", 'κ' => "k", 'ν' => "v", 'ο' => "o", 'ρ' => "p",
-        'τ' => "t", 'υ' => "u", 'χ' => "x", 'ω' => "w",
+        'α' => "a",
+        'β' => "b",
+        'ε' => "e",
+        'ι' => "i",
+        'κ' => "k",
+        'ν' => "v",
+        'ο' => "o",
+        'ρ' => "p",
+        'τ' => "t",
+        'υ' => "u",
+        'χ' => "x",
+        'ω' => "w",
         // Latin with marks, dotless and look-alike forms
         'à' | 'á' | 'â' | 'ã' | 'ä' | 'å' | 'ā' | 'ă' | 'ą' => "a",
         'ç' | 'ć' | 'č' => "c",
@@ -296,7 +507,13 @@ fn lookalike_of(d: &str, known: &[String]) -> Option<String> {
         }
         let similar = skeleton(kl) == skel || {
             let n = kl.chars().count();
-            let limit = if n >= 10 { 2 } else if n >= 5 { 1 } else { 0 };
+            let limit = if n >= 10 {
+                2
+            } else if n >= 5 {
+                1
+            } else {
+                0
+            };
             limit > 0 && distance(sl, kl) <= limit
         };
         if similar {
@@ -387,7 +604,8 @@ pub fn analyze(m: &Input, ctx: &Context) -> Vec<Reason> {
         let own_brand = |b: &Brand| b.domains.iter().any(|d| same_or_sub(&domain, d));
         // The subject counts for banks, payment and parcel services (a newsletter about a
         // software company is no claim), and only for names that are no everyday word.
-        let in_subject = |b: &Brand, t: &str| b.kind != ClaimKind::Company && t.len() >= 3 && t != "ups" && has_word(&subject, t);
+        let in_subject =
+            |b: &Brand, t: &str| b.kind != ClaimKind::Company && t.len() >= 3 && t != "ups" && has_word(&subject, t);
         let claimed = BRANDS
             .iter()
             .find(|b| !own_brand(b) && b.tokens.iter().any(|t| has_word(&words, t) || in_subject(b, t)))
@@ -565,7 +783,9 @@ pub fn auth_failures(authentication: &str, from: &str, own: &[String]) -> Vec<&'
     for r in &results {
         let lower = r.to_ascii_lowercase();
         if lower.starts_with("dmarc=fail")
-            && lower.split_whitespace().any(|w| w.strip_prefix("header.from=").is_some_and(|d| d.trim_end_matches(';') == from_domain))
+            && lower
+                .split_whitespace()
+                .any(|w| w.strip_prefix("header.from=").is_some_and(|d| d.trim_end_matches(';') == from_domain))
             && !out.contains(&"dmarc")
         {
             out.push("dmarc");
@@ -630,7 +850,14 @@ pub fn check(store: &Store, id: i64, html: Option<&str>) -> Result<Option<Warnin
             "SELECT m.auth_fail, m.dmarc_pass, b.role, m.date FROM messages m JOIN mailboxes b ON b.id = m.mailbox_id
              WHERE m.id = ?1",
             [id],
-            |r| Ok((r.get(0)?, r.get::<_, Option<bool>>(1)?.unwrap_or(false), r.get(2)?, r.get::<_, Option<i64>>(3)?.unwrap_or(0))),
+            |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get::<_, Option<bool>>(1)?.unwrap_or(false),
+                    r.get(2)?,
+                    r.get::<_, Option<i64>>(3)?.unwrap_or(0),
+                ))
+            },
         )
         .optional()?;
     let Some((auth_fail, dmarc_pass, role, date)) = row else { return Ok(None) };

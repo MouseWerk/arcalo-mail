@@ -8,8 +8,8 @@
 pub mod account;
 pub mod actions;
 pub mod ai;
-pub mod arcalo;
 pub mod applock;
+pub mod arcalo;
 pub mod autoconfig;
 pub mod avatars;
 pub mod calendar;

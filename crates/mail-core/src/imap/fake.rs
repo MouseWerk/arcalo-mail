@@ -23,6 +23,8 @@ pub struct FakeMessage {
     pub flags: Flags,
     pub modseq: u64,
     pub internal_date: i64,
+    /// Gmail's `X-GM-MSGID`: the same message in every label folder and in All Mail.
+    pub gm_msgid: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -88,6 +90,14 @@ pub struct FakeImap {
     /// Folders the server lists but refuses to open (`NO [NOPERM]`: a shared folder without
     /// the read right).
     pub refuse_select: Vec<String>,
+    /// How long each command of a [`SharedFake`] connection takes (a slow server, a phone's
+    /// network): the connection waits that long before it answers.
+    pub latency: Duration,
+    /// Commands of a [`SharedFake`] connection that never get an answer, once each, by the
+    /// method's name (`fetch_message`, …).
+    pub stall: Vec<String>,
+    /// The last `X-GM-MSGID` given out ([`FakeImap::deliver_gmail`]).
+    pub gm_last: u64,
 }
 
 impl Default for FakeImap {
@@ -108,6 +118,11 @@ fn no(what: &str) -> Error {
     Error::Imap(format!("NO {what}"))
 }
 
+/// Where the body of a raw message starts.
+fn header_end(raw: &[u8]) -> usize {
+    raw.windows(4).position(|w| w == b"\r\n\r\n").map_or(raw.len(), |p| p + 4)
+}
+
 /// Unix seconds now (internal dates of appended messages).
 fn now() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64)
@@ -120,7 +135,73 @@ impl FakeImap {
         mailboxes.insert("INBOX".to_string(), FakeMailbox::new(&[]));
         mailboxes.insert("Sent".to_string(), FakeMailbox::new(&["\\Sent"]));
         mailboxes.insert("Trash".to_string(), FakeMailbox::new(&["\\Trash"]));
-        FakeImap { caps, mailboxes, selected: None, log: vec![], changed: false, fail: vec![], refuse_select: vec![] }
+        FakeImap {
+            caps,
+            mailboxes,
+            selected: None,
+            log: vec![],
+            changed: false,
+            fail: vec![],
+            refuse_select: vec![],
+            latency: Duration::ZERO,
+            stall: vec![],
+            gm_last: 0,
+        }
+    }
+
+    /// A server as Gmail's IMAP with the account in German: `X-GM-EXT-1`, CONDSTORE but no
+    /// QRESYNC, the special folders below „[Gmail]“ with their German names and SPECIAL-USE
+    /// attributes, and labels as folders (one with brackets in its name, and a label „Entwürfe“
+    /// another client made next to the real drafts).
+    pub fn gmail() -> Self {
+        let caps = Capabilities {
+            idle: true,
+            condstore: true,
+            qresync: false,
+            uidplus: true,
+            moves: true,
+            special_use: true,
+            gmail: true,
+        };
+        let mut s = Self::new(caps);
+        s.mailboxes.clear();
+        for (name, attrs) in [
+            ("INBOX", &[][..]),
+            ("[Gmail]", &["\\HasChildren", "\\Noselect"][..]),
+            ("[Gmail]/Alle Nachrichten", &["\\All"][..]),
+            ("[Gmail]/Entwürfe", &["\\Drafts"][..]),
+            ("[Gmail]/Gesendet", &["\\Sent"][..]),
+            ("[Gmail]/Markiert", &["\\Flagged"][..]),
+            ("[Gmail]/Papierkorb", &["\\Trash"][..]),
+            ("[Gmail]/Spam", &["\\Junk"][..]),
+            ("[Gmail]/Wichtig", &["\\Important"][..]),
+            ("[Notion]", &[][..]),
+            ("Account Confirmations", &[][..]),
+            ("Entwürfe", &[][..]),
+        ] {
+            s.mailboxes.insert(name.to_string(), FakeMailbox::new(attrs));
+        }
+        s
+    }
+
+    /// Gmail's All Mail (the folder with `\All`).
+    pub fn all_mail(&self) -> Option<String> {
+        self.mailboxes.iter().find(|(_, m)| m.attributes.iter().any(|a| a == "\\All")).map(|(n, _)| n.clone())
+    }
+
+    /// Delivers a message as Gmail keeps it: once in All Mail and once in each of `labels`
+    /// (`INBOX` among them for the inbox), all with the same `X-GM-MSGID`; returns that id.
+    pub fn deliver_gmail(&mut self, raw: &[u8], internal_date: i64, labels: &[&str]) -> u64 {
+        self.changed = true;
+        self.gm_last += 1;
+        let id = 0x1000_0000_0000 + self.gm_last;
+        let msg =
+            FakeMessage { raw: raw.to_vec(), flags: Flags::default(), modseq: 0, internal_date, gm_msgid: Some(id) };
+        let all = self.all_mail();
+        for name in labels.iter().map(|l| l.to_string()).chain(all) {
+            self.mailbox(&name).add(msg.clone());
+        }
+        id
     }
 
     /// Adds the other usual folders (Drafts, Archive, Junk).
@@ -156,7 +237,7 @@ impl FakeImap {
     /// Delivers a message; returns its UID.
     pub fn deliver(&mut self, mailbox: &str, raw: &[u8], internal_date: i64) -> u32 {
         self.changed = true;
-        let msg = FakeMessage { raw: raw.to_vec(), flags: Flags::default(), modseq: 0, internal_date };
+        let msg = FakeMessage { raw: raw.to_vec(), flags: Flags::default(), modseq: 0, internal_date, gm_msgid: None };
         self.mailbox(mailbox).add(msg)
     }
 
@@ -263,20 +344,37 @@ impl FakeImap {
     pub fn do_fetch_headers(&mut self, range: UidRange) -> Result<Vec<FetchedHeader>> {
         self.log.push(format!("UID FETCH {}:{} (HEADER)", range.from, range.to.map_or("*".into(), |t| t.to_string())));
         let condstore = self.caps.condstore;
+        let gmail = self.caps.gmail;
+        let m = self.selected_mailbox()?;
+        Ok(m.messages
+            .iter()
+            .filter(|(uid, _)| range.contains(**uid))
+            .map(|(uid, msg)| FetchedHeader {
+                uid: *uid,
+                flags: msg.flags.clone(),
+                modseq: condstore.then_some(msg.modseq),
+                internal_date: msg.internal_date,
+                size: msg.raw.len() as u32,
+                header: msg.raw[..header_end(&msg.raw)].to_vec(),
+                gm_msgid: if gmail { msg.gm_msgid } else { None },
+            })
+            .collect())
+    }
+
+    /// The first [`PREVIEW_BYTES`] of each body (`BODY.PEEK[TEXT]<0.2048>`).
+    pub fn do_fetch_previews(&mut self, range: UidRange) -> Result<Vec<(u32, Vec<u8>)>> {
+        self.log.push(format!(
+            "UID FETCH {}:{} (BODY.PEEK[TEXT]<0.{PREVIEW_BYTES}>)",
+            range.from,
+            range.to.map_or("*".into(), |t| t.to_string())
+        ));
         let m = self.selected_mailbox()?;
         Ok(m.messages
             .iter()
             .filter(|(uid, _)| range.contains(**uid))
             .map(|(uid, msg)| {
-                let end = msg.raw.windows(4).position(|w| w == b"\r\n\r\n").map_or(msg.raw.len(), |p| p + 4);
-                FetchedHeader {
-                    uid: *uid,
-                    flags: msg.flags.clone(),
-                    modseq: condstore.then_some(msg.modseq),
-                    internal_date: msg.internal_date,
-                    size: msg.raw.len() as u32,
-                    header: msg.raw[..end].to_vec(),
-                }
+                let body = &msg.raw[header_end(&msg.raw)..];
+                (*uid, body[..body.len().min(PREVIEW_BYTES)].to_vec())
             })
             .collect())
     }
@@ -397,7 +495,7 @@ impl FakeImap {
             flagged: flags.iter().any(|f| f.eq_ignore_ascii_case(FLAGGED)),
             ..Flags::default()
         };
-        let uid = m.add(FakeMessage { raw: raw.to_vec(), flags: f, modseq: 0, internal_date: now() });
+        let uid = m.add(FakeMessage { raw: raw.to_vec(), flags: f, modseq: 0, internal_date: now(), gm_msgid: None });
         Ok(uidplus.then_some(uid))
     }
 
@@ -471,6 +569,10 @@ impl ImapClient for FakeImap {
 
     async fn fetch_headers(&mut self, range: UidRange) -> Result<Vec<FetchedHeader>> {
         self.do_fetch_headers(range)
+    }
+
+    async fn fetch_previews(&mut self, range: UidRange) -> Result<Vec<(u32, Vec<u8>)>> {
+        self.do_fetch_previews(range)
     }
 
     async fn fetch_flags(&mut self, range: UidRange, changed_since: Option<u64>) -> Result<Vec<FlagUpdate>> {
@@ -567,6 +669,22 @@ impl SharedFake {
         r
     }
 
+    /// The server's [`FakeImap::latency`]: a real wait, so other tasks run meanwhile. A
+    /// command in [`FakeImap::stall`] never answers (once): a connection that died unnoticed.
+    async fn wait(&self, command: &str) {
+        let (latency, stall) = {
+            let mut s = self.server.lock().unwrap_or_else(|e| e.into_inner());
+            let stall = s.stall.iter().position(|c| c == command).map(|i| s.stall.remove(i)).is_some();
+            (s.latency, stall)
+        };
+        if stall {
+            std::future::pending::<()>().await;
+        }
+        if !latency.is_zero() {
+            tokio::time::sleep(latency).await;
+        }
+    }
+
     /// Runs a command of this connection (its selected folder in place).
     fn run<R>(&mut self, f: impl FnOnce(&mut FakeImap) -> R) -> R {
         let mut s = self.server.lock().unwrap_or_else(|e| e.into_inner());
@@ -584,38 +702,52 @@ impl SharedFake {
 
 impl ImapClient for SharedFake {
     async fn capabilities(&mut self) -> Result<Capabilities> {
+        self.wait("capabilities").await;
         Ok(self.run(|s| s.caps))
     }
 
     async fn list(&mut self) -> Result<Vec<MailboxEntry>> {
+        self.wait("list").await;
         Ok(self.run(|s| s.do_list()))
     }
 
     async fn select(&mut self, mailbox: &str, qresync: Option<QresyncParams>) -> Result<Selected> {
+        self.wait("select").await;
         self.run(|s| s.do_select(mailbox, qresync))
     }
 
     async fn uids(&mut self) -> Result<Vec<u32>> {
+        self.wait("uids").await;
         self.run(|s| s.do_uids())
     }
 
     async fn fetch_headers(&mut self, range: UidRange) -> Result<Vec<FetchedHeader>> {
+        self.wait("fetch_headers").await;
         self.run(|s| s.do_fetch_headers(range))
     }
 
+    async fn fetch_previews(&mut self, range: UidRange) -> Result<Vec<(u32, Vec<u8>)>> {
+        self.wait("fetch_previews").await;
+        self.run(|s| s.do_fetch_previews(range))
+    }
+
     async fn fetch_flags(&mut self, range: UidRange, changed_since: Option<u64>) -> Result<Vec<FlagUpdate>> {
+        self.wait("fetch_flags").await;
         self.run(|s| s.do_fetch_flags(range, changed_since))
     }
 
     async fn fetch_message(&mut self, uid: u32) -> Result<Vec<u8>> {
+        self.wait("fetch_message").await;
         self.run(|s| s.do_fetch_message(uid))
     }
 
     async fn fetch_structure(&mut self, uid: u32) -> Result<Vec<BodyPart>> {
+        self.wait("fetch_structure").await;
         self.run(|s| s.do_fetch_structure(uid))
     }
 
     async fn fetch_section(&mut self, uid: u32, section: &str) -> Result<Vec<u8>> {
+        self.wait("fetch_section").await;
         self.run(|s| s.do_fetch_section(uid, section))
     }
 
@@ -638,38 +770,47 @@ impl ImapClient for SharedFake {
     }
 
     async fn store(&mut self, uids: &[u32], flags: &[&str], add: bool) -> Result<()> {
+        self.wait("store").await;
         self.run(|s| s.do_store(uids, flags, add))
     }
 
     async fn copy(&mut self, uids: &[u32], to: &str) -> Result<Vec<(u32, u32)>> {
+        self.wait("copy").await;
         self.run(|s| s.do_copy(uids, to, false))
     }
 
     async fn move_to(&mut self, uids: &[u32], to: &str) -> Result<Vec<(u32, u32)>> {
+        self.wait("move_to").await;
         self.run(|s| s.do_copy(uids, to, true))
     }
 
     async fn expunge(&mut self, uids: &[u32]) -> Result<()> {
+        self.wait("expunge").await;
         self.run(|s| s.do_expunge(uids))
     }
 
     async fn append(&mut self, mailbox: &str, flags: &[&str], raw: &[u8]) -> Result<Option<u32>> {
+        self.wait("append").await;
         self.run(|s| s.do_append(mailbox, flags, raw))
     }
 
     async fn search(&mut self, query: &Search) -> Result<Vec<u32>> {
+        self.wait("search").await;
         self.run(|s| s.do_search(query))
     }
 
     async fn create(&mut self, mailbox: &str) -> Result<()> {
+        self.wait("create").await;
         self.run(|s| s.do_create(mailbox))
     }
 
     async fn delete(&mut self, mailbox: &str) -> Result<()> {
+        self.wait("delete").await;
         self.run(|s| s.do_delete(mailbox))
     }
 
     async fn rename(&mut self, from: &str, to: &str) -> Result<()> {
+        self.wait("rename").await;
         self.run(|s| s.do_rename(from, to))
     }
 

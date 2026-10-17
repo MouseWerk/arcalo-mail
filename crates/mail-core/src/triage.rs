@@ -6,8 +6,9 @@
 //! What the lists show is decided when they are read, so a change applies to old mail too:
 //!
 //! 1. a category the user gave the sender (`senders.category`, „Absender verschieben“),
-//! 2. people for anyone the user wrote to (`contacts.sent`, which includes every reply),
-//! 3. the category of the header ([`classify`]).
+//! 2. receipts by their header (a shop the user once wrote to still sends receipts),
+//! 3. people for anyone the user wrote to (`contacts.sent`, which includes every reply),
+//! 4. the category of the header ([`classify`]).
 //!
 //! The Screener (setting `screener`, off by default) holds back mail that arrived after it was
 //! switched on from senders without an answer yet; contacts, replies to the user's own messages
@@ -144,6 +145,34 @@ const TRANSACTION_DOMAINS: &[&str] = &[
     "klarna.com",
     "steampowered.com",
     "airbnb.com",
+    "amazon.fr",
+    "amazon.it",
+    "amazon.es",
+    "amazon.nl",
+    "amazon.ca",
+    "playstation.com",
+    "sonyentertainmentnetwork.com",
+    "nintendo.com",
+    "nintendo.de",
+    "nintendo.net",
+    "epicgames.com",
+    "xbox.com",
+    "microsoft.com",
+    "itunes.com",
+    "humblebundle.com",
+    "gog.com",
+    "ea.com",
+    "ubisoft.com",
+    "battle.net",
+    "blizzard.com",
+    "spotify.com",
+    "netflix.com",
+    "aliexpress.com",
+    "temu.com",
+    "mediamarkt.de",
+    "saturn.de",
+    "ikea.com",
+    "ikea.de",
 ];
 
 /// Senders whose mail is notifications even with list headers (code hosting, chat, accounts).
@@ -193,6 +222,35 @@ const RECEIPT_WORDS: &[&str] = &[
     "billing statement",
     "refund",
     "has shipped",
+    "einkauf",
+    "kaufbestätigung",
+    "kassenbon",
+    "order confirmed",
+];
+
+/// Subjects that are a receipt whoever sent them: a shop's thanks for a purchase or an order,
+/// a confirmation of one (German and English, lower case).
+const RECEIPT_PHRASES: &[&str] = &[
+    "danke für ihren einkauf",
+    "danke für deinen einkauf",
+    "danke für ihre bestellung",
+    "danke für deine bestellung",
+    "dank für ihren einkauf",
+    "dank für deinen einkauf",
+    "dank für ihre bestellung",
+    "dank für deine bestellung",
+    "bestellbestätigung",
+    "kaufbestätigung",
+    "zahlungsbestätigung",
+    "buchungsbestätigung",
+    "thank you for your purchase",
+    "thanks for your purchase",
+    "thank you for your order",
+    "thanks for your order",
+    "order confirmation",
+    "your receipt from",
+    "ihre quittung",
+    "deine quittung",
 ];
 
 fn split_address(email: &str) -> (String, String) {
@@ -227,6 +285,12 @@ fn receipt_subject(subject: &str) -> bool {
     RECEIPT_WORDS.iter().any(|w| s.contains(w))
 }
 
+/// Whether a subject is a receipt on its own ([`RECEIPT_PHRASES`], not in a reply).
+fn receipt_phrase(subject: &str) -> bool {
+    let s = subject.trim().to_lowercase();
+    !crate::thread::base_subject(subject).1 && RECEIPT_PHRASES.iter().any(|w| s.contains(w))
+}
+
 /// The category of a message by its header: who sent it, its list and automation headers and
 /// its subject.
 pub fn classify(p: &ParsedMessage) -> Category {
@@ -236,7 +300,11 @@ pub fn classify(p: &ParsedMessage) -> Category {
     let bulk = matches!(l.precedence.as_deref(), Some("bulk" | "list"));
     let machine = machine_local(&local) || l.auto_submitted;
     let transactional = TRANSACTION_LOCALS.contains(&local.as_str()) || domain_in(&domain, TRANSACTION_DOMAINS);
-    if receipt_subject(&p.subject) && (machine || transactional || l.unsubscribe.is_some() || bulk) {
+    // Receipts before anything else: a shop's receipt also comes with list headers and from
+    // a machine.
+    if receipt_phrase(&p.subject)
+        || receipt_subject(&p.subject) && (machine || transactional || l.unsubscribe.is_some() || bulk)
+    {
         return Category::Receipts;
     }
     if domain_in(&domain, NOTIFICATION_DOMAINS) {
@@ -261,8 +329,8 @@ pub fn classify(p: &ParsedMessage) -> Category {
 /// `?3`: since when the Screener holds mail back (NULL: off).
 const BASE: &str = "SELECT m.id, m.mailbox_id, m.uid, m.thread_id, m.subject, m.from_name, m.from_email, m.date,
        m.internal_date, m.snippet, m.seen, m.flagged, m.answered, m.has_attachments, m.account_id, m.message_id,
-       CASE WHEN s.category IS NOT NULL THEN s.category WHEN COALESCE(c.sent, 0) > 0 THEN 'people'
-         ELSE m.category END AS cat,
+       CASE WHEN s.category IS NOT NULL THEN s.category WHEN m.category = 'receipts' THEN 'receipts'
+         WHEN COALESCE(c.sent, 0) > 0 THEN 'people' ELSE m.category END AS cat,
        COALESCE(k.pinned, 0) AS pin,
        MAX(COALESCE(m.date, m.internal_date), COALESCE(m.bumped_at, 0)) AS at,
        (?3 IS NOT NULL AND m.internal_date >= ?3 AND m.from_email IS NOT NULL AND s.screener IS NULL
@@ -324,14 +392,14 @@ pub fn inbox(store: &Store, q: &InboxQuery, limit: u32, offset: u32) -> Result<(
     )?;
     let sql = format!(
         "{shown}, ranked AS (
-           SELECT *, ROW_NUMBER() OVER (PARTITION BY g ORDER BY pin DESC, at DESC, id DESC) AS rn,
+           SELECT *, ROW_NUMBER() OVER (PARTITION BY g ORDER BY pin DESC, at DESC, internal_date DESC, uid DESC, id DESC) AS rn,
              COUNT(*) OVER (PARTITION BY g) AS n, MIN(seen) OVER (PARTITION BY g) AS all_seen,
              MAX(flagged) OVER (PARTITION BY g) AS any_flag, MAX(has_attachments) OVER (PARTITION BY g) AS any_att,
              MAX(pin) OVER (PARTITION BY g) AS any_pin, MAX(at) OVER (PARTITION BY g) AS last_at
            FROM shown)
          SELECT id, mailbox_id, uid, thread_id, subject, from_name, from_email, last_at, snippet, all_seen, any_flag,
            answered, any_att, account_id, n, cat, any_pin
-         FROM ranked WHERE rn = 1 ORDER BY any_pin DESC, last_at DESC, id DESC LIMIT ?5 OFFSET ?6"
+         FROM ranked WHERE rn = 1 ORDER BY any_pin DESC, last_at DESC, internal_date DESC, uid DESC, id DESC LIMIT ?5 OFFSET ?6"
     );
     let bundles = group == "lower(from_email)";
     let mut st = store.conn().prepare(&sql)?;
@@ -407,7 +475,7 @@ pub fn bundle(store: &Store, account: Option<i64>, sender: &str, limit: u32) -> 
         "WITH base AS ({BASE})
          SELECT id, mailbox_id, uid, thread_id, subject, from_name, from_email, at, snippet, seen, flagged,
            answered, has_attachments, account_id, cat, pin
-         FROM base WHERE screened = 0 AND from_email = ?4 COLLATE NOCASE ORDER BY at DESC, id DESC LIMIT ?5"
+         FROM base WHERE screened = 0 AND from_email = ?4 COLLATE NOCASE ORDER BY at DESC, internal_date DESC, uid DESC, id DESC LIMIT ?5"
     ))?;
     let rows = st.query_map(params![account, now(), since, sender.trim(), limit], |r| {
         let mut s = summary(r)?;
@@ -424,8 +492,8 @@ pub fn category_of(store: &Store, id: i64) -> Result<Category> {
     let cat: Option<String> = store
         .conn()
         .query_row(
-            "SELECT CASE WHEN s.category IS NOT NULL THEN s.category WHEN COALESCE(c.sent, 0) > 0 THEN 'people'
-               ELSE m.category END
+            "SELECT CASE WHEN s.category IS NOT NULL THEN s.category WHEN m.category = 'receipts' THEN 'receipts'
+               WHEN COALESCE(c.sent, 0) > 0 THEN 'people' ELSE m.category END
              FROM messages m LEFT JOIN senders s ON s.email = m.from_email LEFT JOIN contacts c ON c.email = m.from_email
              WHERE m.id = ?1",
             [id],
@@ -640,6 +708,36 @@ pub fn subscriptions(store: &Store) -> Result<Vec<Subscription>> {
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
+/// Messages stored before a receipt rule existed that are receipts by it, decided again from
+/// what the store kept of their header (sender, subject, list headers); returns how many.
+pub fn reclassify_receipts(store: &Store) -> Result<usize> {
+    // Each stored message as far as the store kept its header.
+    let rows: Vec<(i64, ParsedMessage)> = {
+        let mut st = store.conn().prepare(
+            "SELECT id, from_email, subject, list_id, unsubscribe FROM messages
+             WHERE category <> 'receipts' AND from_email IS NOT NULL",
+        )?;
+        st.query_map([], |r| {
+            let p = ParsedMessage {
+                from: Some(crate::parse::Address { name: None, email: r.get(1)? }),
+                subject: r.get(2)?,
+                list: crate::parse::ListHeaders { list_id: r.get(3)?, unsubscribe: r.get(4)?, ..Default::default() },
+                ..ParsedMessage::default()
+            };
+            Ok((r.get(0)?, p))
+        })?
+        .collect::<rusqlite::Result<_>>()?
+    };
+    let mut changed = 0;
+    for (id, p) in rows {
+        if classify(&p) == Category::Receipts {
+            store.conn().execute("UPDATE messages SET category = 'receipts' WHERE id = ?1", [id])?;
+            changed += 1;
+        }
+    }
+    Ok(changed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -680,6 +778,54 @@ mod tests {
         let discussion = ListHeaders { list_post: true, list_id: Some("dev.lists.example".into()), ..news() };
         assert_eq!(classify(&msg("jonas@example.org", "Re: Release", discussion)), Category::Other);
         assert_eq!(classify(&ParsedMessage::default()), Category::Other, "no sender");
+    }
+
+    /// Receipts of shops go to „Belege“ before any other signal: a shop's thanks for a
+    /// purchase whoever sent it, the known shops' order mail, also from a shop the user once
+    /// wrote to.
+    #[test]
+    fn receipts_of_shops_before_anything_else() {
+        let none = ListHeaders::default;
+        let news = || ListHeaders { unsubscribe: Some("<https://x.example/u>".into()), ..ListHeaders::default() };
+        for (from, subject, list) in [
+            ("Sony@email.sonyentertainmentnetwork.com", "Danke für Ihren Einkauf", none()),
+            ("reply@txn-email.playstation.com", "Danke für Ihren Einkauf", news()),
+            ("PlayStation@playstation.com", "Ihr Einkauf bei PlayStation Store", none()),
+            ("bestellbestaetigung@amazon.de", "Ihre Amazon.de Bestellung #302-123", none()),
+            ("no_reply@email.apple.com", "Your receipt from Apple.", none()),
+            ("noreply@steampowered.com", "Thank you for your Steam purchase!", none()),
+            ("service@paypal.de", "Sie haben eine Zahlung an Zalando gesendet: Kaufbestätigung", none()),
+            ("info@kleiner-laden.example", "Vielen Dank für Ihre Bestellung", news()),
+            ("hello@shop.example", "Order confirmation #4471", none()),
+            ("store@nintendo.de", "Danke für deinen Einkauf im Nintendo eShop", none()),
+        ] {
+            assert_eq!(classify(&msg(from, subject, list)), Category::Receipts, "{from}: {subject}");
+        }
+        assert_eq!(classify(&msg("lea@example.org", "Rechnung März", none())), Category::People, "a person's invoice");
+        assert_eq!(classify(&msg("shop@laden.example", "Re: Danke für Ihren Einkauf", none())), Category::People);
+
+        // A shop the user wrote to (its support) still sends receipts, not people's mail.
+        let (st, _, inbox_id) = store_with_inbox();
+        let id = add(
+            &st,
+            inbox_id,
+            1,
+            &raw("PlayStation Network <Sony@email.sonyentertainmentnetwork.com>", "Danke für Ihren Einkauf", ""),
+        );
+        st.touch_contact(&Address { name: None, email: "Sony@email.sonyentertainmentnetwork.com".into() }, true, 1)
+            .unwrap();
+        assert_eq!(category_of(&st, id).unwrap(), Category::Receipts);
+        assert_eq!(subjects(&st, &query(Category::Receipts)), ["Danke für Ihren Einkauf"]);
+        assert!(subjects(&st, &query(Category::People)).is_empty());
+
+        // Mail stored before this rule is sorted again once.
+        st.conn().execute("UPDATE messages SET category = 'people'", []).unwrap();
+        assert_eq!(reclassify_receipts(&st).unwrap(), 1);
+        assert_eq!(reclassify_receipts(&st).unwrap(), 0);
+        assert_eq!(
+            st.conn().query_row("SELECT category FROM messages", [], |r| r.get::<_, String>(0)).unwrap(),
+            "receipts"
+        );
     }
 
     fn add(s: &Store, inbox: i64, uid: u32, raw: &str) -> i64 {

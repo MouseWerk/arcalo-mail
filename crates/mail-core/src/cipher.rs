@@ -398,7 +398,10 @@ pub fn verify(orig: &Path, orig_key: Option<&DbKey>, copy: &Path, copy_key: Opti
     let a = open_with(orig, flags, orig_key)?;
     let b = open_with(copy, flags, copy_key)?;
     if (copy_key.is_some()) != (file_state(copy) == FileState::Encrypted) {
-        return Err(state_error(tr!("Die Kopie hat die falsche Verschlüsselung.", "The copy has the wrong encryption.")));
+        return Err(state_error(tr!(
+            "Die Kopie hat die falsche Verschlüsselung.",
+            "The copy has the wrong encryption."
+        )));
     }
     let check: String = b.query_row("PRAGMA integrity_check", [], |r| r.get(0))?;
     if check != "ok" {
@@ -802,9 +805,8 @@ impl WrappedKey {
         getrandom::fill(&mut salt).and_then(|_| getrandom::fill(&mut nonce)).map_err(|e| state_error(e.to_string()))?;
         let k = kek(password, &salt, cost)?;
         let cipher = aes_gcm::Aes256Gcm::new_from_slice(&k[..]).map_err(|e| state_error(e.to_string()))?;
-        let ct = cipher
-            .encrypt(aes_gcm::Nonce::from_slice(&nonce), &key.bytes()[..])
-            .map_err(|_| state_error("encrypt"))?;
+        let ct =
+            cipher.encrypt(aes_gcm::Nonce::from_slice(&nonce), &key.bytes()[..]).map_err(|_| state_error("encrypt"))?;
         Ok(WrappedKey {
             v: 1,
             kdf: "argon2id".into(),
@@ -821,7 +823,9 @@ impl WrappedKey {
         use aes_gcm::aead::{Aead, KeyInit};
         let d = |s: &str| data_encoding::BASE64.decode(s.as_bytes()).map_err(|_| wrong_password());
         let (m, t, p) = (self.m_kib, self.t, self.p);
-        let bounded = (8..=MAX_WRAP_COST.0).contains(&m) && (1..=MAX_WRAP_COST.1).contains(&t) && (1..=MAX_WRAP_COST.2).contains(&p);
+        let bounded = (8..=MAX_WRAP_COST.0).contains(&m)
+            && (1..=MAX_WRAP_COST.1).contains(&t)
+            && (1..=MAX_WRAP_COST.2).contains(&p);
         if self.v != 1 || self.kdf != "argon2id" || !bounded {
             return Err(state_error(tr!("Unbekanntes Schlüsselformat.", "Unknown key format.")));
         }
@@ -831,7 +835,8 @@ impl WrappedKey {
         }
         let k = kek(password, &salt, (m, t, p))?;
         let cipher = aes_gcm::Aes256Gcm::new_from_slice(&k[..]).map_err(|_| wrong_password())?;
-        let mut plain = cipher.decrypt(aes_gcm::Nonce::from_slice(&nonce), ct.as_ref()).map_err(|_| wrong_password())?;
+        let mut plain =
+            cipher.decrypt(aes_gcm::Nonce::from_slice(&nonce), ct.as_ref()).map_err(|_| wrong_password())?;
         let key = DbKey::from_bytes(&plain).ok_or_else(wrong_password);
         plain.zeroize();
         key

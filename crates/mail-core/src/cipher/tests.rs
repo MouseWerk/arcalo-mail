@@ -98,8 +98,9 @@ fn an_encrypted_copy_hides_bodies_and_attachments_and_needs_the_right_key() {
     assert_eq!(subject(&enc, Some(&key), 4), "Vertraulich 3");
     // The search index came along.
     let c = open_with(&enc, OpenFlags::default(), Some(&key)).unwrap();
-    let hits: i64 =
-        c.query_row("SELECT count(*) FROM messages_fts WHERE messages_fts MATCH 'vertraulich'", [], |r| r.get(0)).unwrap();
+    let hits: i64 = c
+        .query_row("SELECT count(*) FROM messages_fts WHERE messages_fts MATCH 'vertraulich'", [], |r| r.get(0))
+        .unwrap();
     assert_eq!(hits, 20);
     drop(c);
     let back = dir.join("back.db");

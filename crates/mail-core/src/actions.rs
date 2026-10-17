@@ -658,7 +658,8 @@ pub fn draft_of_with(store: &Store, id: i64, keys: &dyn crate::crypto::Keys) -> 
             .filter(|a| !(a.inline && a.content_id.is_some()) && !a.is_protocol())
             .map(|a| a.filename.as_deref().map(crate::files::display_name).unwrap_or_else(|| "attachment".into()))
             .collect();
-        let method = if protection.method == "smime" { crate::crypto::Method::Smime } else { crate::crypto::Method::Pgp };
+        let method =
+            if protection.method == "smime" { crate::crypto::Method::Smime } else { crate::crypto::Method::Pgp };
         let p = protect.get_or_insert(crate::crypto::Protect { method, sign: false, encrypt: true });
         p.encrypt = true;
     }
@@ -686,7 +687,11 @@ pub fn draft_of_with(store: &Store, id: i64, keys: &dyn crate::crypto::Keys) -> 
     let forwarded = if sealed.is_some() {
         vec![]
     } else {
-        d.attachments.iter().filter(|a| !(is_wrapper(a) || (a.inline && a.content_id.is_some()))).map(|a| a.id).collect()
+        d.attachments
+            .iter()
+            .filter(|a| !(is_wrapper(a) || (a.inline && a.content_id.is_some())))
+            .map(|a| a.id)
+            .collect()
     };
     Ok(Draft {
         account_id: d.account_id,
@@ -876,8 +881,11 @@ pub fn message_view_with(
         // A large message: its calendar part came with the text.
         invitation = crate::itip::card(store, id, &data)?;
     }
-    let images =
-        if detail.html.as_deref().is_some_and(|h| h.contains("cid:")) { store.inline_images(id)? } else { vec![] };
+    let images = if detail.html.as_deref().is_some_and(|h| h.to_ascii_lowercase().contains("cid:")) {
+        store.inline_images(id)?
+    } else {
+        vec![]
+    };
     let clean = |html: &str| -> Sanitized { sanitize_html_inline(html, allow, &images) };
     let body = match (&detail.html, &detail.text) {
         (Some(html), text) => {

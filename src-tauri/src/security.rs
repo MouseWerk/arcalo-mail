@@ -77,17 +77,19 @@ pub fn prepare(dir: &Path) -> Prepared {
     let notice = match cipher::run_pending(dir, key.as_ref()) {
         Ok(Some(o)) => {
             mail_core::diag::log("cipher", &format!("{:?} finished at the start", o.direction));
-            Some(match o.direction {
-                Direction::Encrypt => mail_core::tr!(
-                    "Die Verschlüsselung der Datenbank wurde abgeschlossen.",
-                    "Encrypting the database was finished."
-                ),
-                Direction::Decrypt => mail_core::tr!(
-                    "Die Datenbank ist wieder unverschlüsselt.",
-                    "The database is unencrypted again."
-                ),
-            }
-            .to_string())
+            Some(
+                match o.direction {
+                    Direction::Encrypt => mail_core::tr!(
+                        "Die Verschlüsselung der Datenbank wurde abgeschlossen.",
+                        "Encrypting the database was finished."
+                    ),
+                    Direction::Decrypt => mail_core::tr!(
+                        "Die Datenbank ist wieder unverschlüsselt.",
+                        "The database is unencrypted again."
+                    ),
+                }
+                .to_string(),
+            )
         }
         Ok(None) => None,
         Err(e) => {
@@ -151,7 +153,13 @@ fn key_from(dir: &Path, method: &str, secret: &str) -> Res<DbKey> {
 /// „Öffnen“ on the recovery screen: checks the key, keeps it (in the credential store when
 /// `remember`, else for this run only), opens the store and starts the app.
 #[tauri::command(async)]
-pub fn keygate_unlock(app: AppHandle, state: State<'_, AppState>, method: String, secret: String, remember: bool) -> Res<()> {
+pub fn keygate_unlock(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    method: String,
+    secret: String,
+    remember: bool,
+) -> Res<()> {
     if gate().is_none() {
         return Ok(());
     }
@@ -364,7 +372,8 @@ fn allowed(cmd: &str, gated: bool) -> bool {
         return shared || cmd.starts_with("keygate_") || cmd == "security_state";
     }
     shared
-        || (cmd.starts_with("applock_") && !matches!(cmd, "applock_configure" | "applock_lock_now" | "applock_test_idle"))
+        || (cmd.starts_with("applock_")
+            && !matches!(cmd, "applock_configure" | "applock_lock_now" | "applock_test_idle"))
         || cmd == "security_state"
 }
 
@@ -638,7 +647,11 @@ pub fn applock_unlock(app: AppHandle, state: State<'_, AppState>, pin: String) -
     attempts.failed(now);
     applock::set_attempts(&state.store(), &attempts)?;
     mail_core::diag::log("applock", &format!("wrong PIN ({} in a row)", attempts.failures));
-    Ok(UnlockReply { ok: false, wait_secs: applock::wait_after(attempts.failures).as_secs(), failures: attempts.failures })
+    Ok(UnlockReply {
+        ok: false,
+        wait_secs: applock::wait_after(attempts.failures).as_secs(),
+        failures: attempts.failures,
+    })
 }
 
 fn os_reason() -> &'static str {
@@ -769,7 +782,11 @@ mod os {
         let ctx = unsafe { LAContext::new() };
         // Touch ID or Face ID, or the device's password when they do not recognize the user.
         unsafe {
-            ctx.evaluatePolicy_localizedReason_reply(LAPolicy::DeviceOwnerAuthentication, &NSString::from_str(reason), &reply)
+            ctx.evaluatePolicy_localizedReason_reply(
+                LAPolicy::DeviceOwnerAuthentication,
+                &NSString::from_str(reason),
+                &reply,
+            )
         };
         rx.recv_timeout(std::time::Duration::from_secs(180)).unwrap_or(false)
     }

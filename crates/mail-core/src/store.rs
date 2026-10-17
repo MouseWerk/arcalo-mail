@@ -28,7 +28,8 @@ pub const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0007_sync_safety.sql"),
     include_str!("../migrations/0008_key_trust.sql"),
     include_str!("../migrations/0009_calendar_ai_keys.sql"),
-    include_str!("../migrations/0010_security.sql"),
+    include_str!("../migrations/0010_large_mailboxes.sql"),
+    include_str!("../migrations/0011_security.sql"),
 ];
 pub const SCHEMA_VERSION: u32 = MIGRATIONS.len() as u32;
 
@@ -264,6 +265,11 @@ impl Store {
             tx.execute_batch(sql)?;
             tx.pragma_update(None, "user_version", i as u32 + 1)?;
             tx.commit()?;
+        }
+        // Version 10 knows more receipts (shops' thanks for a purchase): mail stored before is
+        // sorted again once.
+        if (1..10).contains(&have) {
+            crate::triage::reclassify_receipts(self)?;
         }
         Ok(())
     }
@@ -540,7 +546,37 @@ impl Store {
             [mailbox_id],
         )?;
         self.conn.execute("DELETE FROM messages WHERE mailbox_id = ?1", [mailbox_id])?;
+        self.set_backfill(mailbox_id, None, 0)
+    }
+
+    /// The older mail of a folder that waits for [`crate::sync::backfill`]: the lowest UID
+    /// fetched so far and how many older messages the server had at the last look; `None` when
+    /// nothing waits.
+    pub fn backfill(&self, mailbox_id: i64) -> Result<Option<(u32, u32)>> {
+        Ok(self
+            .conn
+            .query_row("SELECT backfill_uid, backfill_left FROM mailboxes WHERE id = ?1", [mailbox_id], |r| {
+                Ok(r.get::<_, Option<u32>>(0)?.map(|uid| (uid, r.get::<_, u32>(1).unwrap_or(0))))
+            })
+            .optional()?
+            .flatten())
+    }
+
+    pub fn set_backfill(&self, mailbox_id: i64, below: Option<u32>, left: u32) -> Result<()> {
+        self.conn.execute(
+            "UPDATE mailboxes SET backfill_uid = ?2, backfill_left = ?3 WHERE id = ?1",
+            params![mailbox_id, below, if below.is_some() { left } else { 0 }],
+        )?;
         Ok(())
+    }
+
+    /// The folders of an account whose older mail still waits.
+    pub fn backfill_pending(&self, account_id: i64) -> Result<Vec<i64>> {
+        let mut st = self.conn.prepare_cached(
+            "SELECT id FROM mailboxes WHERE account_id = ?1 AND backfill_uid IS NOT NULL AND selectable = 1 ORDER BY id",
+        )?;
+        let rows = st.query_map([account_id], |r| r.get(0))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
     // ------------------------------------------------------------------ messages
@@ -583,9 +619,9 @@ impl Store {
             "INSERT INTO messages (account_id, mailbox_id, uid, modseq, message_id, in_reply_to, refs, subject,
                from_name, from_email, to_json, cc_json, date, internal_date, size, seen, answered, flagged, draft,
                keywords, has_attachments, snippet, reply_to_json, base_subject, category, list_id, unsubscribe, one_click,
-               dmarc_pass, auth_fail)
+               dmarc_pass, gm_msgid, auth_fail)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24,
-               ?25, ?26, ?27, ?28, ?29, ?30)",
+               ?25, ?26, ?27, ?28, ?29, ?30, ?31)",
             params![
                 account_id,
                 mailbox_id,
@@ -616,6 +652,7 @@ impl Store {
                 p.list.unsubscribe,
                 p.list.one_click,
                 dmarc_pass,
+                h.gm_msgid.map(|v| v as i64),
                 auth_fail,
             ],
         )?;
@@ -625,7 +662,7 @@ impl Store {
             crate::later::arrived(self, account_id, id, p.message_id.as_deref())?;
         }
         self.index_message(id, p)?;
-        self.adopt_body(account_id, id, p.message_id.as_deref())?;
+        self.adopt_body(account_id, id, h.gm_msgid, p.message_id.as_deref())?;
         // The address book: who wrote, and whom the user wrote to.
         let at = p.date.unwrap_or(h.internal_date);
         if role.as_deref() == Some("sent") {
@@ -640,25 +677,61 @@ impl Store {
         Ok(id)
     }
 
-    /// Copies the stored body of another copy of the same message (same Message-ID).
-    fn adopt_body(&self, account_id: i64, id: i64, message_id: Option<&str>) -> Result<()> {
-        let Some(mid) = message_id else { return Ok(()) };
-        let Some(source): Option<i64> = self
-            .conn
-            .query_row(
-                "SELECT id FROM messages WHERE account_id = ?1 AND message_id = ?2 AND id <> ?3 AND has_body = 1 LIMIT 1",
-                params![account_id, mid, id],
-                |r| r.get(0),
-            )
-            .optional()?
-        else {
-            return Ok(());
+    /// Copies the stored body of another copy of the same message: Gmail's copies by their
+    /// `X-GM-MSGID`, others by their Message-ID.
+    fn adopt_body(&self, account_id: i64, id: i64, gm_msgid: Option<u64>, message_id: Option<&str>) -> Result<()> {
+        let source: Option<i64> = match (gm_msgid, message_id) {
+            (Some(gm), _) => self
+                .conn
+                .query_row(
+                    "SELECT id FROM messages WHERE account_id = ?1 AND gm_msgid = ?2 AND id <> ?3 AND has_body = 1 LIMIT 1",
+                    params![account_id, gm as i64, id],
+                    |r| r.get(0),
+                )
+                .optional()?,
+            (None, Some(mid)) => self
+                .conn
+                .query_row(
+                    "SELECT id FROM messages WHERE account_id = ?1 AND message_id = ?2 AND id <> ?3 AND has_body = 1 LIMIT 1",
+                    params![account_id, mid, id],
+                    |r| r.get(0),
+                )
+                .optional()?,
+            (None, None) => None,
         };
+        match source {
+            Some(source) => self.copy_body(source, id),
+            None => Ok(()),
+        }
+    }
+
+    /// Gives the body just stored for `id` to its other copies that have none yet (Gmail's
+    /// label folders and All Mail by `X-GM-MSGID`, others by Message-ID); returns how many.
+    pub fn share_body(&self, id: i64) -> Result<usize> {
+        let (account_id, gm, mid): (i64, Option<i64>, Option<String>) =
+            self.conn.query_row("SELECT account_id, gm_msgid, message_id FROM messages WHERE id = ?1", [id], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })?;
+        let twins: Vec<i64> = {
+            let mut st = self.conn.prepare_cached(
+                "SELECT id FROM messages WHERE account_id = ?1 AND id <> ?2 AND has_body = 0
+                   AND ((?3 IS NOT NULL AND gm_msgid = ?3) OR (?3 IS NULL AND ?4 IS NOT NULL AND message_id = ?4))",
+            )?;
+            st.query_map(params![account_id, id, gm, mid], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?
+        };
+        for t in &twins {
+            self.copy_body(id, *t)?;
+        }
+        Ok(twins.len())
+    }
+
+    fn copy_body(&self, source: i64, id: i64) -> Result<()> {
         self.conn.execute(
             "INSERT OR REPLACE INTO message_bodies (message_id, text, html, remote_allowed, raw)
              SELECT ?2, text, html, remote_allowed, raw FROM message_bodies WHERE message_id = ?1",
             params![source, id],
         )?;
+        self.conn.execute("DELETE FROM attachments WHERE message_id = ?1", [id])?;
         self.conn.execute(
             "INSERT INTO attachments (message_id, part_index, filename, mime_type, size, content_id, inline, section, data)
              SELECT ?2, part_index, filename, mime_type, size, content_id, inline, section, data
@@ -855,11 +928,12 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
-    /// The message list of a folder, newest first.
+    /// The message list of a folder, newest first; mail of the same moment by its arrival (a
+    /// first sync stores the newest first, so the order of the rows says nothing).
     pub fn messages(&self, mailbox_id: i64, limit: u32, offset: u32) -> Result<Vec<MessageSummary>> {
         let sql = format!(
             "SELECT {SUMMARY_COLS} FROM messages WHERE mailbox_id = ?1 AND hidden = 0
-             ORDER BY COALESCE(date, internal_date) DESC, id DESC LIMIT ?2 OFFSET ?3"
+             ORDER BY COALESCE(date, internal_date) DESC, internal_date DESC, uid DESC, id DESC LIMIT ?2 OFFSET ?3"
         );
         let mut st = self.conn.prepare(&sql)?;
         let rows = st.query_map(params![mailbox_id, limit, offset], summary)?;
@@ -871,7 +945,7 @@ impl Store {
     pub fn threads(&self, mailbox_id: i64, limit: u32, offset: u32) -> Result<Vec<MessageSummary>> {
         let sql =
             "WITH ranked AS (
-               SELECT *, ROW_NUMBER() OVER (PARTITION BY thread_id ORDER BY COALESCE(date, internal_date) DESC, id DESC) AS rn,
+               SELECT *, ROW_NUMBER() OVER (PARTITION BY thread_id ORDER BY COALESCE(date, internal_date) DESC, internal_date DESC, uid DESC, id DESC) AS rn,
                  COUNT(*) OVER (PARTITION BY thread_id) AS n,
                  MIN(seen) OVER (PARTITION BY thread_id) AS all_seen,
                  MAX(flagged) OVER (PARTITION BY thread_id) AS any_flag,
@@ -879,7 +953,7 @@ impl Store {
                FROM messages WHERE mailbox_id = ?1 AND hidden = 0)
              SELECT id, mailbox_id, uid, thread_id, subject, from_name, from_email, COALESCE(date, internal_date),
                snippet, all_seen, any_flag, answered, any_att, account_id, n
-             FROM ranked WHERE rn = 1 ORDER BY COALESCE(date, internal_date) DESC, id DESC LIMIT ?2 OFFSET ?3";
+             FROM ranked WHERE rn = 1 ORDER BY COALESCE(date, internal_date) DESC, internal_date DESC, uid DESC, id DESC LIMIT ?2 OFFSET ?3";
         let mut st = self.conn.prepare(sql)?;
         let rows = st.query_map(params![mailbox_id, limit, offset], |r| {
             let mut s = summary(r)?;
@@ -938,7 +1012,7 @@ impl Store {
     pub fn without_body(&self, mailbox_id: i64, limit: u32, max_size: u32) -> Result<Vec<i64>> {
         let mut st = self.conn.prepare(
             "SELECT id FROM messages WHERE mailbox_id = ?1 AND has_body = 0 AND size <= ?2
-             ORDER BY internal_date DESC, id DESC LIMIT ?3",
+             ORDER BY internal_date DESC, uid DESC, id DESC LIMIT ?3",
         )?;
         let rows = st.query_map(params![mailbox_id, max_size, limit], |r| r.get(0))?;
         Ok(rows.collect::<std::result::Result<_, _>>()?)
@@ -948,7 +1022,7 @@ impl Store {
     pub fn without_body_since(&self, mailbox_id: i64, since: i64, limit: u32, max_size: u32) -> Result<Vec<i64>> {
         let mut st = self.conn.prepare(
             "SELECT id FROM messages WHERE mailbox_id = ?1 AND has_body = 0 AND size <= ?2 AND internal_date >= ?3
-             ORDER BY internal_date DESC, id DESC LIMIT ?4",
+             ORDER BY internal_date DESC, uid DESC, id DESC LIMIT ?4",
         )?;
         let rows = st.query_map(params![mailbox_id, max_size, since, limit], |r| r.get(0))?;
         Ok(rows.collect::<std::result::Result<_, _>>()?)
@@ -1153,6 +1227,7 @@ pub(crate) mod tests {
             internal_date: 1_760_000_000 + uid as i64,
             size: raw.len() as u32,
             header: raw.to_vec(),
+            gm_msgid: None,
         }
     }
 
