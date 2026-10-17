@@ -50,6 +50,13 @@ export async function startServer({ user = USER, password = PASSWORD, args = [] 
     setFlags: (mailbox, uid, flags) => post(`/flags?${new URLSearchParams({ mailbox, uid: String(uid), ...Object.fromEntries(Object.entries(flags).map(([k, v]) => [k, v ? "1" : "0"])) })}`),
     folder: (name) => post(`/folder?name=${encodeURIComponent(name)}`),
     delay: (ms) => post(`/delay?ms=${ms}`),
+    /** Makes the account a German Gmail account with `count` messages since 2015
+     *  (crates/mail-testserver/src/gmail.rs); answers what the tests check against. */
+    gmail: (count, now) => post(`/gmail?count=${count}${now ? `&now=${now}` : ""}`),
+    /** A slow server: each header FETCH waits `headers` ms, bodies of old, large messages `oldBodies` ms. */
+    slow: ({ headers = 0, oldBodies = 0 } = {}) => post(`/slow?headers=${headers}&old_bodies=${oldBodies}`),
+    /** Per folder: header FETCHes so far, the distinct messages they sent and the folder's total. */
+    served: async () => (await fetch(`${base}/served`)).json(),
     setPassword: (value) => post(`/password?value=${encodeURIComponent(value)}`),
     /** The identity provider refuses the next sign-in (`admin_consent`, `access_denied`). */
     oauthFail: (mode) => post(`/oauth/fail?mode=${encodeURIComponent(mode)}`),

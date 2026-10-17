@@ -1,11 +1,15 @@
 // Screenshots of the phone and tablet layouts (not part of the test suite): the desktop app in
 // its touch layout (ARCALO_MAIL_TOUCH=1) at an iPhone's size (390×844) and an iPad's (820×1180),
 // with the sample mailboxes of the README pictures on the fixed clock, light and dark. Every
-// picture shows the whole window. Run after building the app and the test server:
+// picture shows the whole window, and every screen pictured is measured as the phone tests
+// measure it (lib/geometry.js): as wide as the window, nothing tappable under the edges, small
+// round spinners, the last row clear of the compose button, one bar on top while writing. Run
+// after building the app and the test server:
 //   cd e2e && npm run shots:mobile
 // ARCALO_MAIL_SHOTS sets the folder (default docs/screenshots/mobile).
 
 import { test, before, after } from "node:test";
+import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -13,6 +17,7 @@ import { launch } from "../lib/harness.js";
 import { addAccount, startServer } from "../lib/server.js";
 import * as mail from "../lib/mail.js";
 import { NOW, PERSONAL, WORK, fill, personalMail, workMail } from "./mailbox.js";
+import * as geo from "../lib/geometry.js";
 
 const OUT = process.env.ARCALO_MAIL_SHOTS ?? path.resolve(import.meta.dirname, "../../docs/screenshots/mobile");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -23,12 +28,27 @@ for (const k of ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"]) {
 const ENV = { ARCALO_MAIL_NOW: String(NOW), TZ: "Europe/London", ARCALO_MAIL_TOUCH: "1" };
 
 let work, personal, app, dataDir;
+/** What the measured screens got wrong, per test. */
+let problems = [];
+/** The edges the window has now (the iPhone's in the last test). */
+let insets = { top: 0, bottom: 0, left: 0, right: 0 };
 
 async function shot(name) {
   await app.browser.execute(() => document.querySelectorAll(".toast .icon-btn").forEach((b) => b.click()));
   await app.browser.execute(() => document.activeElement?.blur());
   await sleep(500);
   await app.shot(name, OUT);
+  const m = await app.browser.execute(geo.measureLayout, insets);
+  problems.push(...geo.layoutProblems(m).map((p) => `${name}: ${p}`));
+  if (name.includes("compose")) problems.push(...geo.composeProblems(await app.browser.execute(geo.measureCompose)).map((p) => `${name}: ${p}`));
+  problems.push(...geo.spinnerProblems(await app.browser.execute(geo.recordedSpinners)).map((p) => `${name}: ${p}`));
+}
+
+/** The problems found since the last call, as a failure. */
+function measured() {
+  const found = problems;
+  problems = [];
+  assert.deepEqual(found, []);
 }
 
 async function setTheme(theme) {
@@ -36,6 +56,7 @@ async function setTheme(theme) {
   await app.invoke("set_settings", { settings: { ...s, theme } });
   await app.browser.refresh();
   await app.waitUntil(async () => (await app.browser.execute(() => document.body.classList.contains("ready"))) === true, 20000, "ready after reload");
+  await app.browser.execute(geo.recordSpinners);
 }
 
 async function inbox() {
@@ -71,6 +92,10 @@ for (const theme of ["light", "dark"]) {
     await setTheme(theme);
     await inbox();
     await shot(`phone-list-${theme}`);
+    for (let i = 0; i < 20 && (await app.browser.execute(geo.scrollListToEnd)).moved; i++) await sleep(300);
+    await sleep(300);
+    problems.push(...geo.fabProblems(await app.browser.execute(geo.measureFab)).map((p) => `phone-list-${theme}: ${p}`));
+    await app.browser.execute(geo.scrollListToStart);
     await mail.openMessage(app, "Q2 launch plan");
     await shot(`phone-message-${theme}`);
     await app.browser.back();
@@ -97,6 +122,7 @@ for (const theme of ["light", "dark"]) {
       .up({ button: 0 })
       .perform();
     await sleep(400);
+    measured();
   });
 }
 
@@ -130,6 +156,7 @@ test("phone, writing and the settings", async () => {
   await app.waitFor(".settings-main");
   await shot("phone-settings-reading-light");
   await app.keys("Escape");
+  measured();
 });
 
 for (const theme of ["light", "dark"]) {
@@ -146,6 +173,7 @@ for (const theme of ["light", "dark"]) {
     await app.waitFor(".sidebar");
     await shot(`tablet-folders-${theme}`);
     await app.browser.back();
+    measured();
   });
 }
 
@@ -158,9 +186,11 @@ test("phone with an iPhone's insets", async () => {
     document.documentElement.style.setProperty("--safe-top", "47px");
     document.documentElement.style.setProperty("--safe-bottom", "34px");
   });
+  insets = { top: 47, bottom: 34, left: 0, right: 0 };
   await inbox();
   await mail.openMessage(app, "Q2 launch plan");
   await shot("phone-insets-message-light");
   await app.browser.back();
   await shot("phone-insets-list-light");
+  measured();
 });

@@ -98,6 +98,8 @@ class MainActivity : TauriActivity() {
 
   override fun onWebViewCreate(webView: WebView) {
     super.onWebViewCreate(webView)
+    // Debug builds only: the WebView's DevTools socket for the emulator tests (e2e/android).
+    if (BuildConfig.DEBUG) WebView.setWebContentsDebuggingEnabled(true)
     this.webView = webView
     followFontScale()
   }

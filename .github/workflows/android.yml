@@ -167,3 +167,22 @@ jobs:
       - name: Remove the key file
         if: always()
         run: rm -f "$RUNNER_TEMP/arcalo-mail-release.jks" src-tauri/gen/android/keystore.properties
+      # The emulator tests (ci.yml, android-e2e): a debug build for x86_64, signed with the debug
+      # key, with the WebView's DevTools socket (MainActivity.kt). Not part of a release.
+      - name: Build the debug APK for the emulator tests
+        if: inputs.tag == ''
+        working-directory: src-tauri
+        run: |
+          rm -rf gen/android/app/build/outputs/apk
+          cargo tauri android build --debug --apk --target x86_64
+          mkdir -p "$RUNNER_TEMP/apk-debug"
+          apk=$(find gen/android/app/build/outputs/apk -name '*debug*.apk' | head -n 1)
+          test -n "$apk"
+          cp "$apk" "$RUNNER_TEMP/apk-debug/arcalo-mail-debug.apk"
+      - uses: actions/upload-artifact@v4
+        if: inputs.tag == ''
+        with:
+          name: arcalo-mail-android-debug
+          path: ${{ runner.temp }}/apk-debug/arcalo-mail-debug.apk
+          if-no-files-found: error
+          retention-days: 7

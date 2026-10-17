@@ -181,3 +181,50 @@ jobs:
     needs: checks
     uses: ./.github/workflows/ios.yml
     secrets: inherit
+
+  # The Android app on an emulator (e2e/android): the debug APK of the Android job against the
+  # Gmail-like test server on the runner (reached through adb reverse), measured at 360x800 and
+  # 412x915 dp over the WebView's DevTools socket. The screenshots of every screen are kept.
+  android-e2e:
+    name: Android emulator (phone screens)
+    needs: android
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.94.1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: android-e2e
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # The emulator needs hardware acceleration: KVM for the runner's user.
+      - name: KVM for the emulator
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - run: cargo build -p mail-testserver
+      - run: npm ci --prefix e2e
+      - uses: actions/download-artifact@v4
+        with:
+          name: arcalo-mail-android-debug
+          path: apk
+      - name: Phone tests on the emulator
+        uses: reactivecircus/android-emulator-runner@v2.33.0
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: true
+          emulator-boot-timeout: 900
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -no-snapshot-save
+          script: cd e2e && ARCALO_MAIL_APK="$GITHUB_WORKSPACE/apk/arcalo-mail-debug.apk" node --test --test-concurrency=1 --test-reporter=spec android/phone.test.js
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: android-screenshots
+          path: e2e/screenshots/android
+          if-no-files-found: warn

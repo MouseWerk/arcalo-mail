@@ -262,6 +262,7 @@ impl Session {
             (c.uidplus, "UIDPLUS"),
             (c.moves, "MOVE"),
             (c.special_use, "SPECIAL-USE"),
+            (c.gmail, "X-GM-EXT-1"),
         ] {
             if on {
                 v.push(name);
@@ -326,7 +327,22 @@ impl Session {
             uids_in(&set, &seqs).into_iter().filter_map(|s| existing.get(s as usize - 1).copied()).collect()
         };
         let condstore = self.shared.fake.lock().unwrap().caps.condstore;
+        let headers = items.iter().any(|i| i.starts_with("BODY.PEEK[HEADER") || i == "ENVELOPE");
+        let body = items.iter().any(|i| {
+            i == "RFC822"
+                || (i.starts_with("BODY") && i.contains('[') && !i.contains("[HEADER") && !i.contains(".MIME]"))
+        });
+        if headers && self.cut_now() {
+            // A sync cut short: the connection drops instead of the next batch.
+            self.shared.set_offline(true);
+            return Err(std::io::Error::other("cut"));
+        }
+        let wait = self.slowness(headers, body, &uids);
+        if wait > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(wait)).await;
+        }
         let mut out = Vec::new();
+        let mut sent = vec![];
         for uid in uids {
             let seq = existing.iter().position(|u| *u == uid).map_or(0, |p| p + 1);
             let msg = {
@@ -338,6 +354,7 @@ impl Session {
                 continue;
             }
             out.extend_from_slice(format!("* {seq} FETCH (UID {uid}").as_bytes());
+            sent.push(uid);
             let parsed = MessageParser::default().parse(&msg.raw);
             let mut seen_now = false;
             for item in &items {
@@ -349,6 +366,9 @@ impl Session {
                     ),
                     "RFC822.SIZE" => out.extend_from_slice(format!(" RFC822.SIZE {}", msg.raw.len()).as_bytes()),
                     "MODSEQ" => out.extend_from_slice(format!(" MODSEQ ({})", msg.modseq).as_bytes()),
+                    "X-GM-MSGID" | "X-GM-THRID" if self.shared.fake.lock().unwrap().caps.gmail => {
+                        out.extend_from_slice(format!(" {item} {}", crate::gmail::gm_msgid(&msg.raw)).as_bytes())
+                    }
                     "BODYSTRUCTURE" => {
                         let s = parsed.as_ref().map_or("NIL".into(), |m| body_structure(m, 0));
                         out.extend_from_slice(format!(" BODYSTRUCTURE {s}").as_bytes());
@@ -406,7 +426,51 @@ impl Session {
             }
         }
         self.write_bytes(&out).await?;
+        if headers {
+            self.served(&sent);
+        }
         self.write(&format!("{tag} OK FETCH completed\r\n")).await
+    }
+
+    /// How long a FETCH waits on the slow server (milliseconds): header FETCHes, and bodies of
+    /// old, large messages.
+    fn slowness(&self, headers: bool, body: bool, uids: &[u32]) -> u64 {
+        let mut wait = 0;
+        if headers {
+            wait += *self.shared.slow_headers_ms.lock().unwrap();
+        }
+        let slow = *self.shared.slow_old_body_ms.lock().unwrap();
+        if body && slow > 0 {
+            let now = crate::now();
+            let f = self.shared.fake.lock().unwrap();
+            let m = self.selected.as_ref().and_then(|s| f.mailboxes.get(s));
+            let old_large = uids
+                .iter()
+                .filter_map(|u| m.and_then(|m| m.messages.get(u)))
+                .any(|x| x.raw.len() >= crate::gmail::LARGE && now - x.internal_date > crate::gmail::OLD);
+            if old_large {
+                wait += slow;
+            }
+        }
+        wait
+    }
+
+    /// Notes the headers sent.
+    fn served(&self, uids: &[u32]) {
+        let folder = self.selected.clone().unwrap_or_default();
+        let mut served = self.shared.served.lock().unwrap();
+        let s = served.entry(folder).or_default();
+        s.batches += 1;
+        s.headers += uids.len();
+        s.uids.extend(uids.iter().copied());
+        if let Some(n) = self.shared.cut_after_header_batches.lock().unwrap().as_mut() {
+            *n = n.saturating_sub(1);
+        }
+    }
+
+    /// Whether the connection drops instead of this header FETCH (`cut_after_header_batches`).
+    fn cut_now(&self) -> bool {
+        *self.shared.cut_after_header_batches.lock().unwrap() == Some(0)
     }
 
     async fn select(&mut self, tag: &str, args: &[Tok], cmd: &str) -> std::io::Result<()> {
@@ -653,15 +717,18 @@ impl Session {
                 "LIST" | "LSUB" => {
                     let entries = self.fake(|f| f.do_list());
                     let special = self.shared.fake.lock().unwrap().caps.special_use;
+                    let names: Vec<String> = entries.iter().map(|e| e.name.clone()).collect();
                     let mut out = String::new();
                     for e in entries {
+                        let parent =
+                            names.iter().any(|n| n.strip_prefix(e.name.as_str()).is_some_and(|r| r.starts_with('/')));
                         let attrs: Vec<&str> = e
                             .attributes
                             .iter()
                             .map(String::as_str)
                             .filter(|a| special || !a.starts_with('\\') || a.eq_ignore_ascii_case("\\Noselect"))
                             .collect();
-                        let mut all = vec!["\\HasNoChildren"];
+                        let mut all = vec![if parent { "\\HasChildren" } else { "\\HasNoChildren" }];
                         all.extend(attrs);
                         out.push_str(&format!(
                             "* {cmd} ({}) \"/\" {}\r\n",

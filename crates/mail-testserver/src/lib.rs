@@ -17,6 +17,7 @@
 //! only and never talks to the internet.
 
 mod control;
+pub mod gmail;
 mod imap;
 mod jmap;
 pub mod peer;
@@ -142,6 +143,27 @@ pub struct Shared {
     pub graph_calendar: Mutex<mail_core::calendar::graph::fake::FakeGraphCalendar>,
     /// Jonas, the other side of encrypted mail (`peer.rs`).
     pub peer: Mutex<peer::Peer>,
+    /// A slow server, as Gmail is with a large mailbox: every header FETCH waits this long
+    /// (milliseconds), so a first sync takes a while.
+    pub slow_headers_ms: Mutex<u64>,
+    /// Bodies of old, large messages (`gmail::OLD`, `gmail::LARGE`) wait this long.
+    pub slow_old_body_ms: Mutex<u64>,
+    /// After this many more header FETCHes the connection drops at the next one (a sync cut
+    /// short).
+    pub cut_after_header_batches: Mutex<Option<u32>>,
+    /// What the header FETCHes handed out so far, per folder (how far a first sync is).
+    pub served: Mutex<std::collections::BTreeMap<String, Served>>,
+}
+
+/// The header FETCHes of one folder so far.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct Served {
+    pub batches: u32,
+    /// Messages whose header was sent (a message sent twice counts twice).
+    pub headers: usize,
+    /// The distinct UIDs whose header was sent.
+    #[serde(skip)]
+    pub uids: std::collections::BTreeSet<u32>,
 }
 
 impl Shared {
@@ -316,6 +338,10 @@ pub async fn start(opts: Options) -> io::Result<Running> {
         caldav: Mutex::new(mail_core::calendar::caldav::fake::FakeCalDav::new(&opts.user, &opts.password)),
         graph_calendar: Mutex::default(),
         peer: Mutex::new(peer::Peer::new()),
+        slow_headers_ms: Mutex::new(0),
+        slow_old_body_ms: Mutex::new(0),
+        cut_after_header_batches: Mutex::new(None),
+        served: Mutex::default(),
     });
     let (imap_l, imap) = listen(opts.imap_port).await?;
     let (smtp_l, smtp) = listen(opts.smtp_port).await?;
@@ -350,6 +376,11 @@ pub(crate) fn acceptor(shared: &Shared) -> Option<TlsAcceptor> {
 pub(crate) async fn upgrade(io: Io, shared: &Shared) -> Option<Io> {
     let acceptor = acceptor(shared)?;
     acceptor.accept(io).await.ok().map(|s| Box::new(s) as Io)
+}
+
+/// Unix seconds now.
+pub(crate) fn now() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64)
 }
 
 /// `16-Oct-2026 09:30:00 +0000` for Unix seconds.

@@ -10,6 +10,11 @@
 //! * `POST /password?value=…`: the account's password changes (a refused login)
 //! * `POST /folder?name=…`: a new folder
 //! * `POST /delay?ms=…`: new connections wait this long before the greeting (a slow server)
+//! * `POST /gmail?count=3000[&now=<unix>]`: the account becomes a German Gmail account
+//!   (`gmail.rs`) with that many messages since 2015; answers what the tests check against
+//! * `POST /slow?headers=…&old_bodies=…`: every header FETCH waits this long, and the bodies of
+//!   old, large messages (milliseconds)
+//! * `GET /served`: per folder, the header FETCHes so far and the distinct messages they sent
 //! * `GET /autoconfig?host=127.0.0.1`: an autoconfig file (config-v1.1) for this server, so the
 //!   app's setup finds it as it would a provider's
 //! * `GET /oauth/authorize`, `POST /oauth/token`: an identity provider (Microsoft's endpoints as
@@ -422,6 +427,36 @@ async fn handle(stream: TcpStream, shared: Arc<Shared>) -> std::io::Result<()> {
             let (imap, smtp) = *shared.ports.lock().unwrap();
             let host = q.get("host").map_or("127.0.0.1", String::as_str);
             ("200 OK", "text/xml", autoconfig(host, imap, smtp).into_bytes())
+        }
+        ("POST", "/gmail") => {
+            let count = q.get("count").and_then(|v| v.parse().ok()).unwrap_or(3000);
+            let now = q.get("now").and_then(|v| v.parse().ok()).unwrap_or_else(crate::now);
+            let user = shared.user.clone();
+            shared.served.lock().unwrap().clear();
+            let summary = shared.with(|f| crate::gmail::fill(f, count, now, &user));
+            ("200 OK", "application/json", serde_json::to_vec(&summary).unwrap_or_default())
+        }
+        ("POST", "/slow") => {
+            if let Some(ms) = q.get("headers").and_then(|v| v.parse().ok()) {
+                *shared.slow_headers_ms.lock().unwrap() = ms;
+            }
+            if let Some(ms) = q.get("old_bodies").and_then(|v| v.parse().ok()) {
+                *shared.slow_old_body_ms.lock().unwrap() = ms;
+            }
+            ("200 OK", "text/plain", b"ok".to_vec())
+        }
+        ("GET", "/served") => {
+            let served = shared.served.lock().unwrap();
+            let f = shared.fake.lock().unwrap();
+            let mut out = serde_json::Map::new();
+            for (name, m) in &f.mailboxes {
+                let s = served.get(name).cloned().unwrap_or_default();
+                out.insert(
+                    name.clone(),
+                    json!({ "batches": s.batches, "headers": s.headers, "distinct": s.uids.len(), "total": m.messages.len() }),
+                );
+            }
+            ("200 OK", "application/json", serde_json::Value::Object(out).to_string().into_bytes())
         }
         ("POST", "/delay") => {
             *shared.delay_ms.lock().unwrap() = q.get("ms").and_then(|v| v.parse().ok()).unwrap_or(0);

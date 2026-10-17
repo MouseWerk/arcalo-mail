@@ -5,13 +5,14 @@
 //! arcalo-mail-testserver [--user maria@example.org] [--password secret] [--tls]
 //!     [--without qresync,condstore,move,uidplus,idle,special_use] [--files-sent]
 //!     [--imap-port N] [--smtp-port N] [--control-port N] [--pop3-port N] [--sieve-port N]
-//!     [--no-jmap-push]
+//!     [--no-jmap-push] [--gmail N]
 //! ```
 
 use mail_testserver::{Options, start};
 
 fn main() {
     let mut opts = Options::default();
+    let mut gmail: Option<usize> = None;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         let mut value = || args.next().unwrap_or_default();
@@ -21,6 +22,8 @@ fn main() {
             "--tls" => opts.tls = true,
             "--files-sent" => opts.files_sent = true,
             "--no-jmap-push" => opts.jmap_push = false,
+            // The account as a German Gmail account with N messages (`gmail.rs`).
+            "--gmail" => gmail = value().parse().ok(),
             "--imap-port" => opts.imap_port = value().parse().unwrap_or(0),
             "--smtp-port" => opts.smtp_port = value().parse().unwrap_or(0),
             "--control-port" => opts.control_port = value().parse().unwrap_or(0),
@@ -47,7 +50,13 @@ fn main() {
     }
     let rt = tokio::runtime::Runtime::new().expect("runtime");
     rt.block_on(async {
+        let user = opts.user.clone();
         let s = start(opts).await.expect("start");
+        if let Some(n) = gmail {
+            let now =
+                std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
+            s.shared.with(|f| mail_testserver::gmail::fill(f, n, now, &user));
+        }
         println!(
             "{}",
             serde_json::json!({
