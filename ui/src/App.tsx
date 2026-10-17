@@ -442,17 +442,26 @@ export function App() {
   }, []);
 
   /** The tabs' numbers, „Neue Absender“ and the time tools' counts. */
+  // Only the answers of the latest round count: an older one arriving late (a sync's reload
+  // that started before a snooze) must not put back counts that changed since.
+  const smartSeq = useRef(0);
   const reloadSmart = useCallback(() => {
     const p = placeRef.current;
-    void api.inboxCounts(p.kind === "inbox" ? p.account : null).then((c) => {
-      setCounts(c);
-      if (p.kind !== "inbox" || p.account == null) setScreenerCount(c.screener);
-    });
-    if (p.kind === "inbox" && p.account != null) void api.inboxCounts(null).then((c) => setScreenerCount(c.screener));
-    void api.timeCounts().then(setTimes);
-    if (p.kind === "screener") void api.screenerSenders(null).then(setWaiting);
-    if (p.kind === "subscriptions") void api.subscriptions().then(setSubs);
-    if (p.kind === "scheduled") void api.scheduled().then(setScheduled);
+    const seq = ++smartSeq.current;
+    const latest = <T,>(f: (v: T) => void) => (v: T) => {
+      if (seq === smartSeq.current) f(v);
+    };
+    void api.inboxCounts(p.kind === "inbox" ? p.account : null).then(
+      latest((c) => {
+        setCounts(c);
+        if (p.kind !== "inbox" || p.account == null) setScreenerCount(c.screener);
+      }),
+    );
+    if (p.kind === "inbox" && p.account != null) void api.inboxCounts(null).then(latest((c) => setScreenerCount(c.screener)));
+    void api.timeCounts().then(latest(setTimes));
+    if (p.kind === "screener") void api.screenerSenders(null).then(latest(setWaiting));
+    if (p.kind === "subscriptions") void api.subscriptions().then(latest(setSubs));
+    if (p.kind === "scheduled") void api.scheduled().then(latest(setScheduled));
   }, []);
 
   useEffect(() => {
