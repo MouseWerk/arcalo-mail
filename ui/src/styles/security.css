@@ -1,0 +1,205 @@
+/* Security (components/Security.tsx, Phishing.tsx): the lock screen, the recovery screen,
+   Settings → Sicherheit and the phishing warning. Tokens only (tokens.css). */
+
+/* ---- lock screen and recovery screen: the whole window, the app behind it not mounted */
+
+.lock-screen {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-top);
+  display: grid;
+  place-items: center;
+  padding: calc(var(--sp-6) + var(--safe-top)) calc(var(--sp-4) + var(--safe-right)) calc(var(--sp-6) + var(--safe-bottom))
+    calc(var(--sp-4) + var(--safe-left));
+  overflow-y: auto;
+  background: var(--bg-app);
+  color: var(--text);
+}
+.lock-card {
+  width: min(360px, 100%);
+  display: grid;
+  justify-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-8) var(--sp-6) var(--sp-5);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--bg-raised);
+  box-shadow: var(--shadow-lg);
+}
+.lock-card-wide {
+  width: min(460px, 100%);
+}
+.lock-mark {
+  display: grid;
+  place-items: center;
+  width: var(--ctl-lg);
+  height: var(--ctl-lg);
+  border-radius: var(--r-pill);
+  background: var(--bg-hover);
+  color: var(--text-2);
+}
+.lock-title {
+  margin: 0;
+  font-size: var(--fs-xl);
+  font-weight: var(--fw-heading);
+  letter-spacing: var(--ls-heading);
+}
+.lock-sub {
+  margin: calc(-1 * var(--sp-1)) 0 var(--sp-1);
+  color: var(--text-2);
+  font-size: var(--fs-md);
+  text-align: center;
+}
+.lock-pin {
+  width: 100%;
+  height: var(--ctl-lg);
+  text-align: center;
+  font-size: var(--fs-lg);
+  letter-spacing: 0.3em;
+}
+.lock-code {
+  width: 100%;
+  font-family: var(--font-mono);
+  font-variant-ligatures: none;
+  font-size: var(--fs-sm);
+}
+.lock-card > .input {
+  width: 100%;
+}
+.lock-wide {
+  width: 100%;
+  justify-content: center;
+}
+.lock-msg {
+  margin: 0;
+  min-height: 1.4em;
+  color: var(--text-2);
+  font-size: var(--fs-sm);
+  text-align: center;
+}
+.lock-msg-error {
+  color: var(--danger);
+}
+.lock-link {
+  padding: var(--sp-half) var(--sp-1);
+  border: 0;
+  border-radius: var(--r-xs);
+  background: none;
+  color: var(--accent-text);
+  font: inherit;
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+.lock-link:hover {
+  text-decoration: underline;
+}
+.lock-link:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: 2px;
+}
+.lock-quit {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1-25);
+  margin-top: var(--sp-1);
+  color: var(--text-3);
+}
+.lock-forgot {
+  width: 100%;
+  display: grid;
+  gap: var(--sp-2);
+  padding-top: var(--sp-2-5);
+  border-top: 1px solid var(--border);
+  font-size: var(--fs-sm);
+}
+.lock-forgot p {
+  margin: 0;
+  color: var(--text-2);
+}
+.lock-recovery {
+  display: grid;
+  gap: var(--sp-2);
+}
+.lock-cmd {
+  display: block;
+  padding: var(--sp-2) var(--sp-2-5);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-canvas);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+.lock-switch {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  width: 100%;
+  color: var(--text-2);
+  font-size: var(--fs-sm);
+}
+
+/* ---- Settings → Sicherheit */
+
+.sec-recovery {
+  display: block;
+  padding: var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-canvas);
+  font-family: var(--font-mono);
+  font-variant-ligatures: none;
+  font-size: var(--fs-md);
+  letter-spacing: 0.04em;
+  line-height: 1.7;
+  word-spacing: 0.3em;
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+.notice-plain {
+  background: var(--bg-hover);
+}
+.notice-plain > svg {
+  color: var(--text-2);
+}
+.sec-busy {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  width: auto;
+  padding: var(--sp-4) var(--sp-5);
+}
+.sec-busy p {
+  margin: 0;
+}
+
+/* ---- the phishing warning: the warning tint and an icon, never a bar at the side */
+
+.phish {
+  align-items: flex-start;
+}
+.phish > svg {
+  margin-top: var(--sp-half);
+}
+.phish-body {
+  display: grid;
+  flex: 1 1 280px;
+  gap: var(--sp-1);
+  min-width: 0;
+}
+.phish-reasons {
+  margin: 0;
+  padding-left: var(--sp-4);
+  overflow-wrap: anywhere;
+}
+.phish-advice {
+  color: var(--text-2);
+}
+
+@media (max-width: 720px) {
+  .lock-card {
+    padding: var(--sp-6) var(--sp-4) var(--sp-4);
+  }
+}

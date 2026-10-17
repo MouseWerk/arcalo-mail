@@ -18,6 +18,9 @@
 	<!-- Attaching photos and saving pictures from a message. -->
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>Arcalo Mail saves pictures from a message to your photos when you ask it to.</string>
+	<!-- The app lock (Settings, Sicherheit): Face ID instead of the PIN when the user chooses it. -->
+	<key>NSFaceIDUsageDescription</key>
+	<string>Arcalo Mail unlocks with Face ID when you switch this on in its security settings.</string>
 	<!-- Only TLS for the connections (exempt): App Store Connect does not ask for every build. -->
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>

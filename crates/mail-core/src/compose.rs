@@ -37,6 +37,13 @@ pub struct Draft {
     /// Signed and/or encrypted with OpenPGP or S/MIME.
     #[serde(default)]
     pub protect: Option<crate::crypto::Protect>,
+    /// The encrypted draft this one was opened from: the files inside it go along when it is
+    /// saved again or sent (`actions::sealed_files`); they never leave the backend decrypted.
+    #[serde(default)]
+    pub sealed_from: Option<i64>,
+    /// The names of those files, for the compose sheet.
+    #[serde(default)]
+    pub sealed_files: Vec<String>,
 }
 
 /// A file read for sending.

@@ -15,6 +15,7 @@ use crate::compose::{self, Draft, FileAttachment};
 use crate::error::{Error, Result};
 use crate::imap::Role;
 use crate::outbox::{self, Op};
+use crate::parse::ParsedMessage;
 use crate::sanitize::{
     Sanitized, quote_start_html, quote_start_text, sanitize_html_inline, sanitize_html_with, text_to_html_counted,
 };
@@ -507,11 +508,26 @@ pub fn cancel_send(store: &Store, outbox_id: i64) -> Result<bool> {
 
 /// Saves a draft in the account's Drafts folder (replacing its earlier copy); returns its
 /// Message-ID, which the next save keeps.
+///
+/// The draft of an encrypted message is encrypted too, to the user's own key or certificate only
+/// ([`seal_draft`]): the copy on the server, the one in the offline queue and the one synced back
+/// are readable only with the user's secret key. It is decrypted again when opened
+/// ([`draft_of`]).
 pub fn queue_draft(store: &Store, d: &Draft, files: &[FileAttachment]) -> Result<String> {
+    queue_draft_with(store, d, files, crate::crypto::registered().as_ref())
+}
+
+pub fn queue_draft_with(
+    store: &Store,
+    d: &Draft,
+    files: &[FileAttachment],
+    keys: &dyn crate::crypto::Keys,
+) -> Result<String> {
     let d = &cleaned(d);
     let account = store.account(d.account_id)?;
     let mid = d.message_id.clone().unwrap_or_else(|| compose::new_message_id(&account.email));
     let raw = compose::build(&account, d, files, &mid, now(), true)?;
+    let raw = seal_draft(store, &account.email, raw, d.protect.as_ref(), keys)?;
     let mut undo = Undo::default();
     let drafts = folder_for(store, account.id, Role::Drafts, "Drafts", &mut undo)?;
     outbox::enqueue(
@@ -522,12 +538,130 @@ pub fn queue_draft(store: &Store, d: &Draft, files: &[FileAttachment]) -> Result
     Ok(mid)
 }
 
+/// The header that keeps a draft's protection (`pgp; sign=1; encrypt=1`), so it comes back when
+/// the draft is opened again. Only in drafts; a sent message never carries it.
+pub const PROTECT_HEADER: &str = "X-Arcalo-Mail-Protect";
+
+/// A draft as stored: with the protection it asks for in [`PROTECT_HEADER`], and encrypted to the
+/// sender's own key or certificate when it is to be encrypted (no recipients' keys: a draft is the
+/// user's own; not signed: a signature is made when it is sent).
+pub fn seal_draft(
+    store: &Store,
+    from: &str,
+    raw: Vec<u8>,
+    protect: Option<&crate::crypto::Protect>,
+    keys: &dyn crate::crypto::Keys,
+) -> Result<Vec<u8>> {
+    use crate::crypto::{Method, Protect};
+    let Some(p) = protect.filter(|p| p.sign || p.encrypt) else { return Ok(raw) };
+    let method = match p.method {
+        Method::Pgp => "pgp",
+        Method::Smime => "smime",
+    };
+    let value = format!("{method}; sign={}; encrypt={}", u8::from(p.sign), u8::from(p.encrypt));
+    let raw = crate::crypto::add_header(&raw, PROTECT_HEADER, &value);
+    if !p.encrypt {
+        return Ok(raw);
+    }
+    crate::crypto::protect(store, from, &raw, &[], &Protect { method: p.method, sign: false, encrypt: true }, keys)
+}
+
+/// The protection a draft asked for, from its [`PROTECT_HEADER`].
+fn draft_protect(raw: &[u8]) -> Option<crate::crypto::Protect> {
+    use crate::crypto::{Method, Protect};
+    let m = mail_parser::MessageParser::default().parse(raw)?;
+    let v = m.header_raw(PROTECT_HEADER)?.trim().to_ascii_lowercase();
+    let mut parts = v.split(';').map(str::trim);
+    let method = match parts.next()? {
+        "pgp" => Method::Pgp,
+        "smime" => Method::Smime,
+        _ => return None,
+    };
+    let (mut sign, mut encrypt) = (false, false);
+    for p in parts {
+        match p {
+            "sign=1" => sign = true,
+            "encrypt=1" => encrypt = true,
+            _ => {}
+        }
+    }
+    Some(Protect { method, sign, encrypt })
+}
+
+/// An encrypted draft opened with the user's keys: the inner message, or why it cannot be opened
+/// (a protected key without its passphrase, no key).
+fn opened_draft(
+    store: &Store,
+    id: i64,
+    keys: &dyn crate::crypto::Keys,
+) -> Result<Option<(crate::crypto::Protection, ParsedMessage, Vec<u8>)>> {
+    let Some(raw) = store.raw_message(id)? else { return Ok(None) };
+    let own = store.account(store.message(id)?.account_id)?.email;
+    let Some(opened) = crate::crypto::open(store, &raw, Some(&own), keys) else { return Ok(None) };
+    if !opened.protection.encrypted {
+        return Ok(None);
+    }
+    let Some(entity) = opened.entity else {
+        return Err(Error::Invalid(opened.protection.error.clone().unwrap_or_else(|| {
+            tr!("Der verschlüsselte Entwurf lässt sich nicht öffnen.", "The encrypted draft cannot be opened.").into()
+        })));
+    };
+    let inner = crate::parse::parse(&entity)?;
+    Ok(Some((opened.protection, inner, entity)))
+}
+
+/// The files inside an encrypted draft, decrypted for saving or sending it again (they are
+/// encrypted again on the way: the draft to the own key, the message to its recipients).
+pub fn sealed_files(store: &Store, id: i64) -> Result<Vec<FileAttachment>> {
+    sealed_files_with(store, id, crate::crypto::registered().as_ref())
+}
+
+pub fn sealed_files_with(store: &Store, id: i64, keys: &dyn crate::crypto::Keys) -> Result<Vec<FileAttachment>> {
+    let Some((_, inner, entity)) = opened_draft(store, id, keys)? else {
+        return Ok(vec![]);
+    };
+    Ok(inner
+        .attachments
+        .iter()
+        .filter(|a| !(a.inline && a.content_id.is_some()) && !a.is_protocol())
+        .filter_map(|a| {
+            Some(FileAttachment {
+                name: a.filename.clone().unwrap_or_else(|| "attachment".into()),
+                mime_type: a.mime_type.clone(),
+                data: crate::parse::attachment_data(&entity, a.index)?,
+            })
+        })
+        .collect())
+}
+
 /// A draft from Drafts as the compose sheet edits it: its recipients with Bcc (kept in the stored
 /// copy), the editor's HTML (cleaned, without the frame [`compose::build`] puts around it), the
-/// message it answers and its own attachments, which go along when it is sent.
+/// message it answers and its own attachments, which go along when it is sent. An encrypted
+/// draft is decrypted here; its files stay in the backend ([`Draft::sealed_from`]).
 pub fn draft_of(store: &Store, id: i64) -> Result<Draft> {
+    draft_of_with(store, id, crate::crypto::registered().as_ref())
+}
+
+pub fn draft_of_with(store: &Store, id: i64, keys: &dyn crate::crypto::Keys) -> Result<Draft> {
     use rusqlite::OptionalExtension;
-    let d = store.message(id)?;
+    let mut d = store.message(id)?;
+    let raw = store.raw_message(id)?;
+    let mut protect = raw.as_deref().and_then(draft_protect);
+    let mut sealed_files = vec![];
+    let sealed = opened_draft(store, id, keys)?;
+    if let Some((protection, inner, _)) = &sealed {
+        d.text = inner.text.clone();
+        d.html = inner.html.clone();
+        sealed_files = inner
+            .attachments
+            .iter()
+            .filter(|a| !(a.inline && a.content_id.is_some()) && !a.is_protocol())
+            .map(|a| a.filename.as_deref().map(crate::files::display_name).unwrap_or_else(|| "attachment".into()))
+            .collect();
+        let method = if protection.method == "smime" { crate::crypto::Method::Smime } else { crate::crypto::Method::Pgp };
+        let p = protect.get_or_insert(crate::crypto::Protect { method, sign: false, encrypt: true });
+        p.encrypt = true;
+    }
     let line = |a: &crate::parse::Address| match &a.name {
         Some(n) if !n.is_empty() => format!(
             "{} <{}>",
@@ -549,12 +683,11 @@ pub fn draft_of(store: &Store, id: i64) -> Result<Draft> {
             .optional()?,
         None => None,
     };
-    let forwarded = d
-        .attachments
-        .iter()
-        .filter(|a| !(is_wrapper(a) || (a.inline && a.content_id.is_some())))
-        .map(|a| a.id)
-        .collect();
+    let forwarded = if sealed.is_some() {
+        vec![]
+    } else {
+        d.attachments.iter().filter(|a| !(is_wrapper(a) || (a.inline && a.content_id.is_some()))).map(|a| a.id).collect()
+    };
     Ok(Draft {
         account_id: d.account_id,
         to: d.to.iter().map(line).collect(),
@@ -569,7 +702,9 @@ pub fn draft_of(store: &Store, id: i64) -> Result<Draft> {
         message_id: d.message_id.clone(),
         reply_to_id,
         forwarded,
-        protect: None,
+        protect,
+        sealed_from: sealed.is_some().then_some(id),
+        sealed_files,
     })
 }
 
@@ -646,6 +781,9 @@ pub struct MessageView {
     pub invitation: Option<crate::itip::Card>,
     /// A Teams, Zoom, Webex, Google Meet or Jitsi link in the message.
     pub meeting: Option<MeetingLink>,
+    /// Signs that the message is not from whom it claims to be (`phishing`): a calm banner,
+    /// never a block.
+    pub phishing: Option<crate::phishing::Warning>,
 }
 
 /// The wrappers of signed and encrypted mail, never shown as files.
@@ -795,6 +933,10 @@ pub fn message_view_with(
             crate::calendar::meeting_link([detail.text.as_deref().unwrap_or(""), detail.html.as_deref().unwrap_or("")])
         })
         .map(|url| MeetingLink { kind: crate::calendar::meeting_kind(&url).to_string(), url });
+    let phishing = crate::phishing::check(store, id, detail.html.as_deref()).unwrap_or_else(|e| {
+        crate::diag::log("phishing", &e.to_string());
+        None
+    });
     // The raw HTML stays in the backend.
     detail.html = None;
     detail.remote_allowed = allow;
@@ -811,6 +953,7 @@ pub fn message_view_with(
         protected_files,
         invitation,
         meeting,
+        phishing,
     })
 }
 

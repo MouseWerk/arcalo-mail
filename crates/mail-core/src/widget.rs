@@ -23,16 +23,22 @@ pub struct Row {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Widget {
     pub unread: u32,
+    /// Empty while the app lock is on: the home screen shows the count only.
     pub people: Vec<Row>,
+    /// The app lock is on (`applock`): no sender or subject leaves the app.
+    #[serde(default)]
+    pub private: bool,
     /// When it was written (Unix seconds).
     pub at: i64,
 }
 
 pub fn snapshot(store: &Store) -> Result<Widget> {
+    let private = crate::applock::config(store).enabled();
     let q = InboxQuery { account: None, tab: Category::People, focus: false, threads: true, bundles: false };
-    let (_, rows) = inbox(store, &q, 3, 0)?;
+    let rows = if private { vec![] } else { inbox(store, &q, 3, 0)?.1 };
     Ok(Widget {
         unread: store.unread_in_inboxes()?,
+        private,
         people: rows
             .into_iter()
             .map(|m| Row {
@@ -86,5 +92,13 @@ mod tests {
         assert!(w.people.iter().all(|r| r.from == "Maria Muster" && r.unread));
         let json = serde_json::to_string(&w).unwrap();
         assert!(json.contains("\"unread\":4"));
+        assert!(!w.private);
+        // With the app lock on, the home screen gets the count and nothing else.
+        let lock = crate::applock::LockConfig { mode: crate::applock::LockMode::Start, ..Default::default() };
+        crate::applock::set_config(&s, &lock).unwrap();
+        let w = snapshot(&s).unwrap();
+        assert_eq!(w.unread, 4);
+        assert!(w.private && w.people.is_empty());
+        assert!(!serde_json::to_string(&w).unwrap().contains("Frage"));
     }
 }

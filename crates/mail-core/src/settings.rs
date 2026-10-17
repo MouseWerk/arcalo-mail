@@ -137,6 +137,9 @@ pub struct Settings {
     /// „Startanimation“: the mark draws itself while the app loads (never longer than that;
     /// skipped with reduced motion).
     pub startup_animation: bool,
+    /// The phishing warning above a message that looks like it is not from whom it claims to be
+    /// (`phishing`). On by default; it never blocks anything.
+    pub phishing_warning: bool,
 }
 
 /// The calendar's settings.
@@ -199,6 +202,7 @@ impl Default for Settings {
             arcalo_target: ArcaloTarget::Page,
             updates: crate::update::UpdateMode::Auto,
             startup_animation: true,
+            phishing_warning: true,
         }
     }
 }

@@ -696,8 +696,14 @@ export function ComposeSheet({ draft, accounts, error, sending, saved, modal, on
             ))}
           </ul>
         )}
-        {(draft.attachments.length > 0 || draft.forwarded.length > 0) && (
+        {(draft.attachments.length > 0 || draft.forwarded.length > 0 || !!draft.sealed?.names.length) && (
           <ul className="compose-attachments" aria-label={t("compose.attachments")}>
+            {draft.sealed?.names.map((name, i) => (
+              <li key={`s${i}`} className="chip chip-file" data-sealed title={t("protect.sealedFile")}>
+                <Lock size={13} strokeWidth={1.75} aria-hidden />
+                <span className="chip-text">{name}</span>
+              </li>
+            ))}
             {draft.forwarded.map((a) => {
               const name = a.filename ?? t("read.unnamed");
               return (

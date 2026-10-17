@@ -397,7 +397,7 @@ pub fn check_svg(bytes: &[u8]) -> Result<String> {
 
 /// The organizational domain for DMARC (the record of `mail.shop.example` may be on
 /// `shop.example`), roughly: the last two labels.
-fn org_domain(domain: &str) -> String {
+pub(crate) fn org_domain(domain: &str) -> String {
     let labels: Vec<&str> = domain.split('.').collect();
     labels[labels.len().saturating_sub(2)..].join(".")
 }

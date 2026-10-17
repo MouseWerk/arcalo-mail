@@ -85,6 +85,7 @@ pub fn set_in_front(app: &AppHandle, visible: bool) {
         return;
     }
     mail_core::diag::log("mobile", if visible { "in front" } else { "in the background" });
+    crate::security::on_front(app, visible);
     if visible {
         let app = app.clone();
         // The credential store is asked: not on the main thread.

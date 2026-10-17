@@ -14,6 +14,13 @@ fake = []
 [dependencies]
 # S/MIME content encryption (AES-CBC), as CMS uses it.
 aes = "0.8.4"
+# Encryption on the device, as in Arcalo: the PIN hash of the app lock and the database key wrapped
+# with a password (Argon2id, AES-256-GCM); the recovery key in base32; keys wiped from memory.
+aes-gcm = "0.10.3"
+argon2 = "0.5.3"
+data-encoding = "2.11.1"
+getrandom = "0.3.4"
+zeroize = "1.8"
 # HTML mail: allow-list sanitizing; remote content is removed unless the user allows it.
 ammonia = "4.1.7"
 base64 = "0.22.1"
@@ -32,6 +39,8 @@ iana-time-zone = "0.1.65"
 # HTML's tokenizer (the one ammonia parses with): the tracking pixels are found on the tags as a
 # browser reads them.
 html5ever = "0.40.1"
+# Internationalized domain names (punycode) of senders, read for the phishing warning.
+idna = "1.1.0"
 # The IMAP response parser; the client (`imap::client`) and its commands are our own.
 imap-proto = "0.17.0"
 # SMTP once the connection stands (`network` does TCP, TLS and STARTTLS itself).
@@ -54,9 +63,9 @@ roxmltree = "0.20.0"
 # Recurrence rules of series (RFC 5545), as in Arcalo.
 rrule = "0.14.0"
 rsa = { version = "0.9.10", features = ["sha2"] }
-# The local store: SQLite with FTS5 (part of the bundled build). Arcalo builds SQLCipher instead;
-# Arcalo Mail switches to `bundled-sqlcipher` when encryption at rest lands (docs/plan.md).
-rusqlite = { version = "0.40.2", features = ["bundled"] }
+# The local store: SQLCipher with FTS5, as Arcalo; a plain database opens unchanged and is encrypted
+# only when the user switches it on (`cipher`). The crypto library per platform is below.
+rusqlite = { version = "0.40.2", features = ["bundled-sqlcipher"] }
 rustls = { version = "0.23.43", default-features = false, features = ["std", "aws_lc_rs", "tls12"] }
 rustls-platform-verifier = "0.6.2"
 # Versions of the update feeds.
@@ -84,6 +93,12 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_
 # and for S/MIME on both phones.
 [target.'cfg(any(target_os = "android", target_os = "ios"))'.dependencies]
 webpki-root-certs = "1.0.9"
+
+# SQLCipher's crypto: macOS and iOS use CommonCrypto (part of the system); Windows, Linux and Android
+# link a vendored static OpenSSL, so users need no OpenSSL. Building it needs Perl and make (the CI
+# runners have them; Windows takes Strawberry Perl, see ci.yml), as in Arcalo.
+[target.'cfg(not(any(target_os = "macos", target_os = "ios")))'.dependencies]
+rusqlite = { version = "0.40.2", features = ["bundled-sqlcipher-vendored-openssl"] }
 
 # The system's root certificates for S/MIME on the desktop.
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
