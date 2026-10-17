@@ -6,6 +6,7 @@ import { MAX_LIST_PX, scrollWindow } from "../lib/listing";
 import { PULL_TRIGGER, pullDistance, swipeIntent, swipeOffset, swipeRemoves, swipeResult, swipeSide } from "../lib/touch";
 import type { MessageSummary, SwipeAction } from "../lib/types";
 import { Avatar } from "./Avatar";
+import { INSETS_EVENT } from "../lib/viewport";
 import { Spinner } from "./ui";
 
 export type BulkAction = "archive" | "delete" | "spam" | "read" | "unread" | "flag" | "move";
@@ -97,9 +98,13 @@ export function MessageList(p: Props) {
   const [swipe, setSwipe] = useState<{ id: number; dx: number; leaving?: boolean } | null>(null);
   const [pull, setPull] = useState<{ dy: number; busy: boolean }>({ dy: 0, busy: false });
 
-  // After the app marked a touch screen (its layout effect runs before this one).
+  // After the app marked a touch screen (its layout effect runs before this one), and again
+  // when Android's font size changes (the shell sets --type-scale, lib/viewport.ts).
   useEffect(() => {
-    setRowH(p.showSnippets ? tokenPx("--row-h", 76) : tokenPx("--row-h-compact", 54));
+    const measureRow = () => setRowH(p.showSnippets ? tokenPx("--row-h", 76) : tokenPx("--row-h-compact", 54));
+    measureRow();
+    window.addEventListener(INSETS_EVENT, measureRow);
+    return () => window.removeEventListener(INSETS_EVENT, measureRow);
   }, [p.showSnippets, !!p.touch]);
 
   // Touch screens: scrolling down folds the compose button to its icon, scrolling up opens it.

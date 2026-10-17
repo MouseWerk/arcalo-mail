@@ -29,4 +29,13 @@ describe("index.html and CSP", () => {
     expect(directive("connect-src")).not.toMatch(/https?:(?!\/\/ipc\.localhost)/);
     expect(conf.identifier).toBe("de.mousewerk.arcalo.mail");
   });
+
+  it("lets the mail frame show what it allows: its srcdoc inherits the app's policy too", async () => {
+    const conf = JSON.parse(fs.readFileSync(path.join(ROOT, "src-tauri/tauri.conf.json"), "utf8"));
+    const img = /img-src([^;]*)/.exec(conf.app.security.csp)![1].trim().split(/\s+/);
+    const { frameCsp } = await import("./mailframe");
+    const frame = /img-src([^;]*)/.exec(frameCsp(true))![1].trim().split(/\s+/);
+    // cid: pictures arrive as data: addresses (mail_core::sanitize); loaded pictures are web addresses.
+    for (const scheme of frame.filter((s) => s !== "cid:")) expect(img).toContain(scheme);
+  });
 });

@@ -92,9 +92,43 @@ describe("folders named like special folders", () => {
     setLang("de");
     const all = [box(1, "INBOX", "inbox"), box(2, "[Gmail]/Entwürfe", "drafts"), box(3, "Entwürfe", null), box(4, "[Notion]", null), box(5, "Projekte", null)];
     expect(listLabel(all[1], all, t)).toBe("Entwürfe");
-    expect(listLabel(all[2], all, t)).toBe("Entwürfe (Ordner)");
+    expect(listLabel(all[2], all, t)).toBe("Entwürfe (Label)");
+    // Elsewhere a folder of one's own.
+    const imap = [box(1, "INBOX", "inbox"), box(2, "Drafts", "drafts"), box(3, "Entwürfe", null), box(4, "Projekte/Entwürfe", null)];
+    expect(listLabel(imap[2], imap, t)).toBe("Entwürfe (Ordner)");
+    expect(listLabel(imap[3], imap, t)).toBe("Projekte / Entwürfe (Ordner)");
     expect(listLabel(all[3], all, t)).toBe("[Notion]");
     expect(listLabel(all[4], all, t)).toBe("Projekte");
+  });
+});
+
+describe("Gmail's folders in the folder list", () => {
+  it("shows label names as they are, and tells the label „Entwürfe“ from the Drafts folder", async () => {
+    const gmail: Mailbox[] = [
+      ["INBOX", "inbox"],
+      ["[Gmail]", null, false],
+      ["[Gmail]/Entwürfe", "drafts"],
+      ["[Gmail]/Gesendet", "sent"],
+      ["[Gmail]/Alle Nachrichten", "all"],
+      ["Entwürfe", null],
+      ["[Notion]", null],
+      ["[Notion]/Inbox", null],
+      ["Account Confirmations", null],
+    ].map(([name, role, selectable], i) => ({ id: 100 + i, account_id: 1, name, delimiter: "/", role, selectable: selectable !== false, unread: 0, total: 0 }) as Mailbox);
+    const mailboxes = api.mailboxes;
+    vi.spyOn(api, "mailboxes").mockImplementation(async (id: number) => (id === 1 ? gmail : mailboxes(id)));
+    const appInfo = api.appInfo;
+    vi.spyOn(api, "appInfo").mockImplementation(async () => ({ ...(await appInfo()), locale: "de-DE" }));
+    const el = await render(<App />);
+    for (let i = 0; i < 20 && !el.querySelector(".folder-name"); i++) await flush(30);
+    const account = [...el.querySelectorAll(".sidebar .account")].find((x) => x.querySelector(".account-head"))!;
+    const names = [...account.querySelectorAll(".folder-item .folder-name")].map((x) => x.textContent);
+    expect(names).toEqual(["Posteingang", "Entwürfe", "Gesendet", "Alle Nachrichten", "Entwürfe (Label)", "[Notion]", "Inbox", "Account Confirmations"]);
+    expect(account.querySelector(".folder-group")!.textContent).toBe("Labels");
+    // The label's icon is a tag, the Drafts folder keeps its own.
+    const icon = (name: string) => [...account.querySelectorAll(".folder")].find((b) => b.querySelector(".folder-name")!.textContent === name)!.querySelector("svg")!.getAttribute("class");
+    expect(icon("Entwürfe (Label)")).toMatch(/tag/);
+    expect(icon("Entwürfe")).toMatch(/file-text/);
   });
 });
 

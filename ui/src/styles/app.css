@@ -4223,3 +4223,11 @@ button.rule-text:hover {
   min-height: var(--touch-min);
   padding: 0 var(--sp-1);
 }
+
+/* An account's own folders (Gmail: its labels) below its special folders. */
+.folder-group {
+  padding: var(--sp-3) var(--sp-2) var(--sp-1);
+  color: var(--text-3);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+}

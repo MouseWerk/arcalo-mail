@@ -47,6 +47,8 @@ async function insets() {
     s.setProperty("--sab", `${b}px`);
     s.setProperty("--sal", `${l}px`);
     if (scale) s.setProperty("--type-scale", scale);
+    // As SystemBars.kt does after a change.
+    window.dispatchEvent(new Event("arcalo-insets"));
   }, [...INSETS, SCALE]);
 }
 

@@ -16,6 +16,7 @@ import {
   ShieldAlert,
   ShieldOff,
   SquarePen,
+  Tag,
   Trash2,
   Upload,
   WifiOff,
@@ -63,12 +64,19 @@ export function listLabel(m: Mailbox, all: Mailbox[], t: ReturnType<typeof useT>
   if (m.role) return name;
   const key = name.trim().toLowerCase();
   const taken = all.some((o) => o.role && o.id !== m.id && listedFolder(o) && folderLabel(o, t).trim().toLowerCase() === key);
-  return taken ? t("folder.sameName", { name }) : name;
+  if (!taken) return name;
+  // Nested: its whole path tells it apart.
+  const path = m.delimiter && m.name.includes(m.delimiter) ? m.name.split(m.delimiter).join(" / ") : name;
+  return t(isGmail(all) ? "folder.sameNameLabel" : "folder.sameName", { name: path });
 }
 
-export function folderIcon(m: Mailbox): IconType {
+/** Gmail's folders: its own under „[Gmail]/“ (or „[Google Mail]/“ in some countries); the
+ *  others are labels. */
+export const isGmail = (all: Mailbox[]) => all.some((m) => /^\[(Gmail|Google Mail)\]\//.test(m.name));
+
+export function folderIcon(m: Mailbox, gmail = false): IconType {
   if (!m.role && m.name === SCREENED_FOLDER) return ShieldOff;
-  return m.role ? ROLE[m.role].icon : Folder;
+  return m.role ? ROLE[m.role].icon : gmail ? Tag : Folder;
 }
 
 /** Nesting depth of a user folder („Projekte/Website“ is 1). */
@@ -216,11 +224,19 @@ export function Sidebar({
             <ul className="folders">
               {(mailboxes[a.id] ?? [])
                 .filter(listedFolder)
-                .map((m) => {
-                  const Icon = folderIcon(m);
+                .map((m, i, shown) => {
+                  const gmail = isGmail(shown);
+                  const Icon = folderIcon(m, gmail);
                   const isCurrent = m.id === current && !showingOutbox;
                   const count = m.role === "drafts" || m.role === "sent" || m.role === "trash" ? 0 : m.unread;
-                  return (
+                  // The account's own folders (or Gmail's labels) below its special ones.
+                  const own = !m.role && i > 0 && !!shown[i - 1].role;
+                  return [
+                    own && (
+                      <li key={`own-${m.id}`} className="folder-group" role="presentation">
+                        {t(gmail ? "folder.labels" : "folder.own")}
+                      </li>
+                    ),
                     <li key={m.id} className="folder-item">
                       <button
                         type="button"
@@ -258,8 +274,8 @@ export function Sidebar({
                       >
                         <MoreHorizontal size={14} strokeWidth={1.75} aria-hidden />
                       </button>
-                    </li>
-                  );
+                    </li>,
+                  ];
                 })}
             </ul>
           </section>

@@ -68,6 +68,9 @@ export function onVisibility(f: (visible: boolean) => void): () => void {
 type SystemBarsBridge = { insets?: () => string; setTheme?: (dark: boolean, background: string) => void };
 const bridge = (): SystemBarsBridge | undefined => (typeof window === "undefined" ? undefined : (window as unknown as { ArcaloSystemBars?: SystemBarsBridge }).ArcaloSystemBars);
 
+/** Sent after the shell set new values (SystemBars.kt). */
+export const INSETS_EVENT = "arcalo-insets";
+
 /** The only properties the shell may set. */
 export const SYSTEM_BAR_PROPS = ["--sat", "--sar", "--sab", "--sal", "--ime", "--type-scale"] as const;
 
