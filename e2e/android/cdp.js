@@ -41,10 +41,19 @@ export class Page {
     return page;
   }
 
-  send(method, params = {}) {
+  /** One call; it fails after `timeout` ms without an answer (a page that went away). */
+  send(method, params = {}, timeout = 60000) {
     const id = this.next++;
     return new Promise((resolve, reject) => {
-      this.waiting.set(id, { resolve, reject, method });
+      const timer = setTimeout(() => {
+        this.waiting.delete(id);
+        reject(new Error(`${method}: no answer after ${timeout} ms`));
+      }, timeout);
+      const done = (f) => (v) => {
+        clearTimeout(timer);
+        f(v);
+      };
+      this.waiting.set(id, { resolve: done(resolve), reject: done(reject), method });
       this.ws.send(JSON.stringify({ id, method, params }));
     });
   }
@@ -54,7 +63,7 @@ export class Page {
   }
 
   async evaluate(fn, arg) {
-    const r = await this.send("Runtime.evaluate", { expression: call(fn, arg), awaitPromise: true, returnByValue: true });
+    const r = await this.send("Runtime.evaluate", { expression: call(fn, arg), awaitPromise: true, returnByValue: true }, 30000);
     if (r.exceptionDetails) throw new Error(`in the page: ${r.exceptionDetails.exception?.description ?? r.exceptionDetails.text}`);
     return r.result.value;
   }

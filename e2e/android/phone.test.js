@@ -100,20 +100,25 @@ for (const [W, H] of [
     });
 
     const open = async () => {
+      const step = (what) => console.log(`${W}×${H}: ${what}`);
       device.fresh();
       device.setScreen(W, H, 2);
       const pid = await device.start();
+      step(`started, pid ${pid}`);
       page = await device.connect(pid);
       await page.addInitScript(geo.recordSpinners);
       await page.addInitScript(stock.stubDialogs);
       // The app in German whatever the emulator's language (the labels the steps look for).
       await page.waitForFunction(() => window.__TAURI_INTERNALS__ != null, undefined, { timeout: 60000 });
+      step("the page has the app's bridge");
       await page.evaluate(async () => {
         const s = await window.__TAURI_INTERNALS__.invoke("get_settings", {});
         await window.__TAURI_INTERNALS__.invoke("set_settings", { settings: { ...s, language: "de" } });
       });
+      step("language set");
       await page.reload();
       await page.waitForFunction(() => document.body.classList.contains("ready"), undefined, { timeout: 60000 });
+      step("ready after the reload");
       await page.evaluate(geo.recordSpinners);
       dpr = await page.evaluate(() => window.devicePixelRatio);
       console.log(`connected at ${W}×${H}: ${page.url()}, ${await page.evaluate(() => `${innerWidth}×${innerHeight}`)} at ${dpr}x`);
