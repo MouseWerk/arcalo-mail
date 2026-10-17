@@ -2005,3 +2005,496 @@
 .app[data-layout="phone"] .compose-account {
   display: none;
 }
+
+/* ---- the sorted inbox: tabs, focus, inbox zero, accounts' dots */
+
+.list-title-tools {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  flex: none;
+}
+/* Focus on: the same neutral tint as a pressed button, no accent. */
+.focus-btn[aria-pressed="true"] {
+  background: var(--bg-current);
+  box-shadow: var(--current-ring);
+  color: var(--text);
+}
+.inbox-tabs {
+  display: flex;
+  gap: var(--sp-1);
+  margin: 0 calc(-1 * var(--sp-1));
+  padding: 0 var(--sp-1);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.inbox-tabs::-webkit-scrollbar {
+  display: none;
+}
+/* A narrow list: the other tabs show their icon and count, the open one its name too. */
+.list-pane {
+  container-type: inline-size;
+}
+@container (max-width: 560px) {
+  .inbox-tab:not([aria-selected="true"]) .inbox-tab-label {
+    display: none;
+  }
+}
+.inbox-tab {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  gap: var(--sp-1);
+  height: var(--ctl-sm);
+  padding: 0 var(--sp-2);
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text-2);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  white-space: nowrap;
+}
+.inbox-tab svg {
+  color: var(--text-3);
+}
+.inbox-tab:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+/* The open tab: a neutral tint and the text color, as the open folder. */
+.inbox-tab[aria-selected="true"] {
+  background: var(--bg-current);
+  box-shadow: var(--current-ring);
+  color: var(--text);
+}
+.inbox-tab[aria-selected="true"] svg {
+  color: var(--text-2);
+}
+.inbox-tab-count {
+  min-width: var(--icon-sm);
+  padding: 0 var(--sp-1);
+  border-radius: var(--r-pill);
+  background: var(--bg-active);
+  color: var(--text-2);
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-semibold);
+  line-height: var(--icon-sm);
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.focus-note {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sp-1) var(--sp-2);
+  margin: 0;
+  color: var(--text-2);
+  font-size: var(--fs-sm);
+}
+.focus-note svg {
+  flex: none;
+  color: var(--text-3);
+}
+.focus-note span {
+  flex: 1 1 200px;
+}
+.inbox-zero {
+  display: grid;
+  justify-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-10) var(--sp-6);
+  text-align: center;
+  animation: fade-in var(--dur-slow) var(--ease-out);
+}
+.inbox-zero h2 {
+  margin: var(--sp-2) 0 0;
+  font-size: var(--fs-xl);
+  font-weight: var(--fw-heading);
+  letter-spacing: var(--ls-heading);
+}
+.inbox-zero p {
+  margin: 0;
+}
+.inbox-zero-mark {
+  display: grid;
+  place-items: center;
+  width: var(--zero-mark);
+  height: var(--zero-mark);
+  border-radius: var(--r-pill);
+  background: var(--bg-active);
+  color: var(--text-2);
+}
+.inbox-zero-more {
+  display: grid;
+  justify-items: center;
+  gap: var(--sp-2);
+  margin-top: var(--sp-4);
+  font-size: var(--fs-sm);
+}
+.inbox-zero-chips {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--sp-2);
+}
+.inbox-zero-snoozed {
+  margin-top: var(--sp-2);
+  font-size: var(--fs-sm);
+}
+.chip-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  height: var(--ctl-sm);
+  padding: 0 var(--sp-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-pill);
+  background: var(--bg-raised);
+  color: var(--text);
+  font-size: var(--fs-sm);
+}
+.chip-btn svg {
+  color: var(--text-3);
+}
+.chip-btn:hover {
+  background: var(--bg-hover);
+}
+.account-dot {
+  flex: none;
+  width: var(--dot);
+  height: var(--dot);
+  border-radius: var(--r-pill);
+  background: var(--text-3);
+}
+.account-dot[data-color="1"] {
+  background: var(--account-1);
+}
+.account-dot[data-color="2"] {
+  background: var(--account-2);
+}
+.account-dot[data-color="3"] {
+  background: var(--account-3);
+}
+.account-dot[data-color="4"] {
+  background: var(--account-4);
+}
+.account-dot[data-color="5"] {
+  background: var(--account-5);
+}
+.account-dot[data-color="6"] {
+  background: var(--account-6);
+}
+.account-head .account-dot {
+  margin-right: calc(-1 * var(--sp-1));
+}
+.row-icons .pin {
+  color: var(--text-2);
+}
+.row-due {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  color: var(--text-2);
+}
+
+/* ---- the list pane's own views: new senders, subscriptions, scheduled messages */
+
+.smart-note {
+  margin: 0;
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+}
+.smart-list {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  list-style: none;
+  margin: 0;
+  padding: var(--sp-2);
+}
+.smart-item {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-2) var(--sp-2) var(--sp-1);
+  border-radius: var(--r-md);
+}
+.smart-item + .smart-item {
+  margin-top: var(--sp-1);
+}
+.smart-item:hover {
+  background: var(--bg-hover);
+}
+.smart-item[aria-current="true"] {
+  background: var(--bg-current);
+  box-shadow: var(--current-ring);
+}
+.smart-item[data-done] .smart-name {
+  color: var(--text-2);
+}
+.smart-main {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  gap: var(--sp-3);
+  min-width: 0;
+  padding: var(--sp-1);
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: inherit;
+  text-align: left;
+}
+.smart-icon {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: var(--avatar);
+  height: var(--avatar);
+  border-radius: var(--r-pill);
+  background: var(--bg-active);
+  color: var(--text-2);
+}
+.smart-text {
+  display: grid;
+  flex: 1;
+  gap: var(--sp-half);
+  min-width: 0;
+}
+.smart-title {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+.smart-name {
+  overflow: hidden;
+  color: var(--text);
+  font-weight: var(--fw-medium);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.smart-sub {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-3);
+  font-size: var(--fs-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.smart-meta,
+.smart-when {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  min-width: 0;
+  color: var(--text-3);
+  font-size: var(--fs-sm);
+}
+.smart-meta > span {
+  white-space: nowrap;
+}
+.smart-subject {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-2);
+  text-overflow: ellipsis;
+}
+.smart-date {
+  flex: none;
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+}
+.smart-when {
+  color: var(--text-2);
+}
+.smart-actions {
+  display: flex;
+  align-items: center;
+  flex: none;
+  gap: var(--sp-1);
+}
+.smart-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  padding: 0 var(--sp-2);
+  color: var(--text-3);
+  font-size: var(--fs-sm);
+}
+.smart-empty {
+  flex: 1;
+  align-content: start;
+}
+
+/* ---- the reading pane: marks, trackers, streams, unsubscribe */
+
+.mark-notes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2) var(--sp-4);
+  margin: 0 0 var(--sp-3);
+}
+.mark-note {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  color: var(--text-2);
+  font-size: var(--fs-sm);
+}
+.mark-note svg {
+  color: var(--text-3);
+}
+.mark-note .link-btn {
+  margin-left: var(--sp-1);
+}
+.tracker-note {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  margin: 0 0 var(--sp-2);
+  color: var(--text-3);
+  font-size: var(--fs-xs);
+}
+.stream-subject {
+  margin: 0 0 var(--sp-3);
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-heading);
+  letter-spacing: var(--ls-heading);
+}
+.reminder-banner {
+  margin-bottom: var(--sp-4);
+}
+.unsubscribed-note {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  padding: 0 var(--sp-2);
+  color: var(--text-3);
+  font-size: var(--fs-sm);
+}
+
+/* ---- menus with presets, the split send button, the time dialog */
+
+.menu-heading {
+  padding: var(--sp-1) var(--sp-2) var(--sp-half);
+  color: var(--text-3);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--ls-eyebrow);
+  text-transform: uppercase;
+}
+.menu-label {
+  flex: 1;
+}
+.menu-hint {
+  margin-left: var(--sp-4);
+  color: var(--text-3);
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums;
+}
+.menu-check {
+  margin-left: var(--sp-2);
+}
+.menu-item[aria-checked="true"] {
+  font-weight: var(--fw-medium);
+}
+.split-btn {
+  display: inline-flex;
+}
+.split-btn .btn:first-child {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+.split-btn-more {
+  padding: 0 var(--sp-1);
+  margin-left: 1px;
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+}
+.remind-btn {
+  padding: 0 var(--sp-2);
+}
+.remind-on {
+  background: var(--bg-current);
+  color: var(--text);
+}
+/* The time dialog opened from the compose sheet stands above it. */
+.overlay-above {
+  z-index: var(--z-viewer);
+}
+.when-input {
+  width: min(var(--when-input-w), 100%);
+}
+.when-preview,
+.when-note {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-2);
+  margin: var(--sp-3) 0 0;
+  color: var(--text-2);
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+}
+.when-preview svg,
+.when-note svg {
+  flex: none;
+  margin-top: var(--sp-half);
+  color: var(--text-3);
+}
+
+/* ---- the setup's offer of the Screener */
+
+.setup-offer {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  width: 100%;
+  max-width: var(--dialog-w);
+  margin: var(--sp-2) 0;
+  padding: var(--sp-3);
+  border-radius: var(--r-md);
+  background: var(--bg-hover);
+  text-align: left;
+}
+.setup-offer-icon {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: var(--avatar);
+  height: var(--avatar);
+  border-radius: var(--r-pill);
+  background: var(--bg-active);
+  color: var(--text-2);
+}
+.setup-offer-text {
+  flex: 1;
+  min-width: 0;
+}
+
+/* ---- phones: the new views' rows put their buttons below the text */
+
+@media (max-width: 720px) {
+  .smart-item {
+    flex-wrap: wrap;
+  }
+  .smart-actions {
+    width: 100%;
+    justify-content: flex-end;
+  }
+}
+
+/* New senders and scheduled messages: the text gets the row, the buttons go below it. */
+.screener-item,
+.scheduled-item {
+  flex-wrap: wrap;
+  row-gap: 0;
+}
+.screener-item .smart-actions,
+.scheduled-item .smart-actions {
+  width: 100%;
+  padding: 0 0 var(--sp-1) calc(var(--avatar) + var(--sp-3) + var(--sp-1));
+}

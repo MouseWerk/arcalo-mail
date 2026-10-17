@@ -9,6 +9,7 @@ import { explain, hintKey } from "./problems";
 import { score } from "./palette";
 import { resolveTheme } from "./theme";
 import type { MessageView } from "./types";
+import { fromLocalInput, sendPresets, snoozePresets, toLocalInput, whenLabel } from "./when";
 
 describe("i18n", () => {
   it("translates with values and plurals", () => {
@@ -67,7 +68,7 @@ describe("compose", () => {
   const message: MessageView = {
     summary: {
       id: 1, mailbox_id: 1, uid: 1, thread_id: 1, subject: "AW: Re: Angebot", from: { name: "Jonas", email: "jonas@example.org" },
-      date: 1_792_135_800, snippet: "", seen: true, flagged: false, answered: false, has_attachments: false, thread_count: 1,
+      date: 1_792_135_800, snippet: "", seen: true, flagged: false, answered: false, has_attachments: false, thread_count: 1, account_id: 1,
     },
     account_id: 1,
     to: [{ name: "Maria", email: "maria@example.org" }, { name: null, email: "team@example.org" }],
@@ -81,10 +82,15 @@ describe("compose", () => {
     has_body: true,
     text: "Hallo\n> alt",
     remote_allowed: false,
-    body: { html: "", full_html: null, text_html: null, blocked_remote: 0, plain: true },
+    body: { html: "", full_html: null, text_html: null, blocked_remote: 0, trackers: 0, plain: true },
     sender_trusted: false,
     files: [],
     load_error: null,
+    unsubscribe: null,
+    list_id: null,
+    one_click: false,
+    marks: { pinned: false, later: false, snoozed_until: null, followup_due: null },
+    unsubscribed: null,
   };
   const account = { id: 1, provider: "imap" as const, name: "", email: "maria@example.org", sender_name: "Maria", transport: { kind: "graph" as const }, signature: "Maria Muster" };
 
@@ -268,5 +274,41 @@ describe("touch", () => {
     expect(backStep({ ...s, layout: "tablet" })).toBeNull();
     expect(backStep({ ...s, view: "folders", layout: "tablet" })).toBe("list");
     expect(backStep({ ...s, view: "list" })).toBeNull();
+  });
+});
+
+describe("the time tools' times", () => {
+  // Friday 16 October 2026, 15:20.
+  const fri = new Date(2026, 9, 16, 15, 20);
+  const at = (y: number, mo: number, d: number, h: number, mi = 0) => new Date(y, mo, d, h, mi).getTime() / 1000;
+
+  it("offers later today, tomorrow and next week, the weekend from Monday to Thursday", () => {
+    expect(snoozePresets(fri)).toEqual([
+      { id: "laterToday", at: at(2026, 9, 16, 19) },
+      { id: "tomorrow", at: at(2026, 9, 17, 8) },
+      { id: "nextWeek", at: at(2026, 9, 19, 8) },
+    ]);
+    const tue = snoozePresets(new Date(2026, 9, 13, 9, 0)).map((p) => p.id);
+    expect(tue).toEqual(["laterToday", "tomorrow", "weekend", "nextWeek"]);
+    expect(snoozePresets(new Date(2026, 9, 16, 21, 30)).map((p) => p.id)).not.toContain("laterToday");
+    // A Sunday's next week is the Monday after tomorrow's.
+    expect(snoozePresets(new Date(2026, 9, 18, 10, 0)).find((p) => p.id === "nextWeek")?.at).toBe(at(2026, 9, 26, 8));
+    expect(sendPresets(fri).map((p) => p.at)).toEqual([at(2026, 9, 17, 8), at(2026, 9, 17, 13), at(2026, 9, 19, 8)]);
+  });
+
+  it("names near times and reads the time field", () => {
+    expect(whenLabel(at(2026, 9, 16, 19), fri, "de")).toBe("Heute, 19:00");
+    expect(whenLabel(at(2026, 9, 17, 8), fri, "en")).toBe("Tomorrow, 08:00");
+    // Weekday and month names as the platform's ICU writes them („Mo“ or „Mo.“).
+    expect(whenLabel(at(2026, 9, 19, 8), fri, "de")).toMatch(/^Mo\.?, 08:00$/);
+    expect(whenLabel(at(2026, 11, 24, 18, 30), fri, "de")).toMatch(/^24\. Dez\.?, 18:30$/);
+    expect(fromLocalInput(toLocalInput(at(2026, 9, 17, 8)))).toBe(at(2026, 9, 17, 8));
+    expect(fromLocalInput("2026-10-17T08:00:30")).toBe(at(2026, 9, 17, 8) + 30);
+    expect(fromLocalInput("")).toBeNull();
+  });
+
+  it("has keys for snooze, pin and more", () => {
+    const k = (key: string) => keyAction({ key, ctrlKey: false, metaKey: false, altKey: false, shiftKey: false }, false);
+    expect([k("h"), k("p"), k(".")]).toEqual(["snooze", "pin", "more"]);
   });
 });

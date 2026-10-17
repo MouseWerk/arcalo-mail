@@ -1,4 +1,4 @@
-import { ArrowLeft, CircleCheck, CircleX, ExternalLink, Info, KeyRound, Lock, LogIn, Mail, ServerCog, ShieldCheck, Sparkles } from "lucide-react";
+import { ArrowLeft, CircleCheck, CircleX, ExternalLink, Info, KeyRound, Lock, LogIn, Mail, ServerCog, ShieldCheck, Sparkles, UserPlus } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useT, type TKey } from "../lib/i18n";
 import { api, openExternal } from "../lib/api";
@@ -128,6 +128,32 @@ export function GmailGuide() {
         <span className="muted">{t("gmail.later")}</span>
       </div>
     </section>
+  );
+}
+
+/** The first start offers the Screener once (off by default); the settings keep it. */
+function ScreenerOffer() {
+  const t = useT();
+  const [on, setOn] = useState<boolean | null>(null);
+  useEffect(() => {
+    void api.settings().then((s) => setOn(s.screener));
+  }, []);
+  if (on === null) return null;
+  const change = (v: boolean) => {
+    setOn(v);
+    void api.settings().then((s) => api.saveSettings({ ...s, screener: v }));
+  };
+  return (
+    <div className="setup-offer">
+      <span className="setup-offer-icon" aria-hidden>
+        <UserPlus size={18} strokeWidth={1.75} />
+      </span>
+      <div className="setup-offer-text">
+        <div className="set-label">{t("settings.screener")}</div>
+        <div className="set-desc">{t("setup.screenerText")}</div>
+      </div>
+      <Switch label={t("settings.screener")} checked={on} onChange={change} />
+    </div>
   );
 }
 
@@ -273,6 +299,7 @@ export function Setup({ welcome, onDone, onCancel }: { welcome: boolean; onDone:
           <CircleCheck size={36} strokeWidth={1.5} aria-hidden className="setup-done-icon" />
           <h1>{t("setup.doneTitle")}</h1>
           <p className="muted">{t("setup.doneText", { email: step.account.email })}</p>
+          {welcome && <ScreenerOffer />}
           <button type="button" className="btn btn-primary btn-lg" autoFocus onClick={() => onDone(step.account)}>
             {t("setup.toInbox")}
           </button>

@@ -729,8 +729,14 @@ async fn main_loop<C: Connector>(ctx: &Ctx<C>, wake: &Notify, queue: &RefCell<Ve
                     timeout = timeout.min(Duration::from_secs((due - now()).max(0) as u64 + 1));
                 }
                 let timeout = timeout.clamp(Duration::from_secs(1), IDLE_RENEW);
-                let inbox = ctx.inbox().map(|m| m.name).unwrap_or_else(|| "INBOX".into());
+                let known = ctx.inbox();
+                let inbox = known.as_ref().map(|m| m.name.clone()).unwrap_or_else(|| "INBOX".into());
                 let r = match c.select(&inbox, None).await {
+                    // Mail that arrived during the round (after its fetch, before this SELECT)
+                    // is not news to IDLE: sync again right away.
+                    Ok(sel) if known.and_then(|m| m.sync.uid_next).is_some_and(|n| sel.info.uid_next > n) => {
+                        Ok(IdleOutcome::Changed)
+                    }
                     Ok(_) => c.idle(timeout, wake).await,
                     Err(e) => Err(e),
                 };

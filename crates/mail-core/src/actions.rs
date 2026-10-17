@@ -424,6 +424,8 @@ pub struct MessageView {
     pub files: Vec<Attachment>,
     /// Pinned, read later, snoozed, a reminder.
     pub marks: crate::later::Marks,
+    /// When the user unsubscribed from the sender (the button gives way to a note).
+    pub unsubscribed: Option<i64>,
 }
 
 /// The message with its body ready for the sandboxed frame.
@@ -484,7 +486,8 @@ pub fn message_view(store: &Store, id: i64, remote: RemoteContent) -> Result<Mes
     detail.html = None;
     detail.remote_allowed = allow;
     let marks = crate::later::marks_of(store, id)?;
-    Ok(MessageView { detail, body, sender_trusted, files, marks })
+    let unsubscribed = crate::unsubscribe::unsubscribed_at(store, &sender)?;
+    Ok(MessageView { detail, body, sender_trusted, files, marks, unsubscribed })
 }
 
 #[cfg(test)]

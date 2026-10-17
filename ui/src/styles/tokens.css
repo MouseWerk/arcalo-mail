@@ -118,6 +118,9 @@
   --compose-h: 560px;
   /* The unread dot, the label column of the compose fields, the smallest message frame, inline icons. */
   --dot: 8px;
+  /* The calm mark of an empty inbox, the time field of the time tools' dialog. */
+  --zero-mark: 64px;
+  --when-input-w: 240px;
   --compose-label-w: 72px;
   --frame-min-h: 160px;
   /* Scroll bars drawn by the page (the toolkit's own float above dialogs on Linux). */
@@ -263,6 +266,13 @@
   --unread: var(--accent-fill);
   /* Scrims behind sheets and dialogs. */
   --scrim: rgb(0 0 0 / 0.5);
+  /* The accounts' dots in the unified inbox (markers, never a state). */
+  --account-1: #7aa2f7;
+  --account-2: #8bd17c;
+  --account-3: #e0af68;
+  --account-4: #bb9af7;
+  --account-5: #f38ba8;
+  --account-6: #56c6d8;
 }
 
 :root[data-theme="light"] {
@@ -323,6 +333,12 @@
   --paper-rule: #d4d4d8;
   --unread: var(--accent-fill);
   --scrim: rgb(0 0 0 / 0.28);
+  --account-1: #3567cc;
+  --account-2: #3a8a2b;
+  --account-3: #b26f12;
+  --account-4: #7a4bd0;
+  --account-5: #c23a5c;
+  --account-6: #12839a;
 }
 
 /* High contrast (dark): stronger text and edges, and visible rings on selected and current rows,
@@ -385,4 +401,10 @@
   --paper-rule: #8a8a90;
   --unread: #ffffff;
   --scrim: rgb(0 0 0 / 0.7);
+  --account-1: #9cbcff;
+  --account-2: #a6f2a8;
+  --account-3: #ffd479;
+  --account-4: #d6bcff;
+  --account-5: #ffa6ba;
+  --account-6: #8ae8f7;
 }

@@ -1,6 +1,6 @@
 // Small building blocks shared by the views: dialogs, menus, switches, segmented controls.
 
-import { X } from "lucide-react";
+import { Check, X } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { useT } from "../lib/i18n";
 
@@ -13,6 +13,7 @@ export function Dialog({
   footer,
   wide,
   className,
+  above,
 }: {
   title: string;
   description?: string;
@@ -21,6 +22,8 @@ export function Dialog({
   footer?: ReactNode;
   wide?: boolean;
   className?: string;
+  /** Over the compose sheet (a question it asked). */
+  above?: boolean;
 }) {
   const t = useT();
   const ref = useRef<HTMLDivElement>(null);
@@ -31,7 +34,7 @@ export function Dialog({
     return () => before?.focus?.();
   }, []);
   return (
-    <div className="overlay" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+    <div className={`overlay${above ? " overlay-above" : ""}`} onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
       <div
         ref={ref}
         className={`dialog${wide ? " dialog-wide" : ""}${className ? ` ${className}` : ""}`}
@@ -187,7 +190,20 @@ export function ConfirmDialog({
   );
 }
 
-export type MenuItem = { label: string; icon?: ReactNode; onSelect: () => void; danger?: boolean; disabled?: boolean } | "separator";
+export type MenuItem =
+  | {
+      label: string;
+      icon?: ReactNode;
+      onSelect: () => void;
+      danger?: boolean;
+      disabled?: boolean;
+      /** A quiet note on the right (the time a preset stands for). */
+      hint?: string;
+      /** A choice that is in effect (a check mark, `menuitemradio`). */
+      checked?: boolean;
+    }
+  | "separator"
+  | { heading: string };
 
 /** A popup menu at a point (a context menu) or below an element; arrows, Enter and Esc work. */
 export function Menu({ items, at, onClose, label }: { items: MenuItem[]; at: { x: number; y: number }; onClose: () => void; label: string }) {
@@ -198,7 +214,7 @@ export function Menu({ items, at, onClose, label }: { items: MenuItem[]; at: { x
     if (!el) return;
     const r = el.getBoundingClientRect();
     setPos({ x: Math.min(at.x, window.innerWidth - r.width - 8), y: Math.min(at.y, window.innerHeight - r.height - 8) });
-    el.querySelector<HTMLElement>("[role='menuitem']:not([disabled])")?.focus();
+    el.querySelector<HTMLElement>("[role^='menuitem']:not([disabled])")?.focus();
   }, [at]);
   useEffect(() => {
     const close = (e: MouseEvent) => {
@@ -212,7 +228,7 @@ export function Menu({ items, at, onClose, label }: { items: MenuItem[]; at: { x
     };
   }, [onClose]);
   const move = (dir: number) => {
-    const list = Array.from(ref.current?.querySelectorAll<HTMLElement>("[role='menuitem']:not([disabled])") ?? []);
+    const list = Array.from(ref.current?.querySelectorAll<HTMLElement>("[role^='menuitem']:not([disabled])") ?? []);
     const i = list.indexOf(document.activeElement as HTMLElement);
     list[(i + dir + list.length) % list.length]?.focus();
   };
@@ -239,11 +255,16 @@ export function Menu({ items, at, onClose, label }: { items: MenuItem[]; at: { x
       {items.map((it, i) =>
         it === "separator" ? (
           <div key={i} className="menu-sep" role="separator" />
+        ) : "heading" in it ? (
+          <div key={i} className="menu-heading" role="presentation">
+            {it.heading}
+          </div>
         ) : (
           <button
             key={i}
             type="button"
-            role="menuitem"
+            role={it.checked === undefined ? "menuitem" : "menuitemradio"}
+            aria-checked={it.checked}
             className={`menu-item${it.danger ? " menu-danger" : ""}`}
             disabled={it.disabled}
             onClick={() => {
@@ -252,7 +273,9 @@ export function Menu({ items, at, onClose, label }: { items: MenuItem[]; at: { x
             }}
           >
             {it.icon}
-            <span>{it.label}</span>
+            <span className="menu-label">{it.label}</span>
+            {it.hint && <span className="menu-hint">{it.hint}</span>}
+            {it.checked && <Check size={14} strokeWidth={2} aria-hidden className="menu-check" />}
           </button>
         ),
       )}

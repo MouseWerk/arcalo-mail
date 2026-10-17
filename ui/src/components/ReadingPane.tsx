@@ -1,6 +1,14 @@
 import {
   Archive,
+  BellRing,
+  CheckCheck,
   ChevronLeft,
+  Clock,
+  MailCheck,
+  MailMinus,
+  MoreHorizontal,
+  Pin,
+  ShieldCheck,
   Download,
   Eye,
   File,
@@ -23,6 +31,7 @@ import {
 import { useState } from "react";
 import { currentLang, useT } from "../lib/i18n";
 import { addressLine, displayName, fileSize, fullDate, initials, now, shortDate } from "../lib/format";
+import { whenLabel } from "../lib/when";
 import type { Theme } from "../lib/theme";
 import type { Attachment, MessageSummary, MessageView } from "../lib/types";
 import { MailFrame } from "./MailFrame";
@@ -30,7 +39,10 @@ import { Spinner } from "./ui";
 
 export type Loaded = MessageView | "loading" | { error: string };
 
-export type MessageAction = "archive" | "delete" | "spam" | "move" | "toggleSeen" | "flag";
+export type MessageAction = "archive" | "delete" | "spam" | "move" | "toggleSeen" | "flag" | "snooze" | "more";
+
+/** What the notes on a message card take back: the snooze, the reminder, the pin. */
+export type MarkAction = "unsnooze" | "removeFollowup" | "unpin";
 
 type Props = {
   /** The conversation (or the one message), oldest first. */
@@ -50,6 +62,14 @@ type Props = {
   onEditDraft: (view: MessageView) => void;
   /** Touch screens: the actions in a bar at the bottom, in reach of the thumb. */
   touch?: boolean;
+  /** The sorted inbox: archiving is „Erledigt“. */
+  inbox?: boolean;
+  /** A bundle opened as a stream of the sender's issues, newest first. */
+  stream?: { name: string } | null;
+  /** Above the conversation (a reminder that came due). */
+  banner?: React.ReactNode;
+  onUnsubscribe: (view: MessageView) => void;
+  onMark: (a: MarkAction, view: MessageView) => void;
 };
 
 function attachmentIcon(mime: string) {
@@ -104,6 +124,45 @@ function Attachments({ files, onAttachment }: { files: Attachment[]; onAttachmen
   );
 }
 
+/** The notes below a card's head: pinned, snoozed until, a reminder; each with its way back. */
+function MarkNotes({ view, p }: { view: MessageView; p: Props }) {
+  const t = useT();
+  const lang = currentLang();
+  const m = view.marks;
+  if (!m || (!m.pinned && m.snoozed_until == null && m.followup_due == null)) return null;
+  return (
+    <div className="mark-notes">
+      {m.pinned && (
+        <span className="mark-note">
+          <Pin size={13} strokeWidth={1.75} aria-hidden />
+          <span>{t("read.pinned")}</span>
+          <button type="button" className="link-btn" onClick={() => p.onMark("unpin", view)}>
+            {t("read.unpin")}
+          </button>
+        </span>
+      )}
+      {m.snoozed_until != null && (
+        <span className="mark-note">
+          <Clock size={13} strokeWidth={1.75} aria-hidden />
+          <span>{t("read.snoozedUntil", { when: whenLabel(m.snoozed_until, now(), lang) })}</span>
+          <button type="button" className="link-btn" onClick={() => p.onMark("unsnooze", view)}>
+            {t("snooze.unsnooze")}
+          </button>
+        </span>
+      )}
+      {m.followup_due != null && (
+        <span className="mark-note">
+          <BellRing size={13} strokeWidth={1.75} aria-hidden />
+          <span>{t("read.followupAt", { when: whenLabel(m.followup_due, now(), lang) })}</span>
+          <button type="button" className="link-btn" onClick={() => p.onMark("removeFollowup", view)}>
+            {t("read.remove")}
+          </button>
+        </span>
+      )}
+    </div>
+  );
+}
+
 function MessageCard({ view, theme, p, onCollapse }: { view: MessageView; theme: Theme; p: Props; onCollapse?: () => void }) {
   const t = useT();
   const lang = currentLang();
@@ -138,11 +197,25 @@ function MessageCard({ view, theme, p, onCollapse }: { view: MessageView; theme:
           {shortDate(m.date, now(), lang)}
         </time>
         <div className="message-card-actions">
+          {view.unsubscribe &&
+            (view.unsubscribed ? (
+              <span className="unsubscribed-note">
+                <MailCheck size={14} strokeWidth={1.75} aria-hidden />
+                <span>{t("subs.unsubscribed")}</span>
+              </span>
+            ) : (
+              <button type="button" className="btn btn-sm btn-quiet unsubscribe-btn" onClick={() => p.onUnsubscribe(view)} title={t("read.unsubscribe")}>
+                <MailMinus size={14} strokeWidth={1.75} aria-hidden />
+                <span>{t("read.unsubscribe")}</span>
+              </button>
+            ))}
           <button type="button" className="icon-btn icon-btn-sm" onClick={() => p.onCompose("reply", view)} aria-label={t("read.reply")} title={t("read.reply")}>
             <Reply size={15} strokeWidth={1.75} aria-hidden />
           </button>
         </div>
       </header>
+      {p.stream && <h2 className="stream-subject">{m.subject || t("list.noSubject")}</h2>}
+      <MarkNotes view={view} p={p} />
       {view.draft && (
         <div className="notice" role="status">
           <Pencil size={16} strokeWidth={1.75} aria-hidden />
@@ -178,6 +251,12 @@ function MessageCard({ view, theme, p, onCollapse }: { view: MessageView; theme:
             )}
           </span>
         </div>
+      )}
+      {view.body.trackers > 0 && (
+        <p className="tracker-note" title={t("read.trackersHint")}>
+          <ShieldCheck size={14} strokeWidth={1.75} aria-hidden />
+          <span>{t("read.trackers", { n: view.body.trackers })}</span>
+        </p>
       )}
       <MailFrame html={html} allowRemote={view.remote_allowed} theme={theme} plain={view.body.plain || asText} />
       {(view.body.full_html || view.body.text_html) && (
@@ -223,7 +302,7 @@ export function ReadingPane(p: Props) {
     return null;
   })();
   const tool = (a: MessageAction, icon: React.ReactNode, label: string) => (
-    <button type="button" className="icon-btn" onClick={(e) => p.onAction(a, e.currentTarget.getBoundingClientRect())} aria-label={label} title={label}>
+    <button type="button" className="icon-btn" data-action={a} onClick={(e) => p.onAction(a, e.currentTarget.getBoundingClientRect())} aria-label={label} title={label}>
       {icon}
     </button>
   );
@@ -237,7 +316,7 @@ export function ReadingPane(p: Props) {
             <ChevronLeft size={20} strokeWidth={1.75} aria-hidden />
           </button>
           <span className="toolbar-gap" />
-          {tool("spam", <ShieldAlert size={18} strokeWidth={1.75} aria-hidden />, t("read.spam"))}
+          {tool("snooze", <Clock size={18} strokeWidth={1.75} aria-hidden />, t("read.snooze"))}
           {tool("toggleSeen", seen ? <Mail size={18} strokeWidth={1.75} aria-hidden /> : <MailOpen size={18} strokeWidth={1.75} aria-hidden />, seen ? t("read.markUnread") : t("read.markRead"))}
           <button
             type="button"
@@ -249,6 +328,7 @@ export function ReadingPane(p: Props) {
           >
             <Flag size={18} strokeWidth={1.75} aria-hidden className={flagged ? "flag" : undefined} />
           </button>
+          {tool("more", <MoreHorizontal size={18} strokeWidth={1.75} aria-hidden />, t("read.more"))}
         </div>
       ) : (
         <div className="toolbar" role="toolbar" aria-label={t("read.actions")}>
@@ -268,7 +348,10 @@ export function ReadingPane(p: Props) {
             <span>{t("read.forward")}</span>
           </button>
           <span className="toolbar-gap" />
-          {tool("archive", <Archive size={16} strokeWidth={1.75} aria-hidden />, t("read.archiveKey"))}
+          {p.inbox
+            ? tool("archive", <CheckCheck size={16} strokeWidth={1.75} aria-hidden />, t("read.doneKey"))
+            : tool("archive", <Archive size={16} strokeWidth={1.75} aria-hidden />, t("read.archiveKey"))}
+          {tool("snooze", <Clock size={16} strokeWidth={1.75} aria-hidden />, t("read.snoozeKey"))}
           {tool("delete", <Trash2 size={16} strokeWidth={1.75} aria-hidden />, t("read.deleteKey"))}
           {tool("spam", <ShieldAlert size={16} strokeWidth={1.75} aria-hidden />, t("read.spam"))}
           {tool("move", <FolderInput size={16} strokeWidth={1.75} aria-hidden />, t("read.move"))}
@@ -283,12 +366,18 @@ export function ReadingPane(p: Props) {
           >
             <Flag size={16} strokeWidth={1.75} aria-hidden className={flagged ? "flag" : undefined} />
           </button>
+          {tool("more", <MoreHorizontal size={16} strokeWidth={1.75} aria-hidden />, t("read.more"))}
         </div>
       )}
       <div className="reading-scroll">
+        {p.banner}
         <header className="message-head">
-          <h1 className="message-subject">{(ready?.summary.subject ?? focus.subject) || t("list.noSubject")}</h1>
-          {p.thread.length > 1 && <p className="muted thread-note">{t("read.thread", { n: p.thread.length })}</p>}
+          {p.stream ? (
+            <h1 className="message-subject">{t("read.stream", { n: p.thread.length, name: p.stream.name })}</h1>
+          ) : (
+            <h1 className="message-subject">{(ready?.summary.subject ?? focus.subject) || t("list.noSubject")}</h1>
+          )}
+          {p.thread.length > 1 && !p.stream && <p className="muted thread-note">{t("read.thread", { n: p.thread.length })}</p>}
         </header>
         <div className="conversation">
           {p.thread.map((m) => {
@@ -334,7 +423,7 @@ export function ReadingPane(p: Props) {
       </div>
       {p.touch && (
         <div className="touch-actions" role="toolbar" aria-label={t("read.actions")}>
-          {tool("archive", <Archive size={20} strokeWidth={1.75} aria-hidden />, t("read.archive"))}
+          {tool("archive", p.inbox ? <CheckCheck size={20} strokeWidth={1.75} aria-hidden /> : <Archive size={20} strokeWidth={1.75} aria-hidden />, p.inbox ? t("read.done") : t("read.archive"))}
           {tool("delete", <Trash2 size={20} strokeWidth={1.75} aria-hidden />, t("read.delete"))}
           {tool("move", <FolderInput size={20} strokeWidth={1.75} aria-hidden />, t("read.move"))}
           <button type="button" className="icon-btn" disabled={!replyView} onClick={() => replyView && p.onCompose("reply", replyView)} aria-label={t("read.reply")} title={t("read.reply")}>

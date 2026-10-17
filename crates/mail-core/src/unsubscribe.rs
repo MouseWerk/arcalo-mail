@@ -80,10 +80,10 @@ pub fn methods(header: &str, one_click: bool) -> Vec<Method> {
         let lower = addr.to_ascii_lowercase();
         if lower.starts_with("mailto:") {
             out.extend(mailto(addr));
-        } else if lower.starts_with("https://") {
-            out.push(if one_click { Method::OneClick { url: addr.into() } } else { Method::Link { url: addr.into() } });
-        } else if lower.starts_with("http://") {
-            out.push(Method::Link { url: addr.into() });
+        } else if lower.starts_with("https://") || lower.starts_with("http://") {
+            // The POST only where the network policy allows it: `https://` (or this computer).
+            let post = one_click && network::check_https_url(addr).is_ok();
+            out.push(if post { Method::OneClick { url: addr.into() } } else { Method::Link { url: addr.into() } });
         }
     }
     out
@@ -159,6 +159,15 @@ pub fn record(store: &Store, sender: &str, method: &str) -> Result<()> {
     Ok(())
 }
 
+/// When the user unsubscribed from a sender, if they did.
+pub fn unsubscribed_at(store: &Store, sender: &str) -> Result<Option<i64>> {
+    use rusqlite::OptionalExtension;
+    Ok(store
+        .conn()
+        .query_row("SELECT at FROM unsubscribes WHERE sender = ?1", [sender.trim()], |r| r.get(0))
+        .optional()?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -192,8 +201,17 @@ mod tests {
             })
         );
         assert_eq!(best("<http://news.example/u>", true).map(|m| m.kind()), Some("link"), "no POST over http");
+        assert_eq!(
+            best("<http://127.0.0.1:8025/u>", true).map(|m| m.kind()),
+            Some("one_click"),
+            "this computer (tests)"
+        );
         assert_eq!(best("<ftp://x>, garbage", true), None);
         assert_eq!(mailto_draft(1, "a@b.example", "unsubscribe", "").text, "unsubscribe");
+        let (store, _, _) = crate::store::tests::store_with_inbox();
+        assert_eq!(unsubscribed_at(&store, "news@x.example").unwrap(), None);
+        record(&store, "News@X.example", "mailto").unwrap();
+        assert!(unsubscribed_at(&store, "news@x.example").unwrap().is_some());
     }
 
     #[tokio::test]

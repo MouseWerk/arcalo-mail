@@ -26,6 +26,15 @@ import type {
   Transport,
   Undo,
   Account,
+  Category,
+  InboxCounts,
+  InboxQuery,
+  Reminder,
+  Scheduled,
+  Subscription,
+  TimeCounts,
+  Unsubscribed,
+  WaitingSender,
 } from "./types";
 
 export const inApp = (): boolean => typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -90,8 +99,12 @@ export const api = {
     call<MessageSummary[]>("server_search", { accountId, query, mailboxIds: null }, () => demo.search(query)),
   suggest: (prefix: string) => call<Contact[]>("suggest_contacts", { prefix }, () => demo.suggest(prefix)),
 
-  send: (draft: ComposeDraft) => call<Queued>("send_message", { draft }, () => demo.send(draft)),
-  cancelSend: (outboxId: number) => call<boolean>("cancel_send", { outboxId }, () => true),
+  send: (draft: ComposeDraft, followupSecs: number | null = null) => call<Queued>("send_message", { draft, followupSecs }, () => demo.send(draft)),
+  cancelSend: (outboxId: number, messageId: string | null = null) => call<boolean>("cancel_send", { outboxId, messageId }, () => true),
+  sendLater: (draft: ComposeDraft, at: number, followupSecs: number | null) => call<number>("send_later", { draft, at, followupSecs }, () => demo.sendLater(draft, at)),
+  scheduled: () => call<Scheduled[]>("scheduled_messages", {}, () => demo.scheduled()),
+  unschedule: (id: number) => call<ComposeDraft>("unschedule", { id }, () => demo.unschedule(id)),
+  sendScheduledNow: (id: number) => call<void>("send_scheduled_now", { id }, () => void demo.unschedule(id)),
   saveDraft: (draft: ComposeDraft) => call<string>("save_draft", { draft }, () => draft.message_id ?? `demo-${Date.now()}@example.org`),
   discardDraft: (accountId: number, messageId: string) => call<void>("discard_draft", { accountId, messageId }, () => undefined),
   fileInfos: (paths: string[]) => call<FileInfo[]>("file_infos", { paths }, () => []),
@@ -99,6 +112,32 @@ export const api = {
   openAttachment: (id: number) => call<string>("open_attachment", { id }, () => ""),
   saveAttachment: (id: number, path: string) => call<void>("save_attachment", { id, path }, () => undefined),
   previewAttachment: (id: number) => call<{ mime_type: string; data_b64: string }>("attachment_preview", { id }, () => demo.preview()),
+
+  inbox: (query: InboxQuery, offset: number, limit: number) => call<Page>("inbox_list", { query, offset, limit }, () => demo.inbox(query, offset, limit)),
+  inboxCounts: (accountId: number | null) => call<InboxCounts>("inbox_counts", { accountId }, () => demo.inboxCounts(accountId)),
+  bundle: (accountId: number | null, sender: string) => call<MessageSummary[]>("bundle_messages", { accountId, sender }, () => demo.bundle(sender)),
+  setSenderCategory: (email: string, category: Category | null) =>
+    call<void>("set_sender_category", { email, category }, () => demo.setSenderCategory(email, category)),
+  screenerSenders: (accountId: number | null) => call<WaitingSender[]>("screener_senders", { accountId }, () => demo.screenerSenders()),
+  screenerAllow: (email: string) => call<void>("screener_allow", { email }, () => void demo.screen(email, "allowed")),
+  screenerBlock: (email: string) => call<Undo>("screener_block", { email }, () => demo.screen(email, "blocked")),
+  screenerForget: (email: string) => call<void>("screener_forget", { email }, () => void demo.screen(email, null)),
+  blockedSenders: () => call<string[]>("blocked_senders", {}, () => demo.blockedSenders()),
+  subscriptions: () => call<Subscription[]>("subscriptions", {}, () => demo.subscriptions()),
+  unsubscribe: (sender: string) => call<Unsubscribed>("unsubscribe", { sender }, () => demo.unsubscribe(sender)),
+  unsubscribedByLink: (sender: string) => call<void>("unsubscribed_by_link", { sender }, () => undefined),
+
+  setPinned: (ids: number[], on: boolean) => call<void>("set_pinned", { ids, on }, () => demo.mark(ids, "pinned", on)),
+  setReadLater: (ids: number[], on: boolean) => call<void>("set_read_later", { ids, on }, () => demo.mark(ids, "later", on)),
+  readLater: () => call<MessageSummary[]>("read_later", {}, () => demo.timeList("later")),
+  snooze: (ids: number[], until: number) => call<void>("snooze", { ids, until }, () => demo.snooze(ids, until)),
+  unsnooze: (ids: number[]) => call<void>("unsnooze", { ids }, () => demo.snooze(ids, null)),
+  snoozed: () => call<MessageSummary[]>("snoozed", {}, () => demo.timeList("snoozed")),
+  setFollowup: (ids: number[], due: number) => call<void>("set_followup", { ids, due }, () => demo.followup(ids, due)),
+  dismissFollowups: (ids: number[]) => call<void>("dismiss_followups", { ids }, () => demo.followup(ids, null)),
+  followups: () => call<MessageSummary[]>("followups", {}, () => demo.timeList("followups")),
+  timeCounts: () => call<TimeCounts>("time_counts", {}, () => demo.timeCounts()),
+  tick: () => call<void>("tick", {}, () => undefined),
 
   outbox: () => call<OutboxEntry[]>("outbox_entries", {}, () => []),
   retryOutbox: (id: number) => call<void>("retry_outbox", { id }, () => undefined),
@@ -112,6 +151,24 @@ export function onNotice(f: (n: Notice) => void): () => void {
   let cancelled = false;
   void import("@tauri-apps/api/event").then(({ listen }) =>
     listen<Notice>("mail-notice", (e) => f(e.payload)).then((un) => {
+      if (cancelled) un();
+      else stop = un;
+    }),
+  );
+  return () => {
+    cancelled = true;
+    stop?.();
+  };
+}
+
+/** Calls `f` with the reminders that came due without an answer; returns the unsubscribe
+ *  function. */
+export function onReminders(f: (r: Reminder[]) => void): () => void {
+  if (!inApp()) return () => {};
+  let stop: (() => void) | null = null;
+  let cancelled = false;
+  void import("@tauri-apps/api/event").then(({ listen }) =>
+    listen<Reminder[]>("reminders", (e) => f(e.payload)).then((un) => {
       if (cancelled) un();
       else stop = un;
     }),

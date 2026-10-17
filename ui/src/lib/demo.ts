@@ -19,6 +19,14 @@ import type {
   Queued,
   Settings,
   Undo,
+  Category,
+  InboxCounts,
+  InboxQuery,
+  Scheduled,
+  Subscription,
+  TimeCounts,
+  Unsubscribed,
+  WaitingSender,
 } from "./types";
 
 const now = Math.floor(Date.now() / 1000);
@@ -49,7 +57,18 @@ let mailboxes: Mailbox[] = [
   { id: 8, account_id: 2, name: "Junk", delimiter: "/", role: "junk", selectable: true, unread: 0, total: 0 },
 ];
 
-type Demo = MessageSummary & { to: MessageView["to"]; cc: MessageView["cc"]; html: string; text: string; blocked: number; hidden?: boolean };
+type Demo = MessageSummary & {
+  to: MessageView["to"];
+  cc: MessageView["cc"];
+  html: string;
+  text: string;
+  blocked: number;
+  hidden?: boolean;
+  later?: boolean;
+  snoozed?: number | null;
+  followup?: number | null;
+  unsub?: string;
+};
 
 const plain = (text: string) => `<div class="plain">${text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/\n/g, "<br>")}</div>`;
 
@@ -67,6 +86,8 @@ const m = (id: number, mailbox: number, from: [string, string], subject: string,
   answered: false,
   has_attachments: false,
   thread_count: 1,
+  account_id: mailbox === 7 || mailbox === 8 ? 2 : 1,
+  category: "people",
   to: [{ name: "Maria Muster", email: "maria@example.org" }],
   cc: [],
   html: plain(text),
@@ -81,15 +102,21 @@ const messages: Demo[] = [
     { seen: false, has_attachments: true, cc: [{ name: "Team", email: "team@example.org" }] }),
   m(2, 1, ["Newsletter Stadtwerke", "news@stadtwerke.example"], "Ihre Verbrauchsübersicht im Oktober", 5 * H,
     "Die Übersicht enthält Bilder, die von einem Server geladen würden.",
-    { seen: false, blocked: 3,
+    { seen: false, blocked: 3, category: "newsletters", unsub: "<https://stadtwerke.example/abmelden>",
       html: '<table width="100%" style="padding:16px"><tr><td><h2 style="margin:0 0 8px">Ihre Verbrauchsübersicht</h2><p>Strom: 182 kWh, Wasser: 3,4 m³.</p><p><a href="https://stadtwerke.example/konto">Zum Kundenkonto</a></p></td></tr></table>' }),
   m(3, 1, ["Lea Hoffmann", "lea@example.org"], "Re: Termin nächste Woche", 27 * H,
     "Dienstag 10 Uhr passt mir gut. Ich bringe die Entwürfe mit.", { answered: true, flagged: true, thread_id: 3, thread_count: 2 }),
   m(10, 3, ["Maria Muster", "maria@example.org"], "Termin nächste Woche", 30 * H, "Passt dir Dienstag oder Mittwoch?", { thread_id: 3 }),
-  m(4, 1, ["Build-Server", "ci@example.org"], "Alle Prüfungen bestanden", 4 * 24 * H, "Alle Prüfungen auf main sind bestanden."),
+  m(4, 1, ["Build-Server", "ci@example.org"], "Alle Prüfungen bestanden", 4 * 24 * H, "Alle Prüfungen auf main sind bestanden.", { category: "notifications" }),
   m(5, 3, ["Maria Muster", "maria@example.org"], "Unterlagen für Freitag", 2 * 24 * H, "Hier die Unterlagen für Freitag."),
-  m(6, 7, ["Paket-Service", "info@paket.example"], "Deine Sendung kommt heute", 2 * H, "Zustellung zwischen 12 und 15 Uhr.", { seen: false }),
+  m(6, 7, ["Paket-Service", "info@paket.example"], "Deine Sendung kommt heute", 2 * H, "Zustellung zwischen 12 und 15 Uhr.", { seen: false, category: "notifications" }),
 ];
+
+const senderCategory = new Map<string, Category | null>();
+const screened = new Map<string, "allowed" | "blocked" | null>();
+const unsubscribed = new Map<string, number>();
+let scheduledList: (Scheduled & { draft: ComposeDraft })[] = [];
+const catOf = (x: Demo): Category => senderCategory.get(x.from?.email ?? "") ?? x.category ?? "people";
 
 const remote = new Set<number>();
 const senders = new Set<string>();
@@ -113,10 +140,18 @@ let settings: Settings = {
   swipe_left: "archive",
   swipe_right: "read",
   background_check: true,
+  screener: false,
+  screener_since: null,
+  focus: false,
+  unified_inbox: true,
+  bundles: true,
 };
 const listeners = new Set<(n: Notice) => void>();
 
-const summary = ({ to: _to, cc: _cc, html: _html, text: _text, blocked: _b, hidden: _h, ...s }: Demo): MessageSummary => s;
+const summary = ({ to: _to, cc: _cc, html: _html, text: _text, blocked: _b, hidden: _h, later: _l, snoozed: _s, followup: _f, unsub: _u, ...s }: Demo): MessageSummary => ({
+  ...s,
+  category: catOf({ ...s, to: [], cc: [], html: "", text: "", blocked: 0 }),
+});
 const visible = () => messages.filter((x) => !x.hidden);
 
 function counts(): Mailbox[] {
@@ -207,7 +242,12 @@ export const demo = {
       has_body: true,
       text: x.text,
       remote_allowed: allowed,
-      body: { html: x.html, full_html: null, text_html: x.html.includes("plain") ? null : plain(x.text), blocked_remote: allowed ? 0 : x.blocked, plain: false },
+      body: { html: x.html, full_html: null, text_html: x.html.includes("plain") ? null : plain(x.text), blocked_remote: allowed ? 0 : x.blocked, trackers: x.blocked ? 2 : 0, plain: false },
+      unsubscribe: x.unsub ?? null,
+      list_id: null,
+      one_click: !!x.unsub,
+      marks: { pinned: !!x.pinned, later: !!x.later, snoozed_until: x.snoozed ?? null, followup_due: x.followup ?? null },
+      unsubscribed: unsubscribed.get(x.from?.email ?? "") ?? null,
       sender_trusted: senders.has(x.from?.email ?? ""),
       files: x.has_attachments ? [{ id: 1, message_id: x.id, part_index: 0, filename: "Angebot-Relaunch.pdf", mime_type: "application/pdf", size: 182_000, content_id: null, inline: false, section: null }] : [],
       load_error: null,
@@ -264,6 +304,75 @@ export const demo = {
     return { outbox_id: 1, message_id: "demo@example.org", delay: settings.undo_send_secs };
   },
   preview: () => ({ mime_type: "image/png", data_b64: "" }),
+  inboxList: (q: InboxQuery) =>
+    visible()
+      .filter((x) => mailboxes.find((b) => b.id === x.mailbox_id)?.role === "inbox")
+      .filter((x) => q.account == null || x.account_id === q.account)
+      .filter((x) => !x.snoozed && screened.get(x.from?.email ?? "") !== "blocked"),
+  inbox: (q: InboxQuery, offset: number, limit: number): Page => {
+    const list = demo
+      .inboxList(q)
+      .filter((x) => (q.focus ? catOf(x) === "people" || x.pinned : catOf(x) === q.tab))
+      .sort((a, b) => Number(!!b.pinned) - Number(!!a.pinned) || b.date - a.date);
+    return { total: list.length, offset, items: list.slice(offset, offset + limit).map(summary) };
+  },
+  inboxCounts: (account: number | null): InboxCounts => {
+    const list = demo.inboxList({ account, tab: "people", focus: false, threads: false, bundles: false });
+    const cats: Category[] = ["people", "newsletters", "notifications", "receipts", "other"];
+    const count = (f: (x: Demo) => boolean) => ({ total: list.filter(f).length, unread: list.filter((x) => f(x) && !x.seen).length });
+    return {
+      tabs: cats.map((c) => ({ category: c, ...count((x) => catOf(x) === c) })),
+      focus: { category: "people", ...count((x) => catOf(x) === "people" || !!x.pinned) },
+      screener: 0,
+    };
+  },
+  bundle: (sender: string): MessageSummary[] => visible().filter((x) => x.from?.email === sender).sort((a, b) => b.date - a.date).map(summary),
+  setSenderCategory: (email: string, c: Category | null) => void senderCategory.set(email, c),
+  screenerSenders: (): WaitingSender[] => [],
+  screen: (email: string, v: "allowed" | "blocked" | null): Undo => {
+    screened.set(email, v);
+    return { outbox: [], hidden: [], accounts: [] };
+  },
+  blockedSenders: () => [...screened].filter(([, v]) => v === "blocked").map(([k]) => k),
+  subscriptions: (): Subscription[] =>
+    visible()
+      .filter((x) => x.unsub && x.from)
+      .map((x) => ({ sender: x.from!.email, name: x.from!.name, list_id: null, count: 1, last: x.date, method: "one_click", unsubscribed: unsubscribed.get(x.from!.email) ?? null, message_id: x.id })),
+  unsubscribe: (sender: string): Unsubscribed => {
+    unsubscribed.set(sender, now);
+    return { kind: "done" };
+  },
+  mark: (ids: number[], what: "pinned" | "later", on: boolean) => {
+    for (const x of messages) if (ids.includes(x.id)) x[what] = on;
+  },
+  snooze: (ids: number[], until: number | null) => {
+    for (const x of messages) if (ids.includes(x.id)) x.snoozed = until;
+  },
+  followup: (ids: number[], due: number | null) => {
+    for (const x of messages) if (ids.includes(x.id)) x.followup = due;
+  },
+  timeList: (which: "later" | "snoozed" | "followups"): MessageSummary[] =>
+    visible()
+      .filter((x) => (which === "later" ? x.later : which === "snoozed" ? x.snoozed : x.followup && x.followup <= Date.now() / 1000))
+      .map((x) => ({ ...summary(x), due: which === "snoozed" ? x.snoozed : which === "followups" ? x.followup : null })),
+  timeCounts: (): TimeCounts => ({
+    snoozed: demo.timeList("snoozed").length,
+    later: demo.timeList("later").length,
+    followups: demo.timeList("followups").length,
+    scheduled: scheduledList.length,
+  }),
+  sendLater: (d: ComposeDraft, at: number): number => {
+    const id = scheduledList.length + 1;
+    scheduledList = [...scheduledList, { id, account_id: d.account_id, due_at: at, subject: d.subject, recipients: d.to.join(", "), followup_secs: null, draft: d }];
+    return id;
+  },
+  scheduled: (): Scheduled[] => scheduledList.map(({ draft: _d, ...s }) => s),
+  unschedule: (id: number): ComposeDraft => {
+    const s = scheduledList.find((x) => x.id === id);
+    scheduledList = scheduledList.filter((x) => x.id !== id);
+    if (!s) throw new Error("gone");
+    return s.draft;
+  },
   onNotice: (f: (n: Notice) => void) => {
     listeners.add(f);
     return () => listeners.delete(f);

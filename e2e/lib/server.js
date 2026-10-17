@@ -38,6 +38,10 @@ export async function startServer({ user = USER, password = PASSWORD, args = [] 
       return post(`/deliver?${q}`, raw);
     },
     state: async () => (await fetch(`${base}/state`)).json(),
+    /** Requests to the senders' web side (`/unsubscribe…`, `/track…`, `/img…` on the control port). */
+    web: async () => (await fetch(`${base}/web`)).json(),
+    /** An address of the senders' web side on this server. */
+    webUrl: (p) => `${base}${p}`,
     sent: async () => (await fetch(`${base}/sent`)).json(),
     sentRaw: async (i) => (await fetch(`${base}/sent/raw?i=${i}`)).text(),
     offline: () => post("/offline"),
@@ -76,7 +80,7 @@ export async function startServer({ user = USER, password = PASSWORD, args = [] 
 }
 
 /** A plain message for tests. */
-export function message({ from = "Jonas Berger <jonas@example.org>", to = "Maria Muster <maria@example.org>", cc, subject, body, id, date = new Date(), inReplyTo, html, attachments = [] }) {
+export function message({ from = "Jonas Berger <jonas@example.org>", to = "Maria Muster <maria@example.org>", cc, subject, body, id, date = new Date(), inReplyTo, html, attachments = [], headers = [] }) {
   const mid = id ?? `${Math.random().toString(36).slice(2)}@example.org`;
   const head = [
     `From: ${from}`,
@@ -86,6 +90,7 @@ export function message({ from = "Jonas Berger <jonas@example.org>", to = "Maria
     `Date: ${date.toUTCString().replace("GMT", "+0000")}`,
     `Message-ID: <${mid}>`,
     ...(inReplyTo ? [`In-Reply-To: <${inReplyTo}>`, `References: <${inReplyTo}>`] : []),
+    ...headers,
     "MIME-Version: 1.0",
   ];
   const text = body.replace(/\n/g, "\r\n");

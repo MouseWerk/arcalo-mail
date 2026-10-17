@@ -1,5 +1,7 @@
 import {
+  AlarmClock,
   Bold,
+  ChevronDown,
   File,
   Italic,
   Link,
@@ -20,7 +22,8 @@ import { editorHtmlToText, isValidAddress, splitAddresses, textToEditorHtml, typ
 import { api, onFileDrop, pickFiles } from "../lib/api";
 import { fileSize } from "../lib/format";
 import type { Account, Contact } from "../lib/types";
-import { PromptDialog, trapFocus } from "./ui";
+import { Menu, PromptDialog, trapFocus, type MenuItem } from "./ui";
+import { followupItems, sendLaterItems } from "./TimeMenus";
 
 type Props = {
   draft: ComposeState;
@@ -28,7 +31,10 @@ type Props = {
   error: string | null;
   sending: boolean;
   onChange: (d: ComposeState) => void;
-  onSend: () => void;
+  /** Sends; `followupSecs`: „Erinnern, wenn keine Antwort“ that long after. */
+  onSend: (followupSecs: number | null) => void;
+  /** „Später senden“ at `at` (Unix seconds), or `null` to pick the time. */
+  onSendLater: (at: number | null, followupSecs: number | null) => void;
   onSaveDraft: () => void;
   onClose: () => void;
   onDiscard: () => void;
@@ -255,10 +261,18 @@ function Editor({ html, revision, onChange, label }: { html: string; revision: n
 
 /** The compose sheet: bottom right on a wide window, full screen on a phone. Esc closes it (and
  *  keeps the draft), Ctrl+Enter sends. Files dropped on the window are attached. */
-export function ComposeSheet({ draft, accounts, error, sending, onChange, onSend, onSaveDraft, onClose, onDiscard }: Props) {
+export function ComposeSheet({ draft, accounts, error, sending, onChange, onSend, onSendLater, onSaveDraft, onClose, onDiscard }: Props) {
   const t = useT();
   const lang = currentLang();
   const [dropping, setDropping] = useState(false);
+  // „Erinnern, wenn keine Antwort“ after this many days (null: no reminder).
+  const [remind, setRemind] = useState<number | null>(null);
+  const [menu, setMenu] = useState<{ items: MenuItem[]; at: { x: number; y: number } } | null>(null);
+  const followupSecs = remind == null ? null : remind * 86400;
+  const above = (el: HTMLElement) => {
+    const r = el.getBoundingClientRect();
+    return { x: r.left, y: Math.max(8, r.top - 8 - 220) };
+  };
   const sheet = useRef<HTMLDivElement>(null);
   const subject = useRef<HTMLInputElement>(null);
   const body = useRef<HTMLTextAreaElement>(null);
@@ -317,7 +331,7 @@ export function ComposeSheet({ draft, accounts, error, sending, onChange, onSend
         }
         if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
           e.preventDefault();
-          onSend();
+          onSend(followupSecs);
         }
         if (e.key.toLowerCase() === "s" && (e.ctrlKey || e.metaKey)) {
           e.preventDefault();
@@ -429,9 +443,39 @@ export function ComposeSheet({ draft, accounts, error, sending, onChange, onSend
         </div>
       )}
       <footer className="compose-foot">
-        <button type="button" className="btn btn-primary" onClick={onSend} disabled={sending || draft.accountId == null} title={t("compose.sendHint")}>
-          <Send size={15} strokeWidth={1.75} aria-hidden />
-          <span>{t("compose.send")}</span>
+        <span className="split-btn">
+          <button type="button" className="btn btn-primary" onClick={() => onSend(followupSecs)} disabled={sending || draft.accountId == null} title={t("compose.sendHint")}>
+            <Send size={15} strokeWidth={1.75} aria-hidden />
+            <span>{t("compose.send")}</span>
+          </button>
+          <button
+            type="button"
+            className="btn btn-primary split-btn-more"
+            disabled={sending || draft.accountId == null}
+            aria-label={t("compose.sendLater")}
+            title={t("compose.sendLater")}
+            aria-haspopup="menu"
+            onClick={(e) => setMenu({ items: sendLaterItems(t, (at) => onSendLater(at, followupSecs), () => onSendLater(null, followupSecs)), at: above(e.currentTarget) })}
+          >
+            <ChevronDown size={15} strokeWidth={1.75} aria-hidden />
+          </button>
+        </span>
+        <button
+          type="button"
+          className={`btn btn-quiet remind-btn${remind != null ? " remind-on" : ""}`}
+          aria-pressed={remind != null}
+          aria-haspopup="menu"
+          aria-label={remind != null ? t("compose.remindSet", { n: remind }) : t("compose.remind")}
+          title={t("compose.remind")}
+          onClick={(e) =>
+            setMenu({
+              items: followupItems(t, remind ?? 0, (days) => setRemind(days), null, remind != null ? () => setRemind(null) : null),
+              at: above(e.currentTarget),
+            })
+          }
+        >
+          <AlarmClock size={16} strokeWidth={1.75} aria-hidden />
+          {remind != null && <span>{t("compose.remindSet", { n: remind })}</span>}
         </button>
         <button type="button" className="icon-btn" onClick={() => void pickFiles().then((p) => (p.length ? attach(p) : undefined))} aria-label={t("compose.attach")} title={t("compose.attach")}>
           <Paperclip size={16} strokeWidth={1.75} aria-hidden />
@@ -448,6 +492,7 @@ export function ComposeSheet({ draft, accounts, error, sending, onChange, onSend
           <Trash2 size={16} strokeWidth={1.75} aria-hidden />
         </button>
       </footer>
+      {menu && <Menu items={menu.items} at={menu.at} onClose={() => setMenu(null)} label={t("compose.sendLater")} />}
     </div>
   );
 }

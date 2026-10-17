@@ -114,7 +114,51 @@ export type MessageSummary = {
   has_attachments: boolean;
   /** Messages of the conversation in this folder (1 outside the conversation view). */
   thread_count: number;
+  account_id: number;
+  /** The inbox tab of the message (the sorted inbox only). */
+  category?: Category | null;
+  pinned?: boolean;
+  /** A bundle of the newsletters tab: how many messages of the sender it holds (0: a plain row). */
+  bundle?: number;
+  /** The time tools' lists: when it comes back, is due, or was put on the list. */
+  due?: number | null;
 };
+
+/** The tabs of the sorted inbox (mail_core::triage::Category). */
+export type Category = "people" | "newsletters" | "notifications" | "receipts" | "other";
+
+export type InboxQuery = { account: number | null; tab: Category; focus: boolean; threads: boolean; bundles: boolean };
+
+export type TabCount = { category: Category; total: number; unread: number };
+
+export type InboxCounts = { tabs: TabCount[]; focus: TabCount; screener: number };
+
+/** A sender waiting in „Neue Absender“, with its messages (newest first). */
+export type WaitingSender = { email: string; name: string | null; messages: MessageSummary[] };
+
+export type Subscription = {
+  sender: string;
+  name: string | null;
+  list_id: string | null;
+  count: number;
+  last: number;
+  method: "one_click" | "mailto" | "link" | null;
+  unsubscribed: number | null;
+  message_id: number;
+};
+
+/** What „Abbestellen“ did. */
+export type Unsubscribed = { kind: "done" } | { kind: "sent"; to: string } | { kind: "link"; url: string };
+
+/** A message waiting to be sent later. */
+export type Scheduled = { id: number; account_id: number; due_at: number; subject: string; recipients: string; followup_secs: number | null };
+
+export type TimeCounts = { snoozed: number; later: number; followups: number; scheduled: number };
+
+/** A reminder that came due without an answer. */
+export type Reminder = { account_id: number; subject: string };
+
+export type Marks = { pinned: boolean; later: boolean; snoozed_until: number | null; followup_due: number | null };
 
 export type Page = { total: number; offset: number; items: MessageSummary[] };
 
@@ -144,8 +188,16 @@ export type MessageView = {
   has_body: boolean;
   text: string | null;
   remote_allowed: boolean;
-  /** Sanitized in the backend (mail_core::actions::message_view); shown in the sandboxed frame. */
-  body: { html: string; full_html: string | null; text_html: string | null; blocked_remote: number; plain: boolean };
+  /** Sanitized in the backend (mail_core::actions::message_view); shown in the sandboxed frame.
+   *  `trackers`: tracking pixels and link trackers removed. */
+  body: { html: string; full_html: string | null; text_html: string | null; blocked_remote: number; trackers: number; plain: boolean };
+  /** `List-Unsubscribe` as sent: the message can be unsubscribed from. */
+  unsubscribe: string | null;
+  list_id: string | null;
+  one_click: boolean;
+  marks: Marks;
+  /** When the user unsubscribed from the sender. */
+  unsubscribed: number | null;
   sender_trusted: boolean;
   /** The attachments the user sees. */
   files: Attachment[];
@@ -233,6 +285,15 @@ export type Settings = {
   swipe_right: SwipeAction;
   /** Phones: look for new mail in the background. */
   background_check: boolean;
+  /** First-time senders wait in „Neue Absender“ (off by default). */
+  screener: boolean;
+  screener_since: number | null;
+  /** The inbox shows people and pinned messages only. */
+  focus: boolean;
+  /** With two accounts or more, „Alle Posteingänge“ opens first. */
+  unified_inbox: boolean;
+  /** Newsletters as one row per sender. */
+  bundles: boolean;
 };
 
 export type AppInfo = {

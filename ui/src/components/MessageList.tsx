@@ -1,4 +1,4 @@
-import { Archive, ArrowDown, Flag, FlagOff, Mail, MailOpen, Menu as MenuIcon, Paperclip, Search, Server, ShieldAlert, Trash2, X, FolderInput, Reply } from "lucide-react";
+import { Archive, ArrowDown, Clock, Flag, FlagOff, Mail, MailOpen, Menu as MenuIcon, Paperclip, Pin, Search, Server, ShieldAlert, Trash2, X, FolderInput, Reply } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { currentLang, useT } from "../lib/i18n";
 import { displayName, listDate, now } from "../lib/format";
@@ -36,6 +36,16 @@ type Props = {
   extra?: ReactNode;
   /** Touch screens: swipes over rows and pull to refresh. */
   touch?: { left: SwipeAction; right: SwipeAction; onSwipe: (m: MessageSummary, a: SwipeAction) => void; onRefresh: () => Promise<void> };
+  /** Below the search field: the inbox tabs, a note. */
+  head?: ReactNode;
+  /** Next to the title: the focus switch. */
+  titleExtra?: ReactNode;
+  /** Instead of the plain empty text (the calm inbox-zero). */
+  empty?: ReactNode;
+  /** The unified inbox: the account's color (1–6) and name for a row. */
+  accountOf?: (m: MessageSummary) => { color: number; name: string } | null;
+  /** The time tools' lists: the time shown instead of the date (when it comes back, is due). */
+  dueOf?: (m: MessageSummary) => string | null;
 };
 
 /** A finger (or the mouse, for tests) on a row or at the top of the list. */
@@ -200,6 +210,9 @@ export function MessageList(p: Props) {
     }
     const selected = p.selected.includes(m.id);
     const isCurrent = m.id === p.current;
+    const account = p.accountOf?.(m) ?? null;
+    const due = p.dueOf?.(m) ?? null;
+    const bundle = m.bundle ?? 0;
     const sw = swipe?.id === m.id ? swipe : null;
     const side = sw && touch ? swipeSide(sw.dx, touch.left, touch.right) : null;
     rows.push(
@@ -213,6 +226,8 @@ export function MessageList(p: Props) {
         data-unread={!m.seen || undefined}
         data-selected={selected && p.selected.length > 1 ? "" : undefined}
         data-swiping={sw ? "" : undefined}
+        data-bundle={bundle > 0 ? "" : undefined}
+        data-pinned={m.pinned ? "" : undefined}
         className="row"
         style={{ top, height: rowH }}
         onMouseDown={(e) => {
@@ -230,18 +245,33 @@ export function MessageList(p: Props) {
         <span className="row-body" style={sw ? { transform: `translateX(${sw.dx}px)`, transition: sw.leaving ? undefined : "none" } : undefined}>
           <span className="row-top">
             <span className="unread-slot">{!m.seen && <span className="unread-dot" aria-label={t("list.unread")} />}</span>
+            {account && <span className="account-dot" data-color={account.color} role="img" aria-label={t("inbox.account", { name: account.name })} title={account.name} />}
             <span className="row-from">{displayName(m.from, lang)}</span>
-            {m.thread_count > 1 && (
-              <span className="thread-count" aria-label={t("list.threadCount", { n: m.thread_count })}>
-                {m.thread_count}
+            {bundle > 1 ? (
+              <span className="thread-count" aria-label={t("inbox.bundle", { n: bundle })}>
+                {bundle}
               </span>
+            ) : (
+              m.thread_count > 1 && (
+                <span className="thread-count" aria-label={t("list.threadCount", { n: m.thread_count })}>
+                  {m.thread_count}
+                </span>
+              )
             )}
             <span className="row-icons">
+              {m.pinned && <Pin size={12} strokeWidth={1.75} className="pin" aria-label={t("read.pinned")} />}
               {m.answered && <Reply size={12} strokeWidth={1.75} aria-label={t("list.answered")} />}
               {m.has_attachments && <Paperclip size={12} strokeWidth={1.75} aria-label={t("list.attachment")} />}
               {m.flagged && <Flag size={12} strokeWidth={1.75} className="flag" aria-label={t("list.flagged")} />}
             </span>
-            <span className="row-date">{listDate(m.date, today, lang)}</span>
+            {due ? (
+              <span className="row-date row-due">
+                <Clock size={11} strokeWidth={1.75} aria-hidden />
+                {due}
+              </span>
+            ) : (
+              <span className="row-date">{listDate(m.date, today, lang)}</span>
+            )}
           </span>
           <span className="row-subject">{m.subject || t("list.noSubject")}</span>
           {p.showSnippets && <span className="row-snippet">{m.snippet || " "}</span>}
@@ -266,6 +296,7 @@ export function MessageList(p: Props) {
           </button>
           <h1>{p.title}</h1>
           <span className="muted list-count">{p.searching ? t("list.results", { n: p.total }) : t("list.count", { n: p.total })}</span>
+          {p.titleExtra}
         </div>
         <div className="search">
           <Search size={16} strokeWidth={1.75} aria-hidden className="search-icon" />
@@ -295,6 +326,7 @@ export function MessageList(p: Props) {
             </button>
           )}
         </div>
+        {p.head}
       </header>
       {bulk && (
         <div className="bulk-bar" role="toolbar" aria-label={t("list.bulkLabel")}>
@@ -347,10 +379,14 @@ export function MessageList(p: Props) {
           </div>
         )}
         {p.total === 0 && !p.loading ? (
-          <div className="empty">
-            {p.searching ? <Search size={28} strokeWidth={1.5} aria-hidden /> : <Mail size={28} strokeWidth={1.5} aria-hidden />}
-            <p>{p.emptyText}</p>
-          </div>
+          !p.searching && p.empty ? (
+            p.empty
+          ) : (
+            <div className="empty">
+              {p.searching ? <Search size={28} strokeWidth={1.5} aria-hidden /> : <Mail size={28} strokeWidth={1.5} aria-hidden />}
+              <p>{p.emptyText}</p>
+            </div>
+          )
         ) : (
           <div className="messages-inner" style={{ height: p.total * rowH }}>
             {rows}

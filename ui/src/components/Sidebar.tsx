@@ -14,6 +14,7 @@ import {
   Send,
   Settings as SettingsIcon,
   ShieldAlert,
+  ShieldOff,
   SquarePen,
   Trash2,
   Upload,
@@ -38,19 +39,32 @@ const ROLE: Record<Role, { icon: IconType; label: TKey }> = {
   important: { icon: Bookmark, label: "folder.important" },
 };
 
+/** Folders the app makes on the server: where snoozed messages wait (shown as „Zurückgestellt“
+ *  above the accounts, not as a folder) and where the mail of turned-away senders goes. */
+export const SNOOZE_FOLDER = "Snoozed";
+export const SCREENED_FOLDER = "Screened Out";
+
+/** Whether a folder is listed with the account's folders (and offered as a move target). */
+export const listedFolder = (m: Mailbox) => m.selectable && !(m.role === null && m.name === SNOOZE_FOLDER);
+
 /** The name shown for a folder: the role's name, else the last part of its path. */
 export function folderLabel(m: Mailbox, t: ReturnType<typeof useT>): string {
   if (m.role) return t(ROLE[m.role].label);
+  if (m.name === SCREENED_FOLDER) return t("folder.screenedOut");
   const parts = m.delimiter ? m.name.split(m.delimiter) : [m.name];
   return parts[parts.length - 1];
 }
 
 export function folderIcon(m: Mailbox): IconType {
+  if (!m.role && m.name === SCREENED_FOLDER) return ShieldOff;
   return m.role ? ROLE[m.role].icon : Folder;
 }
 
 /** Nesting depth of a user folder („Projekte/Website“ is 1). */
 const depth = (m: Mailbox) => (m.role || !m.delimiter ? 0 : m.name.split(m.delimiter).length - 1);
+
+/** An entry above the accounts: the unified inbox, „Neue Absender“ and the time tools. */
+export type ViewEntry = { id: string; label: string; icon: IconType; count: number; current: boolean; onSelect: () => void };
 
 export type FolderAction = { kind: "create"; accountId: number; parent: Mailbox | null } | { kind: "rename"; mailbox: Mailbox } | { kind: "delete"; mailbox: Mailbox };
 
@@ -67,6 +81,9 @@ type Props = {
   onFolder: (a: FolderAction) => void;
   onSignIn: (a: AccountInfo) => void;
   onSync: (a: AccountInfo) => void;
+  views?: ViewEntry[];
+  /** With several accounts: the color (1–6) of each account's dot. */
+  accountColor?: (accountId: number) => number | null;
 };
 
 function AccountStatusLine({ a, onSignIn, onSync }: { a: AccountInfo; onSignIn: () => void; onSync: () => void }) {
@@ -114,6 +131,8 @@ export function Sidebar({
   onFolder,
   onSignIn,
   onSync,
+  views = [],
+  accountColor,
 }: Props) {
   const t = useT();
   const [menu, setMenu] = useState<{ items: MenuItem[]; at: { x: number; y: number } } | null>(null);
@@ -144,9 +163,28 @@ export function Sidebar({
       </div>
       <div className="sidebar-scroll">
         {accounts.length === 0 && <p className="sidebar-empty">{t("nav.noAccount")}</p>}
+        {views.length > 0 && (
+          <section className="account views" aria-label={t("nav.views")}>
+            <ul className="folders">
+              {views.map((v) => {
+                const Icon = v.icon;
+                return (
+                  <li key={v.id} className="folder-item">
+                    <button type="button" className="folder" data-view={v.id} aria-current={v.current ? "page" : undefined} onClick={v.onSelect}>
+                      <Icon size={16} strokeWidth={1.75} aria-hidden />
+                      <span className="folder-name">{v.label}</span>
+                      {v.count > 0 && <span className="count">{v.count}</span>}
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          </section>
+        )}
         {accounts.map((a) => (
           <section key={a.id} className="account" aria-label={a.name || a.email}>
             <div className="account-head">
+              {accountColor?.(a.id) != null && <span className="account-dot" data-color={accountColor(a.id) ?? undefined} aria-hidden />}
               <h2 className="eyebrow" title={a.email}>
                 {a.name || a.email}
               </h2>
@@ -163,7 +201,7 @@ export function Sidebar({
             <AccountStatusLine a={a} onSignIn={() => onSignIn(a)} onSync={() => onSync(a)} />
             <ul className="folders">
               {(mailboxes[a.id] ?? [])
-                .filter((m) => m.selectable)
+                .filter(listedFolder)
                 .map((m) => {
                   const Icon = folderIcon(m);
                   const isCurrent = m.id === current && !showingOutbox;

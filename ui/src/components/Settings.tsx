@@ -1,4 +1,4 @@
-import { Bell, ChevronLeft, ChevronRight, Info, Keyboard, LogIn, Network, Palette, PenLine, Shield, Trash2, UserRound, X, Plus } from "lucide-react";
+import { Bell, ChevronLeft, ChevronRight, Inbox, Info, Keyboard, LogIn, Network, Palette, PenLine, Shield, Trash2, UserRound, X, Plus } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 import { useT, type TKey } from "../lib/i18n";
 import { api, pickSavePath } from "../lib/api";
@@ -9,12 +9,13 @@ import { ConfirmDialog, Segmented, Spinner, Switch, trapFocus } from "./ui";
 import { ProblemCard, Setup } from "./Setup";
 import { useRef } from "react";
 
-export type SettingsSection = "accounts" | "appearance" | "reading" | "writing" | "notifications" | "privacy" | "network" | "shortcuts" | "about";
+export type SettingsSection = "accounts" | "appearance" | "reading" | "inbox" | "writing" | "notifications" | "privacy" | "network" | "shortcuts" | "about";
 
 const SECTIONS: [SettingsSection, TKey, typeof Bell][] = [
   ["accounts", "settings.accounts", UserRound],
   ["appearance", "settings.appearance", Palette],
   ["reading", "settings.reading", Info],
+  ["inbox", "settings.inbox", Inbox],
   ["writing", "settings.writing", PenLine],
   ["notifications", "settings.notifications", Bell],
   ["privacy", "settings.privacy", Shield],
@@ -37,6 +38,8 @@ const SHORTCUTS: [string, TKey][] = [
   ["u", "keys.undo"],
   ["x", "keys.select"],
   ["s", "keys.flag"],
+  ["h", "keys.snooze"],
+  ["p", "keys.pin"],
   ["Shift+I / Shift+U", "keys.readUnread"],
   ["Ctrl+Enter", "keys.send"],
   ["Ctrl+,", "keys.settings"],
@@ -452,6 +455,8 @@ function NetworkSection({ net, onChange }: { net: NetworkSettings; onChange: (n:
 }
 
 type Props = {
+  /** Settings → Posteingang → Abos: the subscriptions in the list pane. */
+  onSubscriptions: () => void;
   settings: SettingsT;
   accounts: AccountInfo[];
   info: AppInfo | null;
@@ -474,16 +479,18 @@ const SWIPES: [SwipeAction, TKey][] = [
   ["none", "settings.swipeNone"],
 ];
 
-export function SettingsView({ settings, accounts, info, section, onSection, onChange, onAccountsChanged, onClose, touch, phone }: Props) {
+export function SettingsView({ settings, accounts, info, section, onSection, onChange, onAccountsChanged, onClose, onSubscriptions, touch, phone }: Props) {
   const t = useT();
   const mobile = info?.platform === "android" || info?.platform === "ios";
   const [accountId, setAccountId] = useState<number | null>(accounts[0]?.id ?? null);
   const [adding, setAdding] = useState(false);
   const [senders, setSenders] = useState<string[]>([]);
+  const [blocked, setBlocked] = useState<string[]>([]);
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (section === "privacy") void api.allowedSenders().then(setSenders);
+    if (section === "inbox") void api.blockedSenders().then(setBlocked);
   }, [section]);
   useEffect(() => {
     if (accountId == null || !accounts.some((a) => a.id === accountId)) setAccountId(accounts[0]?.id ?? null);
@@ -658,6 +665,61 @@ export function SettingsView({ settings, accounts, info, section, onSection, onC
                   </Row>
                 ))}
               </div>
+            )}
+            {section === "inbox" && (
+              <>
+                <div className="set-card">
+                  <Row label={t("settings.screener")} description={t("settings.screenerHint")}>
+                    <Switch label={t("settings.screener")} checked={settings.screener} onChange={(screener) => onChange({ screener })} />
+                  </Row>
+                  <Row label={t("settings.focus")} description={t("settings.focusHint")}>
+                    <Switch label={t("settings.focus")} checked={settings.focus} onChange={(focus) => onChange({ focus })} />
+                  </Row>
+                  <Row label={t("settings.unified")} description={t("settings.unifiedHint")}>
+                    <Switch label={t("settings.unified")} checked={settings.unified_inbox} onChange={(unified_inbox) => onChange({ unified_inbox })} />
+                  </Row>
+                  <Row label={t("settings.bundles")} description={t("settings.bundlesHint")}>
+                    <Switch label={t("settings.bundles")} checked={settings.bundles} onChange={(bundles) => onChange({ bundles })} />
+                  </Row>
+                </div>
+                <div className="set-card">
+                  <Row label={t("settings.subscriptions")} description={t("settings.subscriptionsHint")}>
+                    <button
+                      type="button"
+                      className="btn"
+                      onClick={() => {
+                        onSubscriptions();
+                        onClose();
+                      }}
+                    >
+                      {t("toast.show")}
+                    </button>
+                  </Row>
+                  <Row label={t("settings.trackers")} description={t("settings.trackersHint")}>
+                    <span className="set-badge">{t("settings.alwaysOn")}</span>
+                  </Row>
+                  <div className="set-row set-row-stack">
+                    <div className="set-text">
+                      <div className="set-label">{t("settings.blockedSenders")}</div>
+                      <div className="set-desc">{t("settings.blockedSendersHint")}</div>
+                    </div>
+                    {blocked.length === 0 ? (
+                      <p className="muted set-empty">{t("settings.noBlockedSenders")}</p>
+                    ) : (
+                      <ul className="sender-list">
+                        {blocked.map((s) => (
+                          <li key={s}>
+                            <span>{s}</span>
+                            <button type="button" className="icon-btn icon-btn-sm" aria-label={t("settings.letIn", { email: s })} title={t("settings.letIn", { email: s })} onClick={() => void api.screenerForget(s).then(() => setBlocked(blocked.filter((x) => x !== s)))}>
+                              <X size={14} strokeWidth={1.75} aria-hidden />
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                </div>
+              </>
             )}
             {section === "network" && <NetworkSection net={settings.network} onChange={(network) => onChange({ network })} />}
             {section === "writing" && (

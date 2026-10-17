@@ -160,6 +160,28 @@ export function draftFromMessage(m: MessageView, account: Account | null, rich: 
   return d;
 }
 
+/** A message taken back from „Später senden“ (or any stored draft) in the compose sheet. */
+export function fromComposeDraft(d: ComposeDraft, rich: boolean): ComposeState {
+  const s = base(null, rich && d.html != null);
+  return {
+    ...s,
+    mode: "draft",
+    accountId: d.account_id,
+    to: d.to,
+    cc: d.cc,
+    bcc: d.bcc,
+    showCc: d.cc.length > 0,
+    showBcc: d.bcc.length > 0,
+    subject: d.subject,
+    html: d.html ?? "",
+    text: d.text,
+    inReplyTo: d.in_reply_to,
+    references: d.references,
+    messageId: d.message_id,
+    replyToId: d.reply_to_id,
+  };
+}
+
 /** The plain text of editor HTML (for switching to plain text). */
 export function editorHtmlToText(html: string): string {
   if (typeof document === "undefined") return html.replace(/<[^>]+>/g, "");

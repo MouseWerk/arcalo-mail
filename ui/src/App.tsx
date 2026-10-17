@@ -1,18 +1,70 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { CircleUserRound, Download, Inbox, LogIn, Palette as PaletteIcon, PenSquare, RefreshCw, Search, Settings as SettingsIcon, Upload, X } from "lucide-react";
-import { api, inApp, onNotice, onTrayAction, pickSavePath } from "./lib/api";
+import {
+  AlarmClock,
+  BellRing,
+  BookmarkMinus,
+  BookmarkPlus,
+  CircleUserRound,
+  Clock,
+  Crosshair,
+  Download,
+  Inbox,
+  Layers,
+  LogIn,
+  MailMinus,
+  Newspaper,
+  Palette as PaletteIcon,
+  PenSquare,
+  Pin,
+  PinOff,
+  RefreshCw,
+  Search,
+  Send,
+  Settings as SettingsIcon,
+  ShieldAlert,
+  Tags,
+  Upload,
+  UserPlus,
+  X,
+} from "lucide-react";
+import { api, inApp, onNotice, onReminders, onTrayAction, openExternal, pickSavePath } from "./lib/api";
 import { applyTheme, onSystemThemeChange, type Theme } from "./lib/theme";
 import { currentLang, langFromLocale, setLang, useT } from "./lib/i18n";
-import { draftFromMessage, emptyDraft, isEmpty, isValidAddress, replyDraft, toDraft, type ComposeState } from "./lib/compose";
+import { draftFromMessage, emptyDraft, fromComposeDraft, isEmpty, isValidAddress, replyDraft, toDraft, type ComposeState } from "./lib/compose";
 import { clickSelect, isTyping, keyAction, pagesFor, type Selection } from "./lib/listing";
 import { closeToast, runUndo, setUndo, showToast } from "./lib/toasts";
-import { setClock } from "./lib/format";
+import { displayName, now as clockNow, setClock } from "./lib/format";
+import { whenLabel } from "./lib/when";
 import { backStep, isTouch, layoutFor } from "./lib/touch";
 import { applyTypeScale, onVisibility, watchViewport } from "./lib/viewport";
-import type { AccountInfo, AppInfo, Attachment, Mailbox, MessageSummary, MessageView, MicrosoftSignIn, Notice, OutboxEntry, Settings, SwipeAction, ThemeChoice, Undo } from "./lib/types";
-import { Sidebar, folderIcon, folderLabel, type FolderAction } from "./components/Sidebar";
+import type {
+  AccountInfo,
+  AppInfo,
+  Attachment,
+  Category,
+  InboxCounts,
+  Mailbox,
+  MessageSummary,
+  MessageView,
+  MicrosoftSignIn,
+  Notice,
+  OutboxEntry,
+  Page,
+  Scheduled,
+  Settings,
+  Subscription,
+  SwipeAction,
+  ThemeChoice,
+  TimeCounts,
+  Undo,
+  WaitingSender,
+} from "./lib/types";
+import { Sidebar, folderIcon, folderLabel, listedFolder, type FolderAction, type ViewEntry } from "./components/Sidebar";
 import { MessageList, type BulkAction } from "./components/MessageList";
-import { ReadingPane, type Loaded, type MessageAction } from "./components/ReadingPane";
+import { ReadingPane, type Loaded, type MarkAction, type MessageAction } from "./components/ReadingPane";
+import { CATEGORIES, CATEGORY_ICON, CATEGORY_LABEL, InboxHead, InboxZero } from "./components/Inbox";
+import { ScheduledView, ScreenerView, SubscriptionsView } from "./components/SmartViews";
+import { WhenDialog, followupItems, snoozeItems } from "./components/TimeMenus";
 import { ComposeSheet } from "./components/ComposeSheet";
 import { MAILTO_EVENT } from "./components/MailFrame";
 import { Setup } from "./components/Setup";
@@ -33,6 +85,35 @@ type ListState = { key: string; total: number; pages: Record<number, MessageSumm
 
 type FolderDialog = FolderAction | null;
 
+/** What the list pane shows: a folder (`mailboxId`), the sorted inbox of one account or of all,
+ *  „Neue Absender“, the time tools' lists, the scheduled messages or the subscriptions. */
+type Place =
+  | { kind: "folder" }
+  | { kind: "inbox"; account: number | null }
+  | { kind: "screener" }
+  | { kind: "snoozed" }
+  | { kind: "later" }
+  | { kind: "followups" }
+  | { kind: "scheduled" }
+  | { kind: "subscriptions" };
+
+/** A source of list pages, `key` names it (a new key starts the list afresh). */
+type Source = { key: string; page: (offset: number, limit: number) => Promise<Page> };
+
+/** A whole list as pages (the time tools' lists are short). */
+const pages = (key: string, all: () => Promise<MessageSummary[]>): Source => ({
+  key,
+  page: async (offset, limit) => {
+    const items = await all();
+    return { total: items.length, offset, items: items.slice(offset, offset + limit) };
+  },
+});
+
+/** The time picker of a time tool, open. */
+type When = { kind: "snooze"; ids: number[] } | { kind: "followup"; ids: number[] } | { kind: "send"; followupSecs: number | null };
+
+const NO_TIME: TimeCounts = { snoozed: 0, later: 0, followups: 0, scheduled: 0 };
+
 export function App() {
   const t = useT();
   const [info, setInfo] = useState<AppInfo | null>(null);
@@ -41,6 +122,19 @@ export function App() {
   const [accounts, setAccounts] = useState<AccountInfo[] | null>(null);
   const [mailboxes, setMailboxes] = useState<Record<number, Mailbox[]>>({});
   const [mailboxId, setMailboxId] = useState<number | null>(null);
+  const [place, setPlace] = useState<Place>({ kind: "folder" });
+  const [tab, setTab] = useState<Category>("people");
+  const [counts, setCounts] = useState<InboxCounts | null>(null);
+  const [screenerCount, setScreenerCount] = useState(0);
+  const [times, setTimes] = useState<TimeCounts>(NO_TIME);
+  const [waiting, setWaiting] = useState<WaitingSender[]>([]);
+  const [subs, setSubs] = useState<Subscription[]>([]);
+  const [unsubBusy, setUnsubBusy] = useState<string | null>(null);
+  const [scheduled, setScheduled] = useState<Scheduled[]>([]);
+  // A bundle of the newsletters tab opened as a stream of the sender's issues.
+  const [stream, setStream] = useState<{ sender: string; name: string } | null>(null);
+  const [when, setWhen] = useState<When | null>(null);
+  const [confirm, setConfirm] = useState<{ title: string; text: string; confirm: string; run: () => void } | null>(null);
   const [view, setView] = useState<View>("list");
   const [list, setList] = useState<ListState>({ key: "", total: 0, pages: {}, loading: true });
   const [query, setQuery] = useState("");
@@ -78,7 +172,32 @@ export function App() {
 
   const mailbox = useMemo(() => Object.values(mailboxes).flat().find((m) => m.id === mailboxId) ?? null, [mailboxes, mailboxId]);
   const threads = settings?.threads ?? true;
-  const listKey = `${mailboxId}:${threads}`;
+  const focus = settings?.focus ?? false;
+  const bundles = settings?.bundles ?? true;
+  const inboxIds = useMemo(() => new Set(Object.values(mailboxes).flat().filter((m) => m.role === "inbox").map((m) => m.id)), [mailboxes]);
+  const multi = (accounts?.length ?? 0) > 1;
+
+  const source = useMemo((): Source | null => {
+    switch (place.kind) {
+      case "inbox": {
+        const query = { account: place.account, tab, focus, threads, bundles };
+        return { key: `inbox:${place.account}:${tab}:${focus}:${threads}:${bundles}`, page: (o, l) => api.inbox(query, o, l) };
+      }
+      case "snoozed":
+        return pages("snoozed", api.snoozed);
+      case "later":
+        return pages("later", api.readLater);
+      case "followups":
+        return pages("followups", api.followups);
+      case "folder":
+        return mailboxId == null ? null : { key: `${mailboxId}:${threads}`, page: (o, l) => api.messages(mailboxId, o, l, threads) };
+      default:
+        return null;
+    }
+  }, [place, tab, focus, threads, bundles, mailboxId]);
+  const sourceRef = useRef(source);
+  sourceRef.current = source;
+  const listKey = source?.key ?? "";
 
   // ---------------------------------------------------------------- start
 
@@ -107,11 +226,24 @@ export function App() {
     return { list, all };
   }, []);
 
+  /** Where the app opens: all inboxes with two accounts or more (unless switched off), else the
+   *  first account's inbox. */
+  const openStart = useCallback((list: AccountInfo[], all: Record<number, Mailbox[]>, unified: boolean) => {
+    const first = list.map((a) => all[a.id]?.find((m) => m.role === "inbox")).find(Boolean) ?? null;
+    if (list.length > 1 && unified) {
+      setMailboxId(null);
+      setPlace({ kind: "inbox", account: null });
+    } else if (first) {
+      setMailboxId(first.id);
+      setPlace({ kind: "inbox", account: first.account_id });
+    } else {
+      setMailboxId(null);
+      setPlace({ kind: "folder" });
+    }
+  }, []);
+
   useEffect(() => {
-    void loadAccounts().then(({ list, all }) => {
-      const first = list.map((a) => all[a.id]?.find((m) => m.role === "inbox")).find(Boolean);
-      if (first) setMailboxId(first.id);
-    });
+    void Promise.all([loadAccounts(), api.settings()]).then(([{ list, all }, s]) => openStart(list, all, s.unified_inbox));
     void api.outbox().then(setOutbox);
   }, []);
 
@@ -149,44 +281,72 @@ export function App() {
     [],
   );
 
+  const placeRef = useRef(place);
+  placeRef.current = place;
+  const mailboxRef = useRef(mailboxId);
+  mailboxRef.current = mailboxId;
   const reloadMailboxes = useCallback(async (accountId: number) => {
     const boxes = await api.mailboxes(accountId);
     setMailboxes((all) => ({ ...all, [accountId]: boxes }));
     // The first sync brings the folders: open the inbox once it is there.
-    setMailboxId((cur) => cur ?? boxes.find((b) => b.role === "inbox")?.id ?? null);
+    const inbox = boxes.find((b) => b.role === "inbox");
+    if (inbox && placeRef.current.kind === "folder" && mailboxRef.current == null) {
+      setMailboxId(inbox.id);
+      setPlace({ kind: "inbox", account: inbox.account_id });
+    }
   }, []);
+
+  /** The tabs' numbers, „Neue Absender“ and the time tools' counts. */
+  const reloadSmart = useCallback(() => {
+    const p = placeRef.current;
+    void api.inboxCounts(p.kind === "inbox" ? p.account : null).then((c) => {
+      setCounts(c);
+      if (p.kind !== "inbox" || p.account == null) setScreenerCount(c.screener);
+    });
+    if (p.kind === "inbox" && p.account != null) void api.inboxCounts(null).then((c) => setScreenerCount(c.screener));
+    void api.timeCounts().then(setTimes);
+    if (p.kind === "screener") void api.screenerSenders(null).then(setWaiting);
+    if (p.kind === "subscriptions") void api.subscriptions().then(setSubs);
+    if (p.kind === "scheduled") void api.scheduled().then(setScheduled);
+  }, []);
+
+  useEffect(() => {
+    if (accounts) reloadSmart();
+  }, [place, accounts?.length, settings?.screener, settings?.focus]);
 
   // ---------------------------------------------------------------- the list
 
-  const fetchPage = useCallback(async (key: string, mbox: number, page: number, thr: boolean) => {
-    const r = await api.messages(mbox, page * PAGE, PAGE, thr);
+  const fetchPage = useCallback(async (key: string, page: number) => {
+    const src = sourceRef.current;
+    if (!src || src.key !== key) return;
+    const r = await src.page(page * PAGE, PAGE);
     setList((l) => (l.key === key ? { ...l, total: r.total, pages: { ...l.pages, [page]: r.items }, loading: false } : l));
   }, []);
 
   const refreshList = useCallback(() => {
-    if (mailboxId == null) return;
     setList((l) => {
       const pages = Object.keys(l.pages).map(Number);
-      for (const p of pages.length ? pages : [0]) void fetchPage(l.key, mailboxId, p, threads);
+      for (const p of pages.length ? pages : [0]) void fetchPage(l.key, p);
       return l;
     });
-  }, [mailboxId, threads, fetchPage]);
+  }, [fetchPage]);
 
   useEffect(() => {
-    if (mailboxId == null) return;
+    if (!listKey) return;
     setList({ key: listKey, total: 0, pages: {}, loading: true });
     setSel({ ids: [], anchor: null });
     setCurrent(null);
     setThread([]);
-    void fetchPage(listKey, mailboxId, 0, threads);
+    setStream(null);
+    void fetchPage(listKey, 0);
   }, [listKey]);
 
   const onRange = useCallback(
     (start: number, end: number) => {
-      if (results || mailboxId == null) return;
-      for (const p of pagesFor(start, end, PAGE)) if (!list.pages[p]) void fetchPage(list.key, mailboxId, p, threads);
+      if (results || !listKey) return;
+      for (const p of pagesFor(start, end, PAGE)) if (!list.pages[p]) void fetchPage(list.key, p);
     },
-    [results, mailboxId, list.pages, list.key, threads, fetchPage],
+    [results, listKey, list.pages, list.key, fetchPage],
   );
 
   const rowAt = useCallback(
@@ -271,23 +431,27 @@ export function App() {
       const seq = ++openSeq.current;
       setCurrent(m.id);
       setView("message");
-      const list = threads && m.thread_count > 1 ? await api.thread(m.thread_id) : [m];
+      // A bundle: the sender's issues one below the other, the newest first and open.
+      const bundle = (m.bundle ?? 0) > 0 && !results && placeRef.current.kind === "inbox" && m.from;
+      const p = placeRef.current;
+      const list = bundle && m.from ? await api.bundle(p.kind === "inbox" ? p.account : null, m.from.email) : threads && m.thread_count > 1 ? await api.thread(m.thread_id) : [m];
       if (seq !== openSeq.current) return;
       const th = list.length ? list : [m];
+      setStream(bundle && m.from ? { sender: m.from.email, name: displayName(m.from, currentLang()) } : null);
       setThread(th);
-      const open = [...new Set([...th.filter((x) => !x.seen).map((x) => x.id), th[th.length - 1].id])];
+      const open = bundle ? th.slice(0, 3).map((x) => x.id) : [...new Set([...th.filter((x) => !x.seen).map((x) => x.id), th[th.length - 1].id])];
       setExpanded(open);
       setViews({});
       await Promise.all(open.map((id) => loadView(id)));
       if (seq !== openSeq.current) return;
-      const unread = th.filter((x) => !x.seen).map((x) => x.id);
+      const unread = th.filter((x) => !x.seen && (!bundle || open.includes(x.id))).map((x) => x.id);
       const after = settings?.mark_read_after_secs;
       if (unread.length && after != null) {
         const mark = () => {
           if (seq !== openSeq.current) return;
           void api.setFlags(unread, true, null);
           patchRows(unread, { seen: true });
-          if (m.thread_count > 1) patchRows([m.id], { seen: true });
+          if (m.thread_count > 1 || bundle) patchRows([m.id], { seen: true });
           setMailboxes((all) => {
             const next: typeof all = {};
             for (const [k, boxes] of Object.entries(all))
@@ -302,7 +466,7 @@ export function App() {
         else setTimeout(mark, after * 1000);
       }
     },
-    [threads, settings, loadView, patchRows],
+    [threads, settings, loadView, patchRows, results],
   );
 
   const toggleExpanded = (id: number) => {
@@ -313,10 +477,23 @@ export function App() {
   // ---------------------------------------------------------------- actions
 
   /** What an action applies to: the selection, else the open conversation in this folder. */
+  /** Whether a message belongs to what the list shows (a conversation reaches into other folders). */
+  const listed = (m: MessageSummary) => {
+    if (results || stream) return true;
+    switch (place.kind) {
+      case "folder":
+        return m.mailbox_id === mailboxId;
+      case "inbox":
+        return inboxIds.has(m.mailbox_id) && (place.account == null || m.account_id === place.account);
+      default:
+        return true;
+    }
+  };
+
   const targets = (): number[] => {
     if (sel.ids.length > 1) return sel.ids;
     if (!thread.length) return current != null ? [current] : [];
-    const here = thread.filter((m) => results || m.mailbox_id === mailboxId).map((m) => m.id);
+    const here = thread.filter(listed).map((m) => m.id);
     return here.length ? here : current != null ? [current] : [];
   };
 
@@ -338,6 +515,7 @@ export function App() {
 
   const reloadCounts = () => {
     for (const a of accounts ?? []) void reloadMailboxes(a.id);
+    reloadSmart();
   };
 
   const withUndo = async (label: string, ids: number[], run: () => Promise<Undo>) => {
@@ -375,7 +553,7 @@ export function App() {
     const box = Object.values(mailboxes).flat().find((b) => b.id === first?.mailbox_id);
     if (!box) return;
     const items: MenuItem[] = (mailboxes[box.account_id] ?? [])
-      .filter((b) => b.selectable && b.id !== box.id && b.role !== "drafts")
+      .filter((b) => listedFolder(b) && b.id !== box.id && b.role !== "drafts")
       .map((b) => {
         const Icon = folderIcon(b);
         return {
@@ -387,11 +565,210 @@ export function App() {
     setMenu({ items, at });
   };
 
+  // ---------------------------------------------------------------- time tools and the sorted inbox
+
+  const point = (anchor?: DOMRect) => (anchor ? { x: anchor.left, y: anchor.bottom + 4 } : { x: Math.max(16, width - 320), y: 120 });
+
+  /** The views of the open conversation, the newest loaded first. */
+  const loadedViews = (): MessageView[] =>
+    thread
+      .map((m) => views[m.id])
+      .filter((v): v is MessageView => !!v && typeof v === "object" && "summary" in v)
+      .reverse();
+  const reloadViews = () => {
+    for (const m of thread) if (views[m.id]) void loadView(m.id);
+  };
+
+  const snooze = async (ids: number[], at: number) => {
+    try {
+      await api.snooze(ids, at);
+    } catch (e) {
+      showToast({ title: t("snooze.snoozeFailed"), detail: String(e), tone: "danger" });
+      return;
+    }
+    afterRemoval(ids);
+    reloadCounts();
+    const back = async () => {
+      await api.unsnooze(ids);
+      refreshList();
+      reloadCounts();
+      showToast({ title: t("snooze.back"), duration: 3000 });
+    };
+    setUndo(() => void back());
+    showToast({ title: t("snooze.done", { when: whenLabel(at, clockNow(), currentLang()) }), action: { label: t("common.undo"), run: () => void back() }, duration: 5000 });
+  };
+
+  const snoozeMenu = (ids: number[], anchor?: DOMRect) =>
+    setMenu({ items: snoozeItems(t, (at) => void snooze(ids, at), () => setWhen({ kind: "snooze", ids })), at: point(anchor) });
+
+  const setPinned = async (ids: number[], on: boolean) => {
+    await api.setPinned(ids, on);
+    patchRows(ids, { pinned: on });
+    refreshList();
+    reloadViews();
+    reloadSmart();
+    showToast({ title: on ? t("toast.pinned") : t("toast.unpinned"), duration: 2500 });
+  };
+
+  const setLater = async (ids: number[], on: boolean) => {
+    await api.setReadLater(ids, on);
+    reloadViews();
+    reloadSmart();
+    if (place.kind === "later") refreshList();
+    showToast({ title: on ? t("toast.later") : t("toast.notLater"), duration: 2500 });
+  };
+
+  const setFollowup = async (ids: number[], at: number) => {
+    try {
+      await api.setFollowup(ids, at);
+      reloadViews();
+      showToast({ title: t("read.followupAt", { when: whenLabel(at, clockNow(), currentLang()) }), duration: 3500 });
+    } catch (e) {
+      showToast({ title: t("toast.actionFailed"), detail: String(e), tone: "danger" });
+    }
+  };
+
+  const dismissFollowups = async (ids: number[]) => {
+    await api.dismissFollowups(ids);
+    reloadViews();
+    reloadSmart();
+    if (place.kind === "followups") afterRemoval(ids);
+    showToast({ title: t("toast.followupOff"), duration: 2500 });
+  };
+
+  const moveSender = async (email: string, name: string, c: Category | null) => {
+    await api.setSenderCategory(email, c);
+    refreshList();
+    reloadSmart();
+    if (c) showToast({ title: t("inbox.movedSender", { name, tab: t(CATEGORY_LABEL[c]) }), duration: 3500 });
+  };
+
+  /** „Abbestellen“: asks first (one click and e-mail), then does it; a list that only has a web
+   *  page asks before it opens. */
+  const unsubscribe = (sender: string, name: string, method: "one_click" | "mailto" | "link" | null) => {
+    const run = async () => {
+      setUnsubBusy(sender);
+      try {
+        const r = await api.unsubscribe(sender);
+        if (r.kind === "link")
+          setConfirm({
+            title: t("subs.linkTitle"),
+            text: r.url,
+            confirm: t("subs.openPage"),
+            run: () =>
+              void openExternal(r.url).then(() =>
+                api.unsubscribedByLink(sender).then(() => {
+                  reloadSmart();
+                  reloadViews();
+                }),
+              ),
+          });
+        else showToast({ title: r.kind === "done" ? t("subs.done", { name }) : t("subs.sent", { to: r.to }), tone: "success", duration: 4000 });
+        reloadSmart();
+        reloadViews();
+      } catch (e) {
+        showToast({ title: t("subs.unsubscribeFailed"), detail: String(e), tone: "danger" });
+      } finally {
+        setUnsubBusy(null);
+      }
+    };
+    if (method === "link") return void run();
+    setConfirm({ title: t("subs.confirmTitle", { name }), text: method === "mailto" ? t("subs.confirmMailto") : t("subs.confirmOneClick"), confirm: t("subs.unsubscribe"), run: () => void run() });
+  };
+
+  /** How a message's `List-Unsubscribe` would go, for the question before it. */
+  const methodOf = (v: MessageView): "one_click" | "mailto" | "link" => {
+    const h = v.unsubscribe ?? "";
+    if (v.one_click && /<(https:\/\/|http:\/\/(127\.0\.0\.1|localhost)[:/])/i.test(h)) return "one_click";
+    return /<mailto:/i.test(h) ? "mailto" : "link";
+  };
+
+  const moreMenu = (anchor?: DOMRect) => {
+    const ids = targets();
+    const latest = loadedViews()[0] ?? null;
+    if (!ids.length || !latest) return;
+    const at = point(anchor);
+    const focusView = (current != null ? (views[current] as MessageView | undefined) : undefined) ?? latest;
+    const sender = focusView && "summary" in focusView ? focusView.summary.from : null;
+    const row = current != null ? rowAt(order.indexOf(current)) : undefined;
+    const pinned = latest.marks.pinned;
+    const later = latest.marks.later;
+    const items: MenuItem[] = [
+      { label: pinned ? t("read.unpin") : t("read.pin"), icon: pinned ? <PinOff size={14} aria-hidden /> : <Pin size={14} aria-hidden />, onSelect: () => void setPinned(ids, !pinned) },
+      {
+        label: later ? t("read.notLater") : t("read.later"),
+        icon: later ? <BookmarkMinus size={14} aria-hidden /> : <BookmarkPlus size={14} aria-hidden />,
+        onSelect: () => void setLater(ids, !later),
+      },
+      {
+        label: t("read.followup"),
+        icon: <AlarmClock size={14} aria-hidden />,
+        onSelect: () =>
+          setMenu({
+            items: followupItems(
+              t,
+              null,
+              (days) => void setFollowup([latest.summary.id], Math.floor(clockNow().getTime() / 1000) + days * 86400),
+              () => setWhen({ kind: "followup", ids: [latest.summary.id] }),
+              latest.marks.followup_due != null ? () => void dismissFollowups([latest.summary.id]) : null,
+            ),
+            at,
+          }),
+      },
+    ];
+    if (sender) {
+      const name = displayName(sender, currentLang());
+      items.push({
+        label: t("read.moveSender"),
+        icon: <Tags size={14} aria-hidden />,
+        onSelect: () =>
+          setMenu({
+            items: [
+              { heading: t("read.moveSender") },
+              ...CATEGORIES.map((c): MenuItem => {
+                const Icon = CATEGORY_ICON[c];
+                return { label: t(CATEGORY_LABEL[c]), icon: <Icon size={14} aria-hidden />, checked: row?.category ? row.category === c : undefined, onSelect: () => void moveSender(sender.email, name, c) };
+              }),
+              "separator",
+              { label: t("inbox.asSorted"), onSelect: () => void moveSender(sender.email, name, null) },
+            ],
+            at,
+          }),
+      });
+    }
+    const listView = loadedViews().find((v) => v.unsubscribe);
+    if (listView?.summary.from) {
+      const from = listView.summary.from;
+      items.push("separator", { label: t("read.unsubscribe"), icon: <MailMinus size={14} aria-hidden />, onSelect: () => unsubscribe(from.email, displayName(from, currentLang()), methodOf(listView)) });
+    }
+    if (touch) items.push("separator", { label: t("read.spam"), icon: <ShieldAlert size={14} aria-hidden />, onSelect: () => act("spam") });
+    setMenu({ items, at });
+  };
+
+  const onMark = (a: MarkAction, v: MessageView) => {
+    const ids = [v.summary.id];
+    if (a === "unpin") void setPinned(targets(), false);
+    else if (a === "removeFollowup") void dismissFollowups(ids);
+    else
+      void api.unsnooze(ids).then(() => {
+        refreshList();
+        reloadCounts();
+        reloadViews();
+        showToast({ title: t("snooze.back"), duration: 3000 });
+      });
+  };
+
   const act = (a: MessageAction | BulkAction, anchor?: DOMRect) => {
     const ids = targets();
     if (!ids.length) return;
     const rows = [...thread, ...(results ?? []), ...Object.values(list.pages).flat()].filter((m) => ids.includes(m.id));
     switch (a) {
+      case "snooze":
+        snoozeMenu(ids, anchor);
+        break;
+      case "more":
+        moreMenu(anchor);
+        break;
       case "archive":
         void withUndo(t("toast.archived", { n: ids.length }), ids, () => api.archive(ids));
         break;
@@ -459,23 +836,57 @@ export function App() {
     return null;
   };
 
-  const send = async () => {
-    if (!compose || sending) return;
-    const all = [...compose.to, ...compose.cc, ...compose.bcc];
+  /** Whether the sheet's recipients can be sent to (the error shows in the sheet otherwise). */
+  const recipientsOk = (c: ComposeState): boolean => {
+    const all = [...c.to, ...c.cc, ...c.bcc];
     if (!all.length) {
       setComposeError(t("compose.noRecipient"));
-      return;
+      return false;
     }
     const bad = all.find((a) => !isValidAddress(a));
     if (bad) {
       setComposeError(t("compose.invalidNamed", { address: bad }));
-      return;
+      return false;
     }
+    return true;
+  };
+
+  /** „Später senden“: the message waits here until `at`. */
+  const sendLater = async (at: number, followupSecs: number | null) => {
+    if (!compose || sending || !recipientsOk(compose)) return;
     setSending(true);
     setComposeError(null);
     const state = compose;
     try {
-      const q = await api.send(toDraft(state));
+      const id = await api.sendLater(toDraft(state), at, followupSecs);
+      setCompose(null);
+      reloadSmart();
+      showToast({
+        title: t("scheduled.done", { when: whenLabel(at, clockNow(), currentLang()) }),
+        duration: 5000,
+        action: {
+          label: t("common.undo"),
+          run: () =>
+            void api.unschedule(id).then(() => {
+              setCompose({ ...state, revision: state.revision + 1 });
+              reloadSmart();
+            }),
+        },
+      });
+    } catch (e) {
+      setComposeError(String(e));
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const send = async (followupSecs: number | null = null) => {
+    if (!compose || sending || !recipientsOk(compose)) return;
+    setSending(true);
+    setComposeError(null);
+    const state = compose;
+    try {
+      const q = await api.send(toDraft(state), followupSecs);
       setCompose(null);
       const toastId = showToast({
         title: q.delay > 0 ? t("toast.sending") : t("toast.queued"),
@@ -485,7 +896,7 @@ export function App() {
             ? {
                 label: t("common.undo"),
                 run: () =>
-                  void api.cancelSend(q.outbox_id).then((ok) => {
+                  void api.cancelSend(q.outbox_id, q.message_id).then((ok) => {
                     if (ok) {
                       setCompose({ ...state, messageId: state.messageId, revision: state.revision + 1 });
                       showToast({ title: t("toast.sendCancelled"), duration: 3000 });
@@ -496,7 +907,7 @@ export function App() {
       });
       setUndo(() => {
         closeToast(toastId);
-        void api.cancelSend(q.outbox_id).then((ok) => ok && setCompose(state));
+        void api.cancelSend(q.outbox_id, q.message_id).then((ok) => ok && setCompose(state));
       }, q.delay * 1000);
       void api.outbox().then(setOutbox);
     } catch (e) {
@@ -563,11 +974,13 @@ export function App() {
             break;
           case "changed":
             void reloadMailboxes(n.account_id);
+            reloadSmart();
             setSearchRev((v) => v + 1);
-            if (!n.mailboxes.length || (mailboxId != null && n.mailboxes.includes(mailboxId))) refreshList();
+            if (!n.mailboxes.length || placeRef.current.kind !== "folder" || (mailboxId != null && n.mailboxes.includes(mailboxId))) refreshList();
             break;
           case "new_mail":
             void reloadMailboxes(n.account_id);
+            reloadSmart();
             break;
           case "outbox":
             void api.outbox().then(setOutbox);
@@ -578,7 +991,19 @@ export function App() {
             break;
         }
       }),
-    [mailboxId, refreshList, reloadMailboxes],
+    [mailboxId, refreshList, reloadMailboxes, reloadSmart],
+  );
+
+  // Reminders without an answer: a note with the way to them.
+  useEffect(
+    () =>
+      onReminders((list) => {
+        for (const r of list)
+          showToast({ title: t("toast.reminder", { subject: r.subject || t("list.noSubject") }), duration: 8000, action: { label: t("toast.show"), run: () => goPlace({ kind: "followups" }) } });
+        reloadSmart();
+        if (placeRef.current.kind === "followups") refreshList();
+      }),
+    [refreshList, reloadSmart],
   );
 
   // The tray menu's „Neue Nachricht“.
@@ -603,7 +1028,9 @@ export function App() {
     const before = settings;
     const next = { ...settings, ...patch };
     setSettings(next);
-    void api.saveSettings(next);
+    // The backend fills in what follows from a change (when the Screener started).
+    const save = (s: Settings) => void api.saveSettings(s).then(() => api.settings().then(setSettings));
+    save(next);
     showToast({
       title: t("toast.settingApplied"),
       duration: 4000,
@@ -611,7 +1038,7 @@ export function App() {
         label: t("common.undo"),
         run: () => {
           setSettings(before);
-          void api.saveSettings(before);
+          save(before);
         },
       },
     });
@@ -652,6 +1079,19 @@ export function App() {
           e.preventDefault();
           act(action);
           break;
+        case "snooze":
+        case "more": {
+          e.preventDefault();
+          const button = document.querySelector<HTMLElement>(`.reading-pane .toolbar [data-action="${action}"]`);
+          act(action, button?.getBoundingClientRect());
+          break;
+        }
+        case "pin": {
+          const ids = targets();
+          const latest = loadedViews()[0];
+          if (ids.length && latest) void setPinned(ids, !latest.marks.pinned);
+          break;
+        }
         case "markRead":
           act("read");
           break;
@@ -701,6 +1141,57 @@ export function App() {
     return () => window.removeEventListener("keydown", onKey);
   });
 
+  // ---------------------------------------------------------------- places
+
+  const goPlace = (p: Place, mailbox: number | null = null) => {
+    setQuery("");
+    setShowOutbox(false);
+    setMailboxId(mailbox);
+    setPlace(p);
+    setView("list");
+  };
+
+  /** A folder of the sidebar; an inbox opens sorted. */
+  const goMailbox = (m: Mailbox) => goPlace(m.role === "inbox" ? { kind: "inbox", account: m.account_id } : { kind: "folder" }, m.id);
+
+  /** The color (1–6) of an account's dot, with two accounts or more. */
+  const accountColor = (id: number): number | null => {
+    if (!multi) return null;
+    const i = accounts?.findIndex((a) => a.id === id) ?? -1;
+    return i < 0 ? null : (i % 6) + 1;
+  };
+
+  /** The entries above the accounts (`all`: also the empty ones, for the palette). */
+  const viewEntries = (all = false): ViewEntry[] => {
+    if (!settings) return [];
+    const out: ViewEntry[] = [];
+    const here = (k: Place["kind"]) => !showOutbox && place.kind === k;
+    const add = (id: Exclude<Place["kind"], "folder" | "inbox">, label: string, icon: ViewEntry["icon"], count: number, show: boolean) => {
+      if (show || here(id) || all) out.push({ id, label, icon, count, current: here(id), onSelect: () => goPlace({ kind: id }) });
+    };
+    if (multi && settings.unified_inbox) {
+      const unread = Object.values(mailboxes)
+        .flat()
+        .filter((m) => m.role === "inbox")
+        .reduce((n, m) => n + m.unread, 0);
+      out.push({
+        id: "unified",
+        label: t("inbox.unified"),
+        icon: Layers,
+        count: unread,
+        current: !showOutbox && place.kind === "inbox" && place.account == null,
+        onSelect: () => goPlace({ kind: "inbox", account: null }),
+      });
+    }
+    add("screener", t("folder.screener"), UserPlus, screenerCount, settings.screener);
+    add("snoozed", t("folder.snoozed"), Clock, times.snoozed, times.snoozed > 0);
+    add("later", t("folder.later"), BookmarkPlus, times.later, times.later > 0);
+    add("followups", t("folder.followups"), BellRing, times.followups, times.followups > 0);
+    add("scheduled", t("folder.scheduled"), Send, times.scheduled, times.scheduled > 0);
+    add("subscriptions", t("folder.subscriptions"), Newspaper, 0, false);
+    return out;
+  };
+
   // ---------------------------------------------------------------- the command palette
 
   const paletteCommands = (): Command[] => {
@@ -709,9 +1200,11 @@ export function App() {
       { id: "sync", label: t("cmd.sync"), icon: RefreshCw, run: () => void api.syncNow(null) },
     ];
     if (outbox.length) out.push({ id: "outbox", label: t("cmd.outbox"), icon: Upload, run: () => setShowOutbox(true) });
+    for (const v of viewEntries(true)) out.push({ id: `view-${v.id}`, label: t("cmd.goTo", { name: v.label }), icon: v.icon, run: v.onSelect });
+    out.push({ id: "focus", label: t("cmd.focus"), icon: Crosshair, run: () => updateSettings({ focus: !focus }) });
     for (const a of accounts ?? []) {
       for (const m of mailboxes[a.id] ?? []) {
-        if (!m.selectable) continue;
+        if (!listedFolder(m)) continue;
         const name = folderLabel(m, t);
         out.push({
           id: `folder-${m.id}`,
@@ -719,12 +1212,7 @@ export function App() {
           keywords: `${m.name} ${a.name} ${a.email}`,
           hint: (accounts?.length ?? 0) > 1 ? a.name || a.email : undefined,
           icon: m.role === "inbox" ? Inbox : folderIcon(m),
-          run: () => {
-            setQuery("");
-            setShowOutbox(false);
-            setMailboxId(m.id);
-            setView("list");
-          },
+          run: () => goMailbox(m),
         });
       }
     }
@@ -732,6 +1220,7 @@ export function App() {
       ["accounts", "settings.accounts"],
       ["appearance", "settings.appearance"],
       ["reading", "settings.reading"],
+      ["inbox", "settings.inbox"],
       ["writing", "settings.writing"],
       ["notifications", "settings.notifications"],
       ["privacy", "settings.privacy"],
@@ -802,6 +1291,7 @@ export function App() {
 
   /** The messages a row stands for: the conversation in this folder, or the one message. */
   const rowIds = async (m: MessageSummary): Promise<number[]> => {
+    if ((m.bundle ?? 0) > 0 && m.from && place.kind === "inbox") return (await api.bundle(place.account, m.from.email)).map((x) => x.id);
     if (!threads || m.thread_count <= 1) return [m.id];
     const all = await api.thread(m.thread_id);
     const here = all.filter((x) => x.mailbox_id === m.mailbox_id).map((x) => x.id);
@@ -842,9 +1332,9 @@ export function App() {
         <Setup
           welcome
           onDone={() =>
-            void loadAccounts().then(({ list, all }) => {
-              const first = list.map((a) => all[a.id]?.find((m) => m.role === "inbox")).find(Boolean);
-              setMailboxId(first?.id ?? null);
+            void Promise.all([loadAccounts(), api.settings()]).then(([{ list, all }, s]) => {
+              setSettings(s);
+              openStart(list, all, s.unified_inbox);
             })
           }
         />
@@ -852,8 +1342,41 @@ export function App() {
       </div>
     );
 
-  const title = results ? t("list.searchLabel") : mailbox ? folderLabel(mailbox, t) : t("app.name");
-  const emptyText = results ? t("list.noResults", { q: query.trim() }) : mailbox ? t("list.empty") : t("list.syncing");
+  const placeTitle = (): string => {
+    switch (place.kind) {
+      case "inbox":
+        return place.account == null ? t("inbox.unified") : mailbox ? folderLabel(mailbox, t) : t("folder.inbox");
+      case "snoozed":
+        return t("folder.snoozed");
+      case "later":
+        return t("folder.later");
+      case "followups":
+        return t("folder.followups");
+      default:
+        return mailbox ? folderLabel(mailbox, t) : t("app.name");
+    }
+  };
+  const title = results ? t("list.searchLabel") : placeTitle();
+  const emptyText = results
+    ? t("list.noResults", { q: query.trim() })
+    : place.kind === "snoozed"
+      ? t("snoozed.empty")
+      : place.kind === "later"
+        ? t("later.empty")
+        : place.kind === "followups"
+          ? t("followups.empty")
+          : mailbox || place.kind === "inbox"
+            ? t("list.empty")
+            : t("list.syncing");
+  const timeList = !results && (place.kind === "snoozed" || place.kind === "later" || place.kind === "followups");
+  const placeNote = place.kind === "snoozed" ? t("snoozed.note") : place.kind === "later" ? t("later.note") : place.kind === "followups" ? t("followups.note") : null;
+  const inInbox = !results && place.kind === "inbox";
+  const mobile = info.platform === "android" || info.platform === "ios";
+  const dueRow = current != null && place.kind === "followups" ? rowAt(order.indexOf(current)) : undefined;
+  const openMessages = (m: MessageSummary) => {
+    setSel({ ids: [m.id], anchor: m.id });
+    void open(m);
+  };
 
   return (
     <div className="app" data-view={view} data-layout={layout} data-touch={touch ? "" : undefined} data-composing={compose ? "" : undefined}>
@@ -863,15 +1386,12 @@ export function App() {
         <Sidebar
           accounts={accounts}
           mailboxes={mailboxes}
-          current={mailboxId}
+          current={place.kind === "folder" || (place.kind === "inbox" && place.account != null) ? mailboxId : null}
           showingOutbox={showOutbox}
           outboxCount={outbox.length}
-          onSelect={(m) => {
-            setQuery("");
-            setShowOutbox(false);
-            setMailboxId(m.id);
-            setView("list");
-          }}
+          views={viewEntries()}
+          accountColor={accountColor}
+          onSelect={goMailbox}
           onOutbox={() => {
             setShowOutbox(true);
             setView("list");
@@ -897,6 +1417,75 @@ export function App() {
               })
             }
           />
+        ) : !results && place.kind === "screener" ? (
+          <ScreenerView
+            senders={waiting}
+            current={current}
+            onOpen={openMessages}
+            onAllow={(w) =>
+              void api.screenerAllow(w.email).then(() => {
+                reloadSmart();
+                refreshList();
+                showToast({ title: t("screener.allowed", { name: w.name || w.email }), tone: "success", duration: 3000 });
+              })
+            }
+            onBlock={(w) =>
+              void api.screenerBlock(w.email).then((token) => {
+                reloadCounts();
+                if (w.messages.some((m) => m.id === current)) {
+                  setCurrent(null);
+                  setThread([]);
+                }
+                const back = async () => {
+                  await api.undo(token);
+                  await api.screenerForget(w.email);
+                  reloadCounts();
+                  showToast({ title: t("toast.undone"), duration: 2500 });
+                };
+                setUndo(() => void back());
+                showToast({ title: t("screener.blocked", { name: w.name || w.email }), duration: 5000, action: { label: t("common.undo"), run: () => void back() } });
+              })
+            }
+            onShowFolders={() => setView("folders")}
+          />
+        ) : !results && place.kind === "subscriptions" ? (
+          <SubscriptionsView
+            list={subs}
+            busy={unsubBusy}
+            onOpen={(s) => openMessages({ id: s.message_id, mailbox_id: 0, uid: 0, thread_id: 0, subject: "", from: { name: s.name, email: s.sender }, date: s.last, snippet: "", seen: true, flagged: false, answered: false, has_attachments: false, thread_count: 1, account_id: 0 })}
+            onUnsubscribe={(s) => unsubscribe(s.sender, s.name || s.sender, s.method)}
+            onShowFolders={() => setView("folders")}
+          />
+        ) : !results && place.kind === "scheduled" ? (
+          <ScheduledView
+            list={scheduled}
+            accounts={accounts}
+            mobile={mobile}
+            onSendNow={(s) =>
+              void api.sendScheduledNow(s.id).then(() => {
+                reloadSmart();
+                void api.outbox().then(setOutbox);
+                showToast({ title: t("toast.queued"), duration: 3000 });
+              })
+            }
+            onEdit={(s) =>
+              void api.unschedule(s.id).then((d) => {
+                reloadSmart();
+                void startCompose(fromComposeDraft(d, rich));
+              })
+            }
+            onDiscard={(s) =>
+              void api.unschedule(s.id).then((d) => {
+                reloadSmart();
+                showToast({
+                  title: t("toast.draftDiscarded"),
+                  duration: 5000,
+                  action: s.due_at > clockNow().getTime() / 1000 ? { label: t("common.undo"), run: () => void api.sendLater(d, s.due_at, s.followup_secs).then(reloadSmart) } : undefined,
+                });
+              })
+            }
+            onShowFolders={() => setView("folders")}
+          />
         ) : (
           <MessageList
             title={title}
@@ -911,6 +1500,42 @@ export function App() {
             showSnippets={settings.show_snippets}
             loading={!results && list.loading}
             emptyText={emptyText}
+            head={
+              inInbox ? (
+                <InboxHead tab={tab} counts={counts} focus={focus} onTab={setTab} onFocusEnd={() => updateSettings({ focus: false })} />
+              ) : timeList && placeNote ? (
+                <p className="muted smart-note">{placeNote}</p>
+              ) : undefined
+            }
+            titleExtra={
+              inInbox ? (
+                <span className="list-title-tools">
+                  {tab === "newsletters" && !focus && (
+                    <button type="button" className="btn btn-sm btn-quiet" onClick={() => goPlace({ kind: "subscriptions" })}>
+                      <Newspaper size={14} strokeWidth={1.75} aria-hidden />
+                      <span>{t("inbox.subscriptions")}</span>
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    className="icon-btn focus-btn"
+                    aria-pressed={focus}
+                    onClick={() => updateSettings({ focus: !focus })}
+                    aria-label={t("inbox.focusToggle")}
+                    title={t("inbox.focusToggle")}
+                  >
+                    <Crosshair size={16} strokeWidth={1.75} aria-hidden />
+                  </button>
+                </span>
+              ) : undefined
+            }
+            empty={inInbox ? <InboxZero tab={tab} focus={focus} counts={counts} snoozed={times.snoozed} onTab={setTab} /> : undefined}
+            accountOf={(m) => {
+              const c = multi && (results || place.kind !== "inbox" || place.account == null) ? accountColor(m.account_id) : null;
+              const a = c != null ? accounts.find((x) => x.id === m.account_id) : undefined;
+              return c != null && a ? { color: c, name: a.name || a.email } : null;
+            }}
+            dueOf={(m) => (!results && (place.kind === "snoozed" || place.kind === "followups") && m.due ? whenLabel(m.due, clockNow(), currentLang()) : null)}
             onQuery={setQuery}
             onServerSearch={() => void serverSearch()}
             onRowClick={(i, mods) => {
@@ -956,6 +1581,21 @@ export function App() {
           onRetry={(id) => void loadView(id)}
           onEditDraft={(v) => void startCompose(draftFromMessage(v, accountById(v.account_id), rich))}
           touch={touch}
+          inbox={inInbox}
+          stream={stream ? { name: stream.name } : null}
+          banner={
+            dueRow?.due ? (
+              <div className="notice reminder-banner" role="status">
+                <BellRing size={16} strokeWidth={1.75} aria-hidden />
+                <span>{t("read.noAnswer", { when: whenLabel(dueRow.due, clockNow(), currentLang()) })}</span>
+                <button type="button" className="btn btn-sm" onClick={() => void dismissFollowups(targets())}>
+                  {t("followup.dismiss")}
+                </button>
+              </div>
+            ) : undefined
+          }
+          onUnsubscribe={(v) => v.summary.from && unsubscribe(v.summary.from.email, displayName(v.summary.from, currentLang()), methodOf(v))}
+          onMark={onMark}
         />
       </div>
       {compose && (
@@ -965,7 +1605,8 @@ export function App() {
           error={composeError}
           sending={sending}
           onChange={setCompose}
-          onSend={() => void send()}
+          onSend={(followupSecs) => void send(followupSecs)}
+          onSendLater={(at, followupSecs) => (at == null ? setWhen({ kind: "send", followupSecs }) : void sendLater(at, followupSecs))}
           onSaveDraft={() => void (compose && saveDraft(compose, false).then((d) => setCompose((c) => (c ? { ...c, messageId: d.messageId } : c))))}
           onClose={() => void closeCompose()}
           onDiscard={() => void discardCompose()}
@@ -982,11 +1623,13 @@ export function App() {
           touch={touch}
           phone={layout === "phone" ? { nav: settingsNav, onNav: setSettingsNav } : undefined}
           onAccountsChanged={() =>
-            void loadAccounts().then(({ all }) => {
-              if (mailboxId != null && !Object.values(all).flat().some((b) => b.id === mailboxId)) setMailboxId(Object.values(all).flat().find((b) => b.role === "inbox")?.id ?? null);
+            void loadAccounts().then(({ list, all }) => {
+              if (mailboxId != null && !Object.values(all).flat().some((b) => b.id === mailboxId)) openStart(list, all, settings.unified_inbox);
+              else if (place.kind === "inbox" && place.account == null && list.length < 2) openStart(list, all, false);
             })
           }
           onClose={() => setSettingsOpen(null)}
+          onSubscriptions={() => goPlace({ kind: "subscriptions" })}
         />
       )}
       {folderDialog?.kind === "create" && (
@@ -1024,7 +1667,8 @@ export function App() {
             const m = folderDialog.mailbox;
             void api.deleteFolder(m.id).then(() => {
               void reloadMailboxes(m.account_id);
-              if (mailboxId === m.id) setMailboxId(mailboxes[m.account_id]?.find((b) => b.role === "inbox")?.id ?? null);
+              const inbox = mailboxes[m.account_id]?.find((b) => b.role === "inbox");
+              if (mailboxId === m.id && inbox) goMailbox(inbox);
             });
           }}
           onClose={() => setFolderDialog(null)}
@@ -1037,7 +1681,21 @@ export function App() {
           <SignInDialog account={signIn} onClose={() => setSignIn(null)} />
         ))}
       {palette && <CommandPalette commands={paletteCommands()} search={searchCommand} onClose={() => setPalette(false)} />}
-      {menu && <Menu items={menu.items} at={menu.at} onClose={() => setMenu(null)} label={t("read.move")} />}
+      {menu && <Menu items={menu.items} at={menu.at} onClose={() => setMenu(null)} label={t("read.actions")} />}
+      {when && (
+        <WhenDialog
+          title={when.kind === "snooze" ? t("snooze.title") : when.kind === "send" ? t("compose.sendLater") : t("read.followup")}
+          confirm={when.kind === "snooze" ? t("read.snooze") : when.kind === "send" ? t("compose.schedule") : t("when.remind")}
+          note={when.kind === "send" ? (mobile ? t("scheduled.noteMobile") : t("scheduled.note")) : undefined}
+          onPick={(at) => {
+            if (when.kind === "snooze") void snooze(when.ids, at);
+            else if (when.kind === "followup") void setFollowup(when.ids, at);
+            else void sendLater(at, when.followupSecs);
+          }}
+          onClose={() => setWhen(null)}
+        />
+      )}
+      {confirm && <ConfirmDialog title={confirm.title} text={confirm.text} confirm={confirm.confirm} onConfirm={confirm.run} onClose={() => setConfirm(null)} />}
       {preview && (
         <div className="overlay preview-overlay" onMouseDown={(e) => e.target === e.currentTarget && setPreview(null)} onKeyDown={(e) => e.key === "Escape" && setPreview(null)}>
           <figure className="preview" role="dialog" aria-modal="true" aria-label={preview.name}>

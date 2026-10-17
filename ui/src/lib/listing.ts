@@ -57,7 +57,10 @@ export type KeyAction =
   | "spam"
   | "escape"
   | "settings"
-  | "palette";
+  | "palette"
+  | "snooze"
+  | "pin"
+  | "more";
 
 /** The shortcut a key press means, `null` for anything else. Typing in a field never counts
  *  (except Escape). */
@@ -101,6 +104,12 @@ export function keyAction(e: { key: string; ctrlKey: boolean; metaKey: boolean; 
       return "flag";
     case "!":
       return "spam";
+    case "h":
+      return "snooze";
+    case "p":
+      return "pin";
+    case ".":
+      return "more";
     case "I":
       return "markRead";
     case "U":
