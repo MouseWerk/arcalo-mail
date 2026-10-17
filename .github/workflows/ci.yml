@@ -170,9 +170,12 @@ jobs:
           if-no-files-found: error
 
   # The phones' builds are workflows of their own, also called by the release (release.yml).
+  # The Android build also when a test of the checks failed: the emulator tests (android-e2e)
+  # need its debug APK to show what the phone does.
   android:
     name: Android
     needs: checks
+    if: ${{ !cancelled() }}
     uses: ./.github/workflows/android.yml
     secrets: inherit
 
