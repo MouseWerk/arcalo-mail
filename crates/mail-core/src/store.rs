@@ -1131,6 +1131,47 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn version_6_keys_are_mapped_and_autocrypt_keys_learned_again() {
+        let conn = Connection::open_in_memory().unwrap();
+        for m in &MIGRATIONS[..6] {
+            conn.execute_batch(m).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 6).unwrap();
+        conn.execute_batch(
+            "INSERT INTO pgp_keys (fingerprint, email, public, own, source, created_at, updated_at) VALUES
+               ('A', 'maria@example.org', 'x', 1, 'generated', 0, 0),
+               ('B', 'jonas@example.org', 'x', 0, 'imported', 0, 0),
+               ('C', 'lea@example.org', 'x', 0, 'autocrypt', 0, 0);
+             INSERT INTO smime_certs (fingerprint, email, subject, issuer, not_after, der, own, created_at) VALUES
+               ('S1', 'maria@example.org', '', '', 0, x'00', 1, 0),
+               ('S2', 'boss@corp.example', '', '', 0, x'00', 0, 0);",
+        )
+        .unwrap();
+        let s = Store::init(conn).unwrap();
+        let mapped: Vec<String> = s
+            .conn
+            .prepare("SELECT fingerprint FROM pgp_key_emails ORDER BY fingerprint")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(mapped, ["A", "B"]);
+        let left: i64 =
+            s.conn.query_row("SELECT COUNT(*) FROM pgp_keys WHERE fingerprint = 'C'", [], |r| r.get(0)).unwrap();
+        assert_eq!(left, 0, "an Autocrypt key filed under its first user id is learned again");
+        let trusted: Vec<(String, bool)> = s
+            .conn
+            .prepare("SELECT fingerprint, trusted FROM smime_certs ORDER BY fingerprint")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(trusted, [("S1".to_string(), true), ("S2".to_string(), false)]);
+    }
+
+    #[test]
     fn accounts_round_trip() {
         let (s, id, _) = store_with_inbox();
         let a = s.accounts().unwrap();

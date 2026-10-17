@@ -449,6 +449,8 @@ fn autocrypt_files_a_key_under_the_sending_address_only() {
         autocrypt_mail("mallory@evil.example", "mallory@evil.example", &mallory_pub, "Mon, 1 Jun 2026 10:00:00 +0000");
     ingest_autocrypt(&jonas, &raw, "mallory@evil.example").unwrap();
     assert!(pgp_keys_for(&jonas, "maria@example.org").unwrap().is_empty(), "not a key of Maria");
+    let listed = list(&jonas).unwrap();
+    assert_eq!(listed.iter().find(|k| k.source == "autocrypt").map(|k| k.email.as_str()), Some("mallory@evil.example"));
     assert_eq!(
         fingerprints(&pgp_keys_for(&jonas, "mallory@evil.example").unwrap()),
         [pgp::fingerprint_of(&mallory_pub)]

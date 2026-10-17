@@ -280,8 +280,14 @@ pub fn own_certs(store: &Store, email: Option<&str>) -> Result<Vec<String>> {
 /// Every key and certificate.
 pub fn list(store: &Store) -> Result<Vec<StoredKey>> {
     let mut out = vec![];
-    let mut st =
-        store.conn().prepare("SELECT fingerprint, email, name, own, source FROM pgp_keys ORDER BY own DESC, email")?;
+    // The address a key is used for (an Autocrypt key's is the one that sent it).
+    let mut st = store.conn().prepare(
+        "SELECT k.fingerprint,
+           COALESCE((SELECT e.email FROM pgp_key_emails e WHERE e.fingerprint = k.fingerprint
+                     ORDER BY e.email = k.email DESC, e.email LIMIT 1), k.email) AS addr,
+           k.name, k.own, k.source
+         FROM pgp_keys k ORDER BY k.own DESC, addr",
+    )?;
     let rows = st.query_map([], |r| {
         Ok(StoredKey {
             kind: "pgp".into(),

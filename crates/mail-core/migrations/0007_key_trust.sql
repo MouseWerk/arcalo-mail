@@ -12,7 +12,10 @@ CREATE TABLE pgp_key_emails (
 );
 CREATE INDEX pgp_key_emails_email ON pgp_key_emails (email);
 INSERT INTO pgp_key_emails (fingerprint, email, source, prefer_encrypt, seen_at)
-  SELECT fingerprint, email, source, prefer_encrypt, updated_at FROM pgp_keys;
+  SELECT fingerprint, email, source, prefer_encrypt, updated_at FROM pgp_keys WHERE own = 1 OR source <> 'autocrypt';
+-- Autocrypt keys were filed under their first user id, whichever address sent them: they are
+-- learned again from the next message that carries them.
+DELETE FROM pgp_keys WHERE own = 0 AND source = 'autocrypt';
 
 -- S/MIME: a certificate is used to encrypt only when it chains to a trusted root or the user
 -- trusted it. Certificates kept from mail before this was checked wait for the next signed
