@@ -27,6 +27,7 @@ import {
   ShieldAlert,
   Trash2,
   TriangleAlert,
+  ChevronUp,
 } from "lucide-react";
 import { useState } from "react";
 import { currentLang, useT } from "../lib/i18n";
@@ -201,15 +202,24 @@ function MessageCard({ view, theme, p, onCollapse }: { view: MessageView; theme:
           <div className="message-from">
             {from && p.onContact ? (
               <button type="button" className="link-btn sender-btn" onClick={() => p.onContact?.(from)}>
-                <strong>{displayName(from, lang)}</strong>
+                <strong>
+                  <bdi>{displayName(from, lang)}</bdi>
+                </strong>
               </button>
             ) : (
-              <strong>{displayName(from, lang)}</strong>
+              <strong>
+                <bdi>{displayName(from, lang)}</bdi>
+              </strong>
             )}
-            {from?.name && <span className="muted"> &lt;{from.email}&gt;</span>}
+            {from?.name && (
+              <span className="muted">
+                {" "}
+                &lt;<bdi>{from.email}</bdi>&gt;
+              </span>
+            )}
           </div>
           <div className="message-to muted" title={addressLine(recipients)}>
-            {t("read.toLine", { names: recipients.map((a) => a.name || a.email).join(", ") || "–" })}
+            <bdi>{t("read.toLine", { names: recipients.map((a) => a.name || a.email).join(", ") || "–" })}</bdi>
           </div>
         </div>
         <time className="muted message-date" dateTime={new Date(m.date * 1000).toISOString()} title={fullDate(m.date, lang)}>
@@ -231,9 +241,18 @@ function MessageCard({ view, theme, p, onCollapse }: { view: MessageView; theme:
           <button type="button" className="icon-btn icon-btn-sm" onClick={() => p.onCompose("reply", view)} aria-label={t("read.reply")} title={t("read.reply")}>
             <Reply size={15} strokeWidth={1.75} aria-hidden />
           </button>
+          {onCollapse && (
+            <button type="button" className="icon-btn icon-btn-sm" onClick={onCollapse} aria-expanded aria-label={t("read.collapse")} title={t("read.collapse")}>
+              <ChevronUp size={15} strokeWidth={1.75} aria-hidden />
+            </button>
+          )}
         </div>
       </header>
-      {p.stream && <h2 className="stream-subject">{m.subject || t("list.noSubject")}</h2>}
+      {p.stream && (
+        <h2 className="stream-subject" dir="auto">
+          {m.subject || t("list.noSubject")}
+        </h2>
+      )}
       <MarkNotes view={view} p={p} />
       {view.protection && <ProtectionBadges p={view.protection} messageId={m.id} onChanged={() => p.onRetry(m.id)} />}
       {view.invitation && <InvitationCard view={view} onAnswered={() => p.onRetry(m.id)} onOpenCalendar={(key, start) => p.onOpenCalendar?.(key, start)} />}
@@ -402,7 +421,9 @@ export function ReadingPane(p: Props) {
           {p.stream ? (
             <h1 className="message-subject">{t("read.stream", { n: p.thread.length, name: p.stream.name })}</h1>
           ) : (
-            <h1 className="message-subject">{(ready?.summary.subject ?? focus.subject) || t("list.noSubject")}</h1>
+            <h1 className="message-subject" dir="auto">
+              {(ready?.summary.subject ?? focus.subject) || t("list.noSubject")}
+            </h1>
           )}
           {p.thread.length > 1 && !p.stream && <p className="muted thread-note">{t("read.thread", { n: p.thread.length })}</p>}
           {p.thread.some((m) => m.important) && !p.stream && <span className="important-badge important-head">{t("list.important")}</span>}
@@ -416,8 +437,10 @@ export function ReadingPane(p: Props) {
               return (
                 <button key={m.id} type="button" className="message-collapsed" onClick={() => p.onToggle(m.id)} aria-expanded={false}>
                   <Avatar who={m.from} size="sm" />
-                  <span className={`collapsed-from${m.seen ? "" : " unread"}`}>{displayName(m.from, lang)}</span>
-                  <span className="collapsed-snippet">{m.snippet}</span>
+                  <bdi className={`collapsed-from${m.seen ? "" : " unread"}`}>{displayName(m.from, lang)}</bdi>
+                  <span className="collapsed-snippet" dir="auto">
+                    {m.snippet}
+                  </span>
                   <span className="collapsed-date">{shortDate(m.date, now(), lang)}</span>
                 </button>
               );

@@ -134,6 +134,54 @@
   --scrollbar-gap: 3px;
   --chevron-size: 14px;
   --icon-sm: 16px;
+  /* Fine steps between the spacing steps, for dense views (the calendar's grid and chips). */
+  --sp-0-75: 3px;
+  --sp-1-25: 5px;
+  --sp-1-5: 6px;
+  --sp-1-75: 7px;
+  --sp-2-25: 9px;
+  --sp-2-5: 10px;
+  --sp-3-5: 14px;
+  --sp-4-5: 18px;
+  --sp-12: 48px;
+  /* Small round marks: an appointment's color, the dot of the agenda, a calendar's title. */
+  --dot-xs: 6px;
+  --dot-md: 10px;
+  /* The calendar: the hour column and an hour's height, the week column of the month, an
+     appointment chip, the day buttons and pills, the drag handle, the hatching of tentative and
+     free appointments, the detail panel, the agenda, the legend, the date and time fields of a
+     new appointment, and the color swatches and day buttons of its settings. */
+  --cal-gutter: 58px;
+  --cal-gutter-narrow: 40px;
+  --cal-hour: 48px;
+  --cal-week-col: 32px;
+  --cal-week-col-narrow: 22px;
+  --cal-month-row-min: 92px;
+  --cal-allday-min: 28px;
+  --cal-chip-h: 20px;
+  --cal-pill-h: 24px;
+  --cal-more-h: 18px;
+  --cal-lh-sm: 14px;
+  --cal-lh-md: 16px;
+  --cal-handle-h: 7px;
+  --cal-grip-w: 18px;
+  --cal-hatch: 5px;
+  --cal-hatch-period: 9px;
+  --cal-detail-w: 340px;
+  --cal-body-h: 280px;
+  --cal-agenda-w: 860px;
+  --cal-agenda-time-w: 96px;
+  --cal-agenda-time-w-narrow: 80px;
+  --cal-legend-w: 240px;
+  --cal-view-select-w: 132px;
+  --cal-date-w: 112px;
+  --cal-time-w: 64px;
+  --cal-note-min: 160px;
+  --cal-swatch: 16px;
+  --cal-day-btn-w: 34px;
+  /* The key text of the encryption settings, the release notes of an update. */
+  --crypto-armor-h: 220px;
+  --update-notes-h: 520px;
   /* Phones and touch screens: the smallest touch target. */
   --touch-min: 44px;
   /* Touch screens: the bar of message actions at the bottom, the compose button over the list,

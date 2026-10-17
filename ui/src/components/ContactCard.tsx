@@ -1,7 +1,7 @@
 // The contact card: a person's picture, name and addresses (from an address book where there
 // is one), the recent mail with them, the files they sent, and „Neue Mail“.
 
-import { BookUser, Building2, Copy, Download, Mail, MailPlus, Phone } from "lucide-react";
+import { BookUser, Building2, Copy, Download, Mail, MailPlus, Phone, TriangleAlert } from "lucide-react";
 import { useEffect, useState } from "react";
 import { api } from "../lib/api";
 import { currentLang, useT } from "../lib/i18n";
@@ -39,8 +39,17 @@ export function ContactCardDialog({
   const t = useT();
   const lang = currentLang();
   const [card, setCard] = useState<Card | null>(null);
+  const [error, setError] = useState<string | null>(null);
   useEffect(() => {
-    void api.contactCard(email).then(setCard);
+    let alive = true;
+    setError(null);
+    void api
+      .contactCard(email)
+      .then((c) => alive && setCard(c))
+      .catch((e) => alive && setError(String(e)));
+    return () => {
+      alive = false;
+    };
   }, [email]);
   const shown = card?.name || name || email;
   const to = shown && shown !== email ? `${/[,;"]/.test(shown) ? `"${shown.replace(/"/g, "")}"` : shown} <${email}>` : email;
@@ -99,7 +108,14 @@ export function ContactCardDialog({
           <span>{t("contact.newMail")}</span>
         </button>
       </div>
-      {!card ? (
+      {error ? (
+        <div className="notice notice-warning contact-error" role="alert">
+          <TriangleAlert size={16} strokeWidth={1.75} aria-hidden />
+          <span>
+            <strong>{t("contact.loadFailed")}</strong> {error}
+          </span>
+        </div>
+      ) : !card ? (
         <div className="contact-loading">
           <Spinner label={t("contact.loading")} />
         </div>

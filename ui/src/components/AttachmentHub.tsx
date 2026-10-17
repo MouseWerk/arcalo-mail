@@ -76,7 +76,10 @@ export function AttachmentHub({
     };
   }, [filter, revision]);
   useEffect(() => {
-    void api.hubSenders(accountId).then(setSenders);
+    void api
+      .hubSenders(accountId)
+      .then(setSenders)
+      .catch(() => setSenders([]));
   }, [accountId, revision]);
   const filtered = kind || sender || range !== "all" || query.trim();
   return (

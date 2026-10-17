@@ -163,6 +163,7 @@ let settings: Settings = {
   sign_by_default: null,
   arcalo_target: "page",
   updates: "auto",
+  startup_animation: true,
 };
 const listeners = new Set<(n: Notice) => void>();
 
@@ -398,6 +399,24 @@ export const demo = {
     scheduledList = scheduledList.filter((x) => x.id !== id);
     if (!s) throw new Error("gone");
     return s.draft;
+  },
+  draftOf: (id: number): ComposeDraft => {
+    const v = demo.message(id);
+    return {
+      account_id: v.account_id,
+      to: v.to.map((a) => (a.name ? `${a.name} <${a.email}>` : a.email)),
+      cc: v.cc.map((a) => (a.name ? `${a.name} <${a.email}>` : a.email)),
+      bcc: [],
+      subject: v.summary.subject,
+      text: v.text ?? "",
+      html: null,
+      attachments: [],
+      in_reply_to: v.in_reply_to,
+      references: v.references,
+      message_id: v.message_id,
+      reply_to_id: null,
+      forwarded: v.files.map((f) => f.id),
+    };
   },
   onNotice: (f: (n: Notice) => void) => {
     listeners.add(f);

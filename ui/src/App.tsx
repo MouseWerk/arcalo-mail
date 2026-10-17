@@ -34,12 +34,14 @@ import {
   UserPlus,
   X,
 } from "lucide-react";
-import { api, inApp, onEvent, onNotice, onOpenMessage, onReminders, onTrayAction, openExternal, pickSavePath } from "./lib/api";
+import { api, inApp, onEvent, onNotice, onOpenMessage, onReminders, onSaveDrafts, onTrayAction, openExternal, pickSavePath } from "./lib/api";
 import { openCalendar, setWeekLocale, type CalendarRequest } from "./lib/calendar";
 import { applyTheme, onSystemThemeChange, type Theme } from "./lib/theme";
+import { cssHex, rememberSplash } from "./lib/splash";
 import { currentLang, langFromLocale, setLang, useT } from "./lib/i18n";
-import { draftFromMessage, emptyDraft, fromComposeDraft, isEmpty, isValidAddress, replaceOwnText, replyDraft, textToEditorHtml, toDraft, type ComposeState } from "./lib/compose";
-import { clickSelect, isTyping, keyAction, pagesFor, type Selection } from "./lib/listing";
+import { committed, emptyDraft, fromComposeDraft, isEmpty, isValidAddress, reopened, replaceOwnText, replyDraft, textToEditorHtml, toDraft, type ComposeState } from "./lib/compose";
+import { mailtoFromHref } from "./lib/mailto";
+import { clickSelect, isControl, isTyping, keyAction, pagesFor, rangeGaps, type Selection } from "./lib/listing";
 import { closeToast, runUndo, setUndo, showToast } from "./lib/toasts";
 import { displayName, now as clockNow, setClock } from "./lib/format";
 import { whenLabel } from "./lib/when";
@@ -50,10 +52,12 @@ import type {
   AppInfo,
   Attachment,
   Category,
+  ComposeDraft,
   InboxCounts,
   Mailbox,
   MessageSummary,
   MessageView,
+  Mailto,
   MicrosoftSignIn,
   Notice,
   OutboxEntry,
@@ -97,6 +101,9 @@ type View = "folders" | "list" | "message";
 
 const PAGE = 100;
 
+/** Unread messages of a conversation expanded (and loaded) when it opens; the others on demand. */
+const UNREAD_OPEN = 4;
+
 type ListState = { key: string; total: number; pages: Record<number, MessageSummary[]>; loading: boolean };
 
 type FolderDialog = FolderAction | null;
@@ -133,6 +140,12 @@ type When = { kind: "snooze"; ids: number[] } | { kind: "followup"; ids: number[
 
 const NO_TIME: TimeCounts = { snoozed: 0, later: 0, followups: 0, scheduled: 0 };
 
+/** How long after the last change the open message is saved as a draft. */
+const AUTOSAVE_MS = 3000;
+
+/** How long a discarded message can be brought back before its draft is removed. */
+const DISCARD_UNDO_MS = 5000;
+
 export function App() {
   const t = useT();
   const [info, setInfo] = useState<AppInfo | null>(null);
@@ -168,7 +181,11 @@ export function App() {
   const [views, setViews] = useState<Record<number, Loaded>>({});
   const [expanded, setExpanded] = useState<number[]>([]);
   const [compose, setCompose] = useState<ComposeState | null>(null);
-  const [composeError, setComposeError] = useState<string | null>(null);
+  const composeRef = useRef(compose);
+  composeRef.current = compose;
+  const [composeError, setComposeError] = useState<{ title: string; detail: string } | null>(null);
+  // A message whose send was undone while another one is open: asked where it goes.
+  const [takeBack, setTakeBack] = useState<ComposeState | null>(null);
   const [sending, setSending] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState<SettingsSection | null>(null);
   const [showOutbox, setShowOutbox] = useState(false);
@@ -191,6 +208,7 @@ export function App() {
   const searchRef = useRef<HTMLInputElement | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
   const openSeq = useRef(0);
+  const openByIdSeq = useRef(0);
   const lastSync = useRef(Date.now());
 
   const touch = isTouch(info?.touch ?? false);
@@ -249,6 +267,12 @@ export function App() {
     setLang(settings.language === "system" ? langFromLocale(info.locale || navigator.language) : settings.language);
     return onSystemThemeChange(apply);
   }, [settings, info]);
+
+  // The next start's opening animation: on or off, in the colors of the theme in use.
+  useEffect(() => {
+    if (!settings) return;
+    rememberSplash({ off: !settings.startup_animation, bg: cssHex("--bg-app"), ink: cssHex("--text"), seal: cssHex("--accent") });
+  }, [settings?.startup_animation, theme]);
 
   const loadAccounts = useCallback(async () => {
     const list = await api.accounts();
@@ -357,6 +381,16 @@ export function App() {
     setList((l) => (l.key === key ? { ...l, total: r.total, pages: { ...l.pages, [page]: r.items }, loading: false } : l));
   }, []);
 
+  /** Loads list pages now (into the list too) and returns them. */
+  const loadPages = async (pages: number[]): Promise<Record<number, MessageSummary[]>> => {
+    const src = sourceRef.current;
+    if (!src) return {};
+    const got = await Promise.all(pages.map(async (p) => [p, (await src.page(p * PAGE, PAGE)).items] as const));
+    const loaded = Object.fromEntries(got);
+    setList((l) => (l.key === src.key ? { ...l, pages: { ...l.pages, ...loaded } } : l));
+    return loaded;
+  };
+
   const refreshList = useCallback(() => {
     setList((l) => {
       const pages = Object.keys(l.pages).map(Number);
@@ -366,7 +400,13 @@ export function App() {
   }, [fetchPage]);
 
   useEffect(() => {
-    if (!listKey) return;
+    // A place without a list (Dateien, Frag dein Postfach, Neue Absender, Abos, Geplant): the
+    // last folder's rows go, so no key works on a list that is not shown.
+    if (!listKey) {
+      setList((l) => ({ key: "", total: 0, pages: {}, loading: l.loading }));
+      setSel({ ids: [], anchor: null });
+      return;
+    }
     setList({ key: listKey, total: 0, pages: {}, loading: true });
     setSel({ ids: [], anchor: null });
     setCurrent(null);
@@ -390,7 +430,11 @@ export function App() {
   const total = results ? results.length : list.total;
   const order = useMemo(() => Array.from({ length: total }, (_, i) => rowAt(i)?.id), [total, rowAt]);
 
-  // Search as you type, over all accounts (local index, works offline).
+  // Search as you type, over all accounts (local index, works offline). An answer counts only
+  // while its query is still the one in the field.
+  const queryRef = useRef(query);
+  queryRef.current = query;
+  const stillAsked = (q: string) => queryRef.current.trim() === q;
   useEffect(() => {
     const q = query.trim();
     setServer({ busy: false, done: false });
@@ -399,41 +443,60 @@ export function App() {
       setResults(null);
       return;
     }
-    const timer = setTimeout(() => void api.search(q, null).then(setResults), 120);
-    return () => clearTimeout(timer);
+    let alive = true;
+    const timer = setTimeout(
+      () =>
+        void api.search(q, null).then((r) => {
+          if (alive && stillAsked(q)) setResults(r);
+        }),
+      120,
+    );
+    return () => {
+      alive = false;
+      clearTimeout(timer);
+    };
   }, [query]);
 
   // The store changed under open results: search again, keeping what the server found.
   useEffect(() => {
     const q = query.trim();
     if (!q || searchRev === 0) return;
+    let alive = true;
     const timer = setTimeout(
       () =>
         void api.search(q, null).then((local) =>
           setResults((r) => {
-            if (!r) return r;
+            if (!r || !alive || !stillAsked(q)) return r;
             const known = new Set(local.map((m) => m.id));
             return [...local, ...r.filter((m) => serverHits.current.has(m.id) && !known.has(m.id))];
           }),
         ),
       300,
     );
-    return () => clearTimeout(timer);
+    return () => {
+      alive = false;
+      clearTimeout(timer);
+    };
   }, [searchRev]);
 
   const serverSearch = async () => {
     const accountId = mailbox?.account_id ?? accounts?.[0]?.id;
-    if (accountId == null || !query.trim()) return;
+    const q = query.trim();
+    if (accountId == null || !q) return;
     setServer({ busy: true, done: false });
     try {
-      const more = await api.serverSearch(accountId, query.trim());
+      const more = await api.serverSearch(accountId, q);
+      // The query changed meanwhile: these hits belong to no search on screen.
+      if (!stillAsked(q)) return;
       for (const m of more) serverHits.current.add(m.id);
       setResults((r) => {
-        const known = new Set((r ?? []).map((m) => m.id));
-        return [...(r ?? []), ...more.filter((m) => !known.has(m.id))];
+        if (!r) return r;
+        const known = new Set(r.map((m) => m.id));
+        return [...r, ...more.filter((m) => !known.has(m.id))];
       });
       setServer({ busy: false, done: true });
     } catch (e) {
+      if (!stillAsked(q)) return;
       setServer({ busy: false, done: false });
       showToast({ title: t("list.serverSearchFailed"), detail: String(e), tone: "danger" });
     }
@@ -460,20 +523,26 @@ export function App() {
     setThread((th) => th.map(f));
   }, []);
 
+  /** Opens a message with its conversation. `byId`: a message known by its id only, whose row
+   *  does not say how long its conversation is. */
   const open = useCallback(
-    async (m: MessageSummary) => {
+    async (m: MessageSummary, byId = false) => {
       const seq = ++openSeq.current;
       setCurrent(m.id);
       setView("message");
       // A bundle: the sender's issues one below the other, the newest first and open.
       const bundle = (m.bundle ?? 0) > 0 && !results && placeRef.current.kind === "inbox" && m.from;
       const p = placeRef.current;
-      const list = bundle && m.from ? await api.bundle(p.kind === "inbox" ? p.account : null, m.from.email) : threads && m.thread_count > 1 ? await api.thread(m.thread_id) : [m];
+      const list = bundle && m.from ? await api.bundle(p.kind === "inbox" ? p.account : null, m.from.email) : threads && (m.thread_count > 1 || byId) ? await api.thread(m.thread_id) : [m];
       if (seq !== openSeq.current) return;
       const th = list.length ? list : [m];
       setStream(bundle && m.from ? { sender: m.from.email, name: displayName(m.from, currentLang()) } : null);
       setThread(th);
-      const open = bundle ? th.slice(0, 3).map((x) => x.id) : [...new Set([...th.filter((x) => !x.seen).map((x) => x.id), th[th.length - 1].id])];
+      // A long conversation loads only what it shows: its newest unread messages and the newest
+      // one; the others when they are expanded.
+      const open = bundle
+        ? th.slice(0, 3).map((x) => x.id)
+        : [...new Set([...th.filter((x) => !x.seen).map((x) => x.id).slice(-UNREAD_OPEN), th[th.length - 1].id])];
       setExpanded(open);
       setViews({});
       await Promise.all(open.map((id) => loadView(id)));
@@ -531,8 +600,14 @@ export function App() {
     return here.length ? here : current != null ? [current] : [];
   };
 
-  /** After rows went away: the next one opens (the one below, else above). */
+  // The list as it is now, for what finishes later (an archive that waited for the backend).
+  const listNow = useRef({ current, order, rowAt });
+  listNow.current = { current, order, rowAt };
+
+  /** After rows went away: the next one opens (the one below, else above), if the open message
+   *  was among them; read when the removal finished, not when it started. */
   const afterRemoval = (gone: number[]) => {
+    const { current, order, rowAt } = listNow.current;
     const idx = order.findIndex((id) => id !== undefined && gone.includes(id));
     const next = order.slice(idx + 1).find((id) => id !== undefined && !gone.includes(id)) ?? order.slice(0, Math.max(0, idx)).reverse().find((id) => id !== undefined && !gone.includes(id));
     setSel({ ids: [], anchor: null });
@@ -866,27 +941,91 @@ export function App() {
   const accountById = (id: number | null | undefined) => accounts?.find((a) => a.id === id) ?? null;
   const rich = settings?.compose_rich_text ?? true;
 
-  const saveDraft = async (d: ComposeState, quiet: boolean) => {
-    if (d.accountId == null) return d;
+  // Saving drafts. Saves run one after the other, and each one after the first replaces the
+  // draft the first one stored (its Message-ID), so two saves at once never leave two drafts.
+  const saveChain = useRef<Promise<unknown>>(Promise.resolve());
+  const savedIds = useRef(new Map<number, string>());
+  // What was saved last, per sheet: a save of the same text is not repeated.
+  const savedAs = useRef(new Map<number, string>());
+  const [, setSavedTick] = useState(0);
+  const snapshot = (d: ComposeState) => JSON.stringify(toDraft({ ...d, messageId: null }));
+  const isSaved = (d: ComposeState) => savedAs.current.get(d.uid) === snapshot(d);
+
+  /** Stores the sheet in Drafts; resolves to its Message-ID. */
+  const persist = (d: ComposeState): Promise<string> => {
+    const run = saveChain.current.then(async () => {
+      const known = savedIds.current.get(d.uid) ?? d.messageId;
+      const snap = snapshot(d);
+      if (known && savedAs.current.get(d.uid) === snap) return known;
+      const messageId = await api.saveDraft(toDraft({ ...d, messageId: known }));
+      savedIds.current.set(d.uid, messageId);
+      savedAs.current.set(d.uid, snap);
+      setSavedTick((n) => n + 1);
+      setCompose((c) => (c && c.uid === d.uid && c.messageId !== messageId ? { ...c, messageId } : c));
+      return messageId;
+    });
+    saveChain.current = run.catch(() => {});
+    return run;
+  };
+
+  /** Saves the sheet as a draft; `false` when that failed (the sheet then says why, unless `quiet`). */
+  const saveDraft = async (d: ComposeState, quiet: boolean): Promise<boolean> => {
+    if (d.accountId == null) return true;
     try {
-      const messageId = await api.saveDraft(toDraft(d));
+      await persist(d);
       if (!quiet) showToast({ title: t("toast.draftSaved"), duration: 2500 });
-      return { ...d, messageId };
+      return true;
     } catch (e) {
-      showToast({ title: t("toast.draftFailed"), detail: String(e), tone: "danger" });
-      return d;
+      if (!quiet) {
+        setComposeError({ title: t("toast.draftFailed"), detail: String(e) });
+        showToast({ title: t("toast.draftFailed"), detail: String(e), tone: "danger" });
+      }
+      return false;
     }
   };
 
-  const startCompose = async (next: ComposeState) => {
-    if (compose && !isEmpty(compose)) await saveDraft(compose, false);
+  /** Saves the open message unless it is empty or saved as it is. */
+  const flushDraft = async () => {
+    const c = composeRef.current;
+    if (c && !isEmpty(c) && !isSaved(c)) await saveDraft(c, true);
+  };
+
+  /** Opens `next` in the sheet; an open message is saved first and stays when that fails. */
+  const startCompose = async (next: ComposeState): Promise<boolean> => {
+    const open = composeRef.current;
+    if (open && open.uid !== next.uid && !isEmpty(open) && !(await saveDraft(open, false))) return false;
     setComposeError(null);
     setCompose(next);
+    return true;
+  };
+
+  /** A message that comes back to the sheet (the undo of a send, of „Später senden“, of
+   *  „Verwerfen“): straight in when the sheet is free, else the user decides. */
+  const bringBack = (state: ComposeState) => {
+    const back = reopened(state);
+    const open = composeRef.current;
+    if (open && !isEmpty(open)) setTakeBack(back);
+    else {
+      setComposeError(null);
+      setCompose(back);
+    }
   };
 
   const newMessage = (to: string[] = []) => {
     const account = accountById(mailbox?.account_id) ?? accounts?.[0] ?? null;
     void startCompose(emptyDraft(account, rich, to));
+  };
+
+  /** A stored message in the sheet (a scheduled one taken back, a draft from Drafts), with its
+   *  files: those on disk that are still there, and the stored attachments it forwards. */
+  const editStored = async (d: ComposeDraft) => {
+    const [files, forwarded] = await Promise.all([
+      d.attachments.length ? api.fileInfos(d.attachments).catch(() => []) : Promise.resolve([]),
+      d.forwarded.length ? api.attachments(d.forwarded).catch(() => []) : Promise.resolve([]),
+    ]);
+    const missing = d.attachments.length - files.length + (d.forwarded.length - forwarded.length);
+    if (missing > 0) showToast({ title: t("compose.filesMissing", { n: missing }), tone: "danger", duration: 8000 });
+    await startCompose(fromComposeDraft(d, files, forwarded));
   };
 
   const replyTo = (mode: "reply" | "replyAll" | "forward", v: MessageView) => {
@@ -905,12 +1044,12 @@ export function App() {
   const recipientsOk = (c: ComposeState): boolean => {
     const all = [...c.to, ...c.cc, ...c.bcc];
     if (!all.length) {
-      setComposeError(t("compose.noRecipient"));
+      setComposeError({ title: t("compose.sendFailed"), detail: t("compose.noRecipient") });
       return false;
     }
     const bad = all.find((a) => !isValidAddress(a));
     if (bad) {
-      setComposeError(t("compose.invalidNamed", { address: bad }));
+      setComposeError({ title: t("compose.sendFailed"), detail: t("compose.invalidNamed", { address: bad }) });
       return false;
     }
     return true;
@@ -918,14 +1057,18 @@ export function App() {
 
   /** „Später senden“: the message waits here until `at`. */
   const sendLater = async (at: number, followupSecs: number | null, confirmedPlain = false) => {
-    if (!compose || sending || !recipientsOk(compose)) return;
-    if (!(await readyToSend(compose, () => void sendLater(at, followupSecs, true), confirmedPlain))) return;
+    const open = composeRef.current;
+    if (!open || sending) return;
+    const state = committed(open);
+    if (state !== open) setCompose(state);
+    if (!recipientsOk(state)) return;
+    if (!(await readyToSend(state, () => void sendLater(at, followupSecs, true), confirmedPlain))) return;
     setSending(true);
     setComposeError(null);
-    const state = compose;
     try {
-      const id = await api.sendLater(toDraft(state), at, followupSecs);
-      setCompose(null);
+      await saveChain.current;
+      const id = await api.sendLater(toDraft({ ...state, messageId: savedIds.current.get(state.uid) ?? state.messageId }), at, followupSecs);
+      setCompose((c) => (c && c.uid === state.uid ? null : c));
       reloadSmart();
       showToast({
         title: t("scheduled.done", { when: whenLabel(at, clockNow(), currentLang()) }),
@@ -934,13 +1077,13 @@ export function App() {
           label: t("common.undo"),
           run: () =>
             void api.unschedule(id).then(() => {
-              setCompose({ ...state, revision: state.revision + 1 });
+              bringBack(state);
               reloadSmart();
             }),
         },
       });
     } catch (e) {
-      setComposeError(String(e));
+      setComposeError({ title: t("compose.sendFailed"), detail: String(e) });
     } finally {
       setSending(false);
     }
@@ -966,63 +1109,91 @@ export function App() {
   };
 
   const send = async (followupSecs: number | null = null, confirmedPlain = false) => {
-    if (!compose || sending || !recipientsOk(compose)) return;
-    if (!(await readyToSend(compose, () => void send(followupSecs, true), confirmedPlain))) return;
+    const open = composeRef.current;
+    if (!open || sending) return;
+    // Addresses still being typed go along.
+    const state = committed(open);
+    if (state !== open) setCompose(state);
+    if (!recipientsOk(state)) return;
+    if (!(await readyToSend(state, () => void send(followupSecs, true), confirmedPlain))) return;
     setSending(true);
     setComposeError(null);
-    const state = compose;
     try {
-      const q = await api.send(toDraft(state), followupSecs);
-      setCompose(null);
+      // A save in flight first: the message replaces the draft it stored.
+      await saveChain.current;
+      const q = await api.send(toDraft({ ...state, messageId: savedIds.current.get(state.uid) ?? state.messageId }), followupSecs);
+      setCompose((c) => (c && c.uid === state.uid ? null : c));
+      const takeBackSent = () =>
+        void api.cancelSend(q.outbox_id, q.message_id).then((ok) => {
+          if (ok) {
+            bringBack(state);
+            showToast({ title: t("toast.sendCancelled"), duration: 3000 });
+          } else showToast({ title: t("toast.alreadySent"), tone: "danger", duration: 3000 });
+        });
       const toastId = showToast({
         title: q.delay > 0 ? t("toast.sending") : t("toast.queued"),
         duration: q.delay > 0 ? q.delay * 1000 : 3000,
-        action:
-          q.delay > 0
-            ? {
-                label: t("common.undo"),
-                run: () =>
-                  void api.cancelSend(q.outbox_id, q.message_id).then((ok) => {
-                    if (ok) {
-                      setCompose({ ...state, messageId: state.messageId, revision: state.revision + 1 });
-                      showToast({ title: t("toast.sendCancelled"), duration: 3000 });
-                    } else showToast({ title: t("toast.alreadySent"), tone: "danger", duration: 3000 });
-                  }),
-              }
-            : undefined,
+        action: q.delay > 0 ? { label: t("common.undo"), run: takeBackSent } : undefined,
       });
       setUndo(() => {
         closeToast(toastId);
-        void api.cancelSend(q.outbox_id, q.message_id).then((ok) => ok && setCompose(state));
+        takeBackSent();
       }, q.delay * 1000);
       void api.outbox().then(setOutbox);
     } catch (e) {
-      setComposeError(String(e));
+      setComposeError({ title: t("compose.sendFailed"), detail: String(e) });
     } finally {
       setSending(false);
     }
   };
 
+  /** Esc, the close button, Back: the message is saved as a draft first; the sheet closes only
+   *  when that worked (otherwise it stays with the reason). */
   const closeCompose = async () => {
-    if (!compose) return;
-    const d = compose;
-    setCompose(null);
-    if (!isEmpty(d)) await saveDraft(d, false);
+    const open = composeRef.current;
+    if (!open) return;
+    const d = committed(open);
+    if (!isEmpty(d) && !(await saveDraft(d, false))) return;
+    // Emptied after it was saved: the saved draft goes too.
+    if (isEmpty(d)) {
+      await saveChain.current;
+      const id = savedIds.current.get(d.uid);
+      if (id && d.accountId != null) void api.discardDraft(d.accountId, id).catch(() => {});
+    }
+    setComposeError(null);
+    setCompose((c) => (c && c.uid === d.uid ? null : c));
   };
 
-  const discardCompose = async () => {
-    if (!compose) return;
-    const d = compose;
+  /** „Verwerfen“: the sheet closes at once; the saved draft is removed after the undo time. */
+  const discardCompose = () => {
+    const d = composeRef.current;
+    if (!d) return;
     setCompose(null);
-    if (d.messageId && d.accountId != null) await api.discardDraft(d.accountId, d.messageId);
-    showToast({ title: t("toast.draftDiscarded"), duration: 2500 });
+    setComposeError(null);
+    let undone = false;
+    const timer = setTimeout(() => {
+      if (undone) return;
+      void saveChain.current.then(() => {
+        const id = savedIds.current.get(d.uid) ?? d.messageId;
+        if (id && d.accountId != null) void api.discardDraft(d.accountId, id);
+      });
+    }, DISCARD_UNDO_MS);
+    const back = () => {
+      if (undone) return;
+      undone = true;
+      clearTimeout(timer);
+      bringBack(d);
+    };
+    setUndo(back, DISCARD_UNDO_MS);
+    showToast({ title: t("toast.draftDiscarded"), duration: DISCARD_UNDO_MS, action: { label: t("common.undo"), run: back } });
   };
 
+  // An e-mail link in a message: the compose sheet with what the link names (as the system's
+  // e-mail links: addresses, Cc, Bcc, subject and text).
   useEffect(() => {
     const onMailto = (e: Event) => {
-      const href = String((e as CustomEvent).detail);
-      const to = decodeURIComponent(href.replace(/^mailto:/i, "").split("?")[0]);
-      newMessage(to ? [to] : []);
+      const m = mailtoFromHref(String((e as CustomEvent).detail));
+      if (m) composeMailto(m);
     };
     window.addEventListener(MAILTO_EVENT, onMailto);
     return () => window.removeEventListener(MAILTO_EVENT, onMailto);
@@ -1097,7 +1268,10 @@ export function App() {
   );
 
   // The tray menu's „Neue Nachricht“.
-  useEffect(() => onTrayAction((a) => a === "compose" && newMessage()));
+  // Subscribed once (each subscription is a round trip to the shell).
+  const newMessageRef = useRef(newMessage);
+  newMessageRef.current = newMessage;
+  useEffect(() => onTrayAction((a) => a === "compose" && newMessageRef.current()), []);
 
   // The calendar asked for from elsewhere (an invitation, the assistant's appointment).
   useEffect(() => {
@@ -1133,7 +1307,10 @@ export function App() {
   // what the link names. A link that started the app waits until the accounts are there.
   const mailtoRequested = async () => {
     const m = await api.takePendingMailto().catch(() => null);
-    if (!m) return;
+    if (m) composeMailto(m);
+  };
+  /** The compose sheet with what an e-mail link names. */
+  const composeMailto = (m: Mailto) => {
     const account = accountById(mailbox?.account_id) ?? accounts?.[0] ?? null;
     const d = emptyDraft(account, rich, m.to);
     d.cc = m.cc;
@@ -1155,19 +1332,21 @@ export function App() {
     return onEvent("compose-mailto", () => void mailtoRequestedRef.current());
   }, [!!accounts?.length]);
 
-  // Before the app restarts for an update: the open message is kept as a draft.
-  const composeRef = useRef(compose);
-  composeRef.current = compose;
-  const saveDraftRef = useRef(saveDraft);
-  saveDraftRef.current = saveDraft;
-  useEffect(
-    () =>
-      setBeforeRestart(async () => {
-        const c = composeRef.current;
-        if (c && !isEmpty(c)) await saveDraftRef.current(c, true);
-      }),
-    [],
-  );
+  // The open message is kept as a draft before the app restarts for an update, before it quits
+  // (the shell asks: the window closed, the tray's „Beenden“, Cmd+Q) and when it goes to the
+  // background (a phone may end it there).
+  const flushRef = useRef(flushDraft);
+  flushRef.current = flushDraft;
+  useEffect(() => setBeforeRestart(() => flushRef.current()), []);
+  useEffect(() => onSaveDrafts(() => flushRef.current()), []);
+  useEffect(() => onVisibility((visible) => !visible && void flushRef.current()), []);
+
+  // A moment after the last change the open message is saved.
+  useEffect(() => {
+    if (!compose || compose.accountId == null || isEmpty(compose) || isSaved(compose)) return;
+    const timer = setTimeout(() => void flushRef.current(), AUTOSAVE_MS);
+    return () => clearTimeout(timer);
+  }, [compose]);
 
   // Back in front after a while (the window got the focus again): check for mail now.
   useEffect(() => {
@@ -1183,22 +1362,39 @@ export function App() {
 
   // ---------------------------------------------------------------- settings
 
+  // The settings as last changed here, the saves in order, and which save is the latest: the
+  // backend's answer to an older save never undoes a newer change.
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
+  const settingsSaves = useRef<Promise<unknown>>(Promise.resolve());
+  const settingsGen = useRef(0);
+  const saveSettings = (s: Settings) => {
+    settingsRef.current = s;
+    setSettings(s);
+    const gen = ++settingsGen.current;
+    const run = settingsSaves.current.then(async () => {
+      await api.saveSettings(s);
+      // The backend fills in what follows from a change (when the Screener started).
+      const back = await api.settings();
+      if (gen === settingsGen.current) setSettings(back);
+    });
+    settingsSaves.current = run.catch((e) => showToast({ title: t("toast.actionFailed"), detail: String(e), tone: "danger" }));
+  };
+
   const updateSettings = (patch: Partial<Settings>) => {
-    if (!settings) return;
-    const before = settings;
-    const next = { ...settings, ...patch };
-    setSettings(next);
-    // The backend fills in what follows from a change (when the Screener started).
-    const save = (s: Settings) => void api.saveSettings(s).then(() => api.settings().then(setSettings));
-    save(next);
+    const cur = settingsRef.current;
+    if (!cur) return;
+    // What the Undo puts back: the changed settings only, as they were.
+    const before = Object.fromEntries(Object.keys(patch).map((k) => [k, cur[k as keyof Settings]])) as Partial<Settings>;
+    saveSettings({ ...cur, ...patch });
     showToast({
       title: t("toast.settingApplied"),
       duration: 4000,
       action: {
         label: t("common.undo"),
         run: () => {
-          setSettings(before);
-          save(before);
+          const latest = settingsRef.current;
+          if (latest) saveSettings({ ...latest, ...before });
         },
       },
     });
@@ -1212,6 +1408,8 @@ export function App() {
       const inCompose = (e.target as HTMLElement | null)?.closest?.(".compose");
       const action = keyAction(e, isTyping(e.target) || !!inCompose);
       if (!action || (overlay && action !== "settings" && action !== "palette")) return;
+      // Enter on a button, a link or a tab is that control's; the list opens only from the list.
+      if (action === "open" && isControl(e.target)) return;
       // The calendar has keys of its own; compose, undo, the settings and the palette stay.
       if (placeRef.current.kind === "calendar" && !showOutbox && !results && !["compose", "undo", "settings", "palette", "search"].includes(action)) return;
       const index = current != null ? order.indexOf(current) : -1;
@@ -1438,25 +1636,44 @@ export function App() {
   // one entry in the WebView's history, and Back (popstate) takes that way.
   const phoneSettings = !!settingsOpen && layout === "phone";
   const step = backStep({ view, layout, composing: !!compose, settings: !!settingsOpen });
+  const stepRef = useRef(step);
+  stepRef.current = step;
+  // Our own history.back() (the last screen closed) is not a Back of the user: its popstate
+  // only brings the entries in line with the screen shown by then (another one may have opened
+  // meanwhile).
+  const ownBacks = useRef(0);
+  const syncBack = useRef(() => {});
+  syncBack.current = () => {
+    if (!touch) return;
+    const marked = (window.history.state as { arcaloBack?: boolean } | null)?.arcaloBack === true;
+    if (stepRef.current && !marked) window.history.pushState({ arcaloBack: true }, "");
+    else if (!stepRef.current && marked) {
+      ownBacks.current++;
+      window.history.back();
+    }
+  };
   const goBack = useRef<() => void>(() => {});
   goBack.current = () => {
     if (step === "settings" && phoneSettings && !settingsNav) return setSettingsNav(true);
-    if (step === "compose") return void closeCompose();
+    // The sheet stays when its draft cannot be saved: it keeps its way back then.
+    if (step === "compose") return void closeCompose().then(() => syncBack.current());
     if (step === "settings") return setSettingsOpen(null);
     if (step === "list") return setView("list");
   };
   useEffect(() => {
     if (!touch) return;
-    const onPop = () => goBack.current();
+    const onPop = () => {
+      if (ownBacks.current > 0) {
+        ownBacks.current--;
+        syncBack.current();
+        return;
+      }
+      goBack.current();
+    };
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
   }, [touch]);
-  useEffect(() => {
-    if (!touch) return;
-    const marked = (window.history.state as { arcaloBack?: boolean } | null)?.arcaloBack === true;
-    if (step && !marked) window.history.pushState({ arcaloBack: true }, "");
-    else if (!step && marked) window.history.back();
-  }, [touch, step, settingsNav]);
+  useEffect(() => syncBack.current(), [touch, step, settingsNav]);
 
   // ---------------------------------------------------------------- swipes and pull to refresh
 
@@ -1545,14 +1762,24 @@ export function App() {
   const inInbox = !results && place.kind === "inbox";
   const mobile = info.platform === "android" || info.platform === "ios";
   const dueRow = current != null && place.kind === "followups" ? rowAt(order.indexOf(current)) : undefined;
-  const openMessages = (m: MessageSummary) => {
+  const openMessages = (m: MessageSummary, byId = false) => {
     setSel({ ids: [m.id], anchor: m.id });
-    void open(m);
+    void open(m, byId);
   };
 
-  /** Opens a message known only by its id (an answer's source, a file of the hub). */
-  const openById = (id: number, subject = "") =>
-    openMessages({ id, mailbox_id: 0, uid: 0, thread_id: 0, subject, from: null, date: 0, snippet: "", seen: true, flagged: false, answered: false, has_attachments: false, thread_count: 1, account_id: 0 });
+  /** Opens a message known only by its id (a notification, an answer's source, a file of the
+   *  hub, a subscription): its own row first, so it is read and shown with its conversation like
+   *  a message opened in the list. */
+  const openById = (id: number) => {
+    const seq = ++openByIdSeq.current;
+    void api
+      .message(id)
+      .then((v) => {
+        if (seq !== openByIdSeq.current) return;
+        openMessages({ ...v.summary, account_id: v.account_id }, true);
+      })
+      .catch((e) => showToast({ title: t("read.loadFailed"), detail: String(e), tone: "danger" }));
+  };
 
   /** The assistant's reply draft in a reply to the newest message of the conversation. */
   const replyWith = (text: string) => {
@@ -1640,7 +1867,7 @@ export function App() {
           <SubscriptionsView
             list={subs}
             busy={unsubBusy}
-            onOpen={(s) => openMessages({ id: s.message_id, mailbox_id: 0, uid: 0, thread_id: 0, subject: "", from: { name: s.name, email: s.sender }, date: s.last, snippet: "", seen: true, flagged: false, answered: false, has_attachments: false, thread_count: 1, account_id: 0 })}
+            onOpen={(s) => openById(s.message_id)}
             onUnsubscribe={(s) => void unsubscribe(s.message_id, s.name || s.sender)}
             onShowFolders={() => setView("folders")}
           />
@@ -1653,7 +1880,7 @@ export function App() {
             onRequestTaken={() => setCalRequest(null)}
           />
         ) : !results && place.kind === "ask" ? (
-          <AskView on={aiOn} onOpen={(s) => openById(s.message_id, s.subject)} onShowFolders={() => setView("folders")} onSettings={() => setSettingsOpen("ai")} />
+          <AskView on={aiOn} onOpen={(s) => openById(s.message_id)} onShowFolders={() => setView("folders")} onSettings={() => setSettingsOpen("ai")} />
         ) : !results && place.kind === "files" ? (
           <AttachmentHub
             accountId={null}
@@ -1661,7 +1888,7 @@ export function App() {
             onPreview={(it) => void hubAttachment(it, "preview")}
             onSave={(it) => void hubAttachment(it, "save")}
             onOpenFile={(it) => void hubAttachment(it, "open")}
-            onOpenMessage={(it) => openById(it.message_id, it.subject)}
+            onOpenMessage={(it) => openById(it.message_id)}
             onShowFolders={() => setView("folders")}
           />
         ) : !results && place.kind === "scheduled" ? (
@@ -1679,7 +1906,7 @@ export function App() {
             onEdit={(s) =>
               void api.unschedule(s.id).then((d) => {
                 reloadSmart();
-                void startCompose(fromComposeDraft(d, rich));
+                void editStored(d);
               })
             }
             onDiscard={(s) =>
@@ -1747,6 +1974,16 @@ export function App() {
             onQuery={setQuery}
             onServerSearch={() => void serverSearch()}
             onRowClick={(i, mods) => {
+              // A Shift range over pages never loaded: they are loaded first, so it has no holes.
+              const gaps = mods.shift && !results ? rangeGaps(sel, order, i, PAGE) : [];
+              if (gaps.length) {
+                void loadPages(gaps).then((loaded) => {
+                  const full = order.map((id, j) => id ?? loaded[Math.floor(j / PAGE)]?.[j % PAGE]?.id);
+                  setSel((s) => clickSelect(s, full, i, mods));
+                });
+                listRef.current?.focus();
+                return;
+              }
               const next = clickSelect(sel, order, i, mods);
               setSel(next);
               const row = rowAt(i);
@@ -1788,7 +2025,12 @@ export function App() {
           }}
           onAttachment={(a, how) => void attachment(a, how)}
           onRetry={(id) => void loadView(id)}
-          onEditDraft={(v) => void startCompose(draftFromMessage(v, accountById(v.account_id), rich))}
+          onEditDraft={(v) =>
+            void api
+              .draftOf(v.summary.id)
+              .then(editStored)
+              .catch((e) => showToast({ title: t("read.loadFailed"), detail: String(e), tone: "danger" }))
+          }
           touch={touch}
           inbox={inInbox}
           stream={stream ? { name: stream.name } : null}
@@ -1824,16 +2066,22 @@ export function App() {
       </div>
       {compose && (
         <ComposeSheet
+          key={compose.uid}
           draft={compose}
           accounts={accounts}
           error={composeError}
           sending={sending}
-          onChange={setCompose}
+          saved={isSaved(compose)}
+          modal={layout === "phone"}
+          onChange={(d) => setCompose((c) => (c && c.uid === d.uid ? d : c))}
           onSend={(followupSecs) => void send(followupSecs)}
           onSendLater={(at, followupSecs) => (at == null ? setWhen({ kind: "send", followupSecs }) : void sendLater(at, followupSecs))}
-          onSaveDraft={() => void (compose && saveDraft(compose, false).then((d) => setCompose((c) => (c ? { ...c, messageId: d.messageId } : c))))}
+          onSaveDraft={() => {
+            const c = composeRef.current;
+            if (c) void saveDraft(committed(c), false);
+          }}
           onClose={() => void closeCompose()}
-          onDiscard={() => void discardCompose()}
+          onDiscard={discardCompose}
           aiOn={aiOn}
           signByDefault={settings.sign_by_default}
         />
@@ -1920,6 +2168,47 @@ export function App() {
           }}
           onClose={() => setWhen(null)}
         />
+      )}
+      {takeBack && (
+        <Dialog
+          title={t("compose.takeBackTitle")}
+          above
+          onClose={() => {
+            // Not opened: the message waits in Drafts.
+            const back = takeBack;
+            setTakeBack(null);
+            void saveDraft(back, true).then((ok) => showToast(ok ? { title: t("compose.takeBackFiled"), duration: 4000 } : { title: t("toast.draftFailed"), tone: "danger" }));
+          }}
+          footer={
+            <>
+              <button
+                type="button"
+                className="btn"
+                onClick={() => {
+                  const back = takeBack;
+                  setTakeBack(null);
+                  void saveDraft(back, true).then((ok) => showToast(ok ? { title: t("compose.takeBackFiled"), duration: 4000 } : { title: t("toast.draftFailed"), tone: "danger" }));
+                }}
+              >
+                {t("compose.takeBackKeep")}
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                autoFocus
+                onClick={() => {
+                  const back = takeBack;
+                  setTakeBack(null);
+                  void startCompose(back);
+                }}
+              >
+                {t("compose.takeBackOpen")}
+              </button>
+            </>
+          }
+        >
+          <p className="dialog-text">{t("compose.takeBackText", { subject: takeBack.subject.trim() || t("list.noSubject") })}</p>
+        </Dialog>
       )}
       {confirm && <ConfirmDialog title={confirm.title} text={confirm.text} detail={confirm.detail} confirm={confirm.confirm} onConfirm={confirm.run} onClose={() => setConfirm(null)} />}
       {sendCheck?.kind === "unlock" && <PassphraseDialog above fingerprint={sendCheck.fingerprint} onDone={sendCheck.go} onClose={() => setSendCheck(null)} />}

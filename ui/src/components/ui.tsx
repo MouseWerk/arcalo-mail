@@ -1,7 +1,7 @@
 // Small building blocks shared by the views: dialogs, menus, switches, segmented controls.
 
 import { Check, X } from "lucide-react";
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import { useT } from "../lib/i18n";
 
 /** A modal dialog: a scrim, focus inside, Esc and the close button close it. */
@@ -64,6 +64,38 @@ export function Dialog({
       </div>
     </div>
   );
+}
+
+/**
+ * Fields that save when they are left (`onBlur`) save too when the view closes with them still
+ * changed (Esc, Ctrl+, or a click beside the settings remove them without a blur in some
+ * engines).
+ */
+export function useSaveOnLeave(changed: boolean, save: () => void) {
+  const latest = useRef({ changed, save });
+  latest.current = { changed, save };
+  useEffect(
+    () => () => {
+      if (latest.current.changed) latest.current.save();
+    },
+    [],
+  );
+}
+
+/**
+ * Gives the focus back to where it was (the button that opened a menu, the list) when the popup
+ * closes, unless it went somewhere on purpose meanwhile (a dialog the popup opened).
+ */
+export function useRestoreFocus(root: RefObject<HTMLElement | null>) {
+  // Taken while rendering: the popup moves the focus into itself before effects run.
+  const [before] = useState(() => (typeof document === "undefined" ? null : (document.activeElement as HTMLElement | null)));
+  useEffect(() => {
+    const el = root.current;
+    return () => {
+      const now = document.activeElement;
+      if (before && before !== document.body && before.isConnected && (!now || now === document.body || el?.contains(now))) before.focus();
+    };
+  }, []);
 }
 
 /** Keeps Tab inside a dialog. */
@@ -217,6 +249,7 @@ export type MenuItem =
 export function Menu({ items, at, onClose, label }: { items: MenuItem[]; at: { x: number; y: number }; onClose: () => void; label: string }) {
   const ref = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState(at);
+  useRestoreFocus(ref);
   useLayoutEffect(() => {
     const el = ref.current;
     if (!el) return;
@@ -235,8 +268,9 @@ export function Menu({ items, at, onClose, label }: { items: MenuItem[]; at: { x
       window.removeEventListener("blur", onClose);
     };
   }, [onClose]);
+  const menuItems = () => Array.from(ref.current?.querySelectorAll<HTMLElement>("[role^='menuitem']:not([disabled])") ?? []);
   const move = (dir: number) => {
-    const list = Array.from(ref.current?.querySelectorAll<HTMLElement>("[role^='menuitem']:not([disabled])") ?? []);
+    const list = menuItems();
     const i = list.indexOf(document.activeElement as HTMLElement);
     list[(i + dir + list.length) % list.length]?.focus();
   };
@@ -254,8 +288,16 @@ export function Menu({ items, at, onClose, label }: { items: MenuItem[]; at: { x
         } else if (e.key === "ArrowUp") {
           e.preventDefault();
           move(-1);
+        } else if (e.key === "Home" || e.key === "End") {
+          e.preventDefault();
+          const list = menuItems();
+          (e.key === "Home" ? list[0] : list[list.length - 1])?.focus();
         } else if (e.key === "Escape") {
           e.stopPropagation();
+          onClose();
+        } else if (e.key === "Tab") {
+          // Tab leaves the menu: it closes, the focus goes back to what opened it.
+          e.preventDefault();
           onClose();
         }
       }}
@@ -291,9 +333,9 @@ export function Menu({ items, at, onClose, label }: { items: MenuItem[]; at: { x
   );
 }
 
-export function Switch({ checked, onChange, label }: { checked: boolean; onChange: (v: boolean) => void; label: string }) {
+export function Switch({ checked, onChange, label, disabled }: { checked: boolean; onChange: (v: boolean) => void; label: string; disabled?: boolean }) {
   return (
-    <button type="button" role="switch" aria-checked={checked} aria-label={label} className={`switch${checked ? " on" : ""}`} onClick={() => onChange(!checked)}>
+    <button type="button" role="switch" aria-checked={checked} aria-label={label} disabled={disabled} className={`switch${checked ? " on" : ""}`} onClick={() => onChange(!checked)}>
       <span className="switch-knob" />
     </button>
   );

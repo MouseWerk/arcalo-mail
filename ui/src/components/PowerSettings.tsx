@@ -28,7 +28,7 @@ import type {
   Template,
   Tone,
 } from "../lib/types";
-import { ConfirmDialog, Dialog, Menu, Segmented, Spinner, Switch, type MenuItem } from "./ui";
+import { ConfirmDialog, Dialog, Menu, Segmented, Spinner, Switch, useSaveOnLeave, type MenuItem } from "./ui";
 import { forgetPictureCache } from "./Avatar";
 
 function Row({ label, description, children }: { label: string; description?: string; children: ReactNode }) {
@@ -101,6 +101,7 @@ function ProviderCard({ p, onChange, onRemove }: { p: AiProvider; onChange: (p: 
   const [models, setModels] = useState<string[]>([]);
   const [check, setCheck] = useState<{ busy: boolean; ok: boolean | null; text: string }>({ busy: false, ok: null, text: "" });
   useEffect(() => setDraft(p), [p]);
+  useSaveOnLeave(JSON.stringify(draft) !== JSON.stringify(p), () => onChange(draft));
   useEffect(() => {
     void api.aiHasKey(p.id).then(setHasKey);
   }, [p.id]);
@@ -756,7 +757,7 @@ function RuleEditor({ rule, accounts, onSaved, onClose }: { rule: Rule; accounts
               ) : (
                 <input className="input" aria-label={t("rules.folder")} value={a.folder} onChange={(e) => setAct(i, { ...a, folder: e.target.value })} />
               ))}
-            {a.kind === "label" && <input className="input" aria-label={t("rules.keyword")} placeholder="$Rechnung" value={a.keyword} onChange={(e) => setAct(i, { ...a, keyword: e.target.value.replace(/\s/g, "") })} />}
+            {a.kind === "label" && <input className="input" aria-label={t("rules.keyword")} placeholder={t("rules.keywordPlaceholder")} value={a.keyword} onChange={(e) => setAct(i, { ...a, keyword: e.target.value.replace(/\s/g, "") })} />}
             {a.kind === "forward" && <input className="input" aria-label={t("rules.forwardTo")} placeholder="name@example.org" value={a.to} onChange={(e) => setAct(i, { ...a, to: e.target.value })} />}
             {a.kind === "category" && (
               <select className="select" aria-label={t("rules.category")} value={a.category} onChange={(e) => setAct(i, { ...a, category: e.target.value })}>
@@ -1030,6 +1031,7 @@ export function TemplatesSection({ accounts }: { accounts: AccountInfo[] }) {
   const t = useT();
   const [list, setList] = useState<Template[] | null>(null);
   const [editing, setEditing] = useState<Template | null>(null);
+  const [removing, setRemoving] = useState<Template | null>(null);
   const load = () => void api.templates().then(setList);
   useEffect(load, []);
   const part = (kind: Template["kind"]) => (list ?? []).filter((x) => x.kind === kind);
@@ -1053,7 +1055,7 @@ export function TemplatesSection({ accounts }: { accounts: AccountInfo[] }) {
               <button type="button" className="icon-btn icon-btn-sm" aria-label={t("tpl.editNamed", { name: x.name })} onClick={() => setEditing(x)}>
                 <Pencil size={14} strokeWidth={1.75} aria-hidden />
               </button>
-              <button type="button" className="icon-btn icon-btn-sm" aria-label={t("tpl.deleteNamed", { name: x.name })} onClick={() => void api.templateDelete(x.id).then(load)}>
+              <button type="button" className="icon-btn icon-btn-sm" aria-label={t("tpl.deleteNamed", { name: x.name })} onClick={() => setRemoving(x)}>
                 <Trash2 size={14} strokeWidth={1.75} aria-hidden />
               </button>
             </li>
@@ -1070,6 +1072,21 @@ export function TemplatesSection({ accounts }: { accounts: AccountInfo[] }) {
   );
   return (
     <div className="set-section">
+      {removing && (
+        <ConfirmDialog
+          title={t(removing.kind === "snippet" ? "tpl.deleteSnippetTitle" : "tpl.deleteTemplateTitle", { name: removing.name })}
+          text={t("tpl.deleteText")}
+          confirm={t("tpl.delete")}
+          danger
+          onConfirm={() =>
+            void api
+              .templateDelete(removing.id)
+              .then(load)
+              .catch((e) => showToast({ title: t("toast.actionFailed"), detail: String(e), tone: "danger" }))
+          }
+          onClose={() => setRemoving(null)}
+        />
+      )}
       <p className="muted set-intro">{t("tpl.intro")}</p>
       {list === null ? (
         <Spinner />
@@ -1188,23 +1205,42 @@ export function ContactsSection({ settings, accounts, onChange }: { settings: Se
   const lang = currentLang();
   const [books, setBooks] = useState<AddressBook[] | null>(null);
   const [adding, setAdding] = useState(false);
-  const [busy, setBusy] = useState<number | null>(null);
+  // An address book being synced, a Microsoft account whose contacts are being switched: two
+  // kinds of ids, kept apart.
+  const [busyBook, setBusyBook] = useState<number | null>(null);
+  const [busyAccount, setBusyAccount] = useState<number | null>(null);
+  const [removing, setRemoving] = useState<AddressBook | null>(null);
   const load = () => void api.addressBooks().then(setBooks);
   useEffect(load, []);
   const microsoft = accounts.filter((a) => a.transport.kind === "imap" && a.transport.auth.kind === "o_auth2");
   const sync = (id: number) => {
-    setBusy(id);
+    setBusyBook(id);
     void api
       .addressBookSync(id)
       .catch((e) => showToast({ title: t("contacts.syncFailed"), detail: String(e), tone: "danger" }))
       .finally(() => {
-        setBusy(null);
+        setBusyBook(null);
         forgetPictureCache();
         load();
       });
   };
   return (
     <div className="set-section">
+      {removing && (
+        <ConfirmDialog
+          title={t("contacts.removeTitle", { name: removing.name || removing.url })}
+          text={t("contacts.removeText")}
+          confirm={t("contacts.remove")}
+          danger
+          onConfirm={() =>
+            void api
+              .addressBookRemove(removing.id)
+              .then(load)
+              .catch((e) => showToast({ title: t("toast.actionFailed"), detail: String(e), tone: "danger" }))
+          }
+          onClose={() => setRemoving(null)}
+        />
+      )}
       <p className="muted set-intro">{t("contacts.intro")}</p>
       <div className="set-card">
         <div className="set-card-title">{t("contacts.books")}</div>
@@ -1224,10 +1260,10 @@ export function ContactsSection({ settings, accounts, onChange }: { settings: Se
                       {b.error ?? t("contacts.bookInfo", { n: b.cards, when: b.last_sync ? listDate(b.last_sync, now(), lang) : "–" })}
                     </span>
                   </span>
-                  <button type="button" className="icon-btn icon-btn-sm" disabled={busy === b.id} aria-label={t("contacts.syncNamed", { name: b.name })} onClick={() => sync(b.id)}>
-                    {busy === b.id ? <Spinner /> : <RefreshCw size={14} strokeWidth={1.75} aria-hidden />}
+                  <button type="button" className="icon-btn icon-btn-sm" disabled={busyBook === b.id} aria-label={t("contacts.syncNamed", { name: b.name })} onClick={() => sync(b.id)}>
+                    {busyBook === b.id ? <Spinner /> : <RefreshCw size={14} strokeWidth={1.75} aria-hidden />}
                   </button>
-                  <button type="button" className="icon-btn icon-btn-sm" aria-label={t("contacts.removeNamed", { name: b.name })} onClick={() => void api.addressBookRemove(b.id).then(load)}>
+                  <button type="button" className="icon-btn icon-btn-sm" aria-label={t("contacts.removeNamed", { name: b.name })} onClick={() => setRemoving(b)}>
                     <Trash2 size={14} strokeWidth={1.75} aria-hidden />
                   </button>
                 </li>
@@ -1250,13 +1286,14 @@ export function ContactsSection({ settings, accounts, onChange }: { settings: Se
                 <Switch
                   label={t("contacts.microsoft", { email: a.email })}
                   checked={!!book}
+                  disabled={busyAccount === a.id}
                   onChange={(on) => {
-                    setBusy(a.id);
+                    setBusyAccount(a.id);
                     void api
                       .microsoftContacts(a.id, on)
                       .catch((e) => showToast({ title: t("contacts.syncFailed"), detail: String(e), tone: "danger" }))
                       .finally(() => {
-                        setBusy(null);
+                        setBusyAccount(null);
                         load();
                       });
                   }}

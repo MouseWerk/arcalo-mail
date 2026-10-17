@@ -1,5 +1,5 @@
 import { ArrowLeft, CircleCheck, CircleX, ExternalLink, Info, KeyRound, Lock, LogIn, Mail, ServerCog, ShieldCheck, Sparkles, UserPlus } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useT, type TKey } from "../lib/i18n";
 import { api, openExternal } from "../lib/api";
 import { explain, hintKey } from "../lib/problems";
@@ -176,6 +176,15 @@ export function Setup({ welcome, onDone, onCancel }: { welcome: boolean; onDone:
   const [pop3, setPop3] = useState<Pop3Transport | null>(null);
   const [jmapManual, setJmapManual] = useState<JmapManual>({ session_url: "", username: "", token: false });
   const [microsoftBuilt, setMicrosoftBuilt] = useState(true);
+  // Each Microsoft sign-in counts up; leaving it (Back, Cancel, closing) counts up too, so a
+  // browser sign-in that finishes later is dropped.
+  const signInRun = useRef(0);
+  useEffect(
+    () => () => {
+      signInRun.current++;
+    },
+    [],
+  );
 
   useEffect(() => {
     void api.appInfo().then((i) => setMicrosoftBuilt(i.microsoft_sign_in ?? false));
@@ -237,25 +246,30 @@ export function Setup({ welcome, onDone, onCancel }: { welcome: boolean; onDone:
       setStep({ kind: "microsoft", waiting: false, result: null });
       return;
     }
+    const mine = ++signInRun.current;
     setStep({ kind: "microsoft", waiting: true, result: null });
     try {
       const r = await api.microsoftSignIn(email.trim());
+      // Left meanwhile (Back, Cancel, the dialog closed): the sign-in adds nothing.
+      if (mine !== signInRun.current) return;
       if (r.session && r.check && !r.check.imap && !r.check.smtp && !r.check.error) {
         await addMicrosoft(r);
         return;
       }
       setStep({ kind: "microsoft", waiting: false, result: r });
     } catch (e) {
+      if (mine !== signInRun.current) return;
       setStep({ kind: "microsoft", waiting: false, result: { session: null, email: null, check: null, problem: null, error: String(e) } });
     }
   };
 
   const addMicrosoft = async (r: MicrosoftSignIn) => {
     if (!r.session) return;
+    const mine = signInRun.current;
     setStep({ kind: "microsoft", waiting: false, result: r, adding: true });
     try {
       const account = await api.addMicrosoftAccount(r.session, name.trim());
-      setStep({ kind: "done", account });
+      if (mine === signInRun.current) setStep({ kind: "done", account });
     } catch (e) {
       setStep({ kind: "microsoft", waiting: false, result: { ...r, error: String(e) } });
     }
@@ -398,7 +412,14 @@ export function Setup({ welcome, onDone, onCancel }: { welcome: boolean; onDone:
               </>
             )}
             <div className="setup-actions">
-              <button type="button" className="btn" onClick={() => setStep({ kind: "form" })}>
+              <button
+                type="button"
+                className="btn"
+                onClick={() => {
+                  signInRun.current++;
+                  setStep({ kind: "form" });
+                }}
+              >
                 <ArrowLeft size={14} strokeWidth={1.75} aria-hidden />
                 <span>{microsoftBuilt ? t("common.back") : t("ms.useAppPassword")}</span>
               </button>

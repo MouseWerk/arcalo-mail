@@ -488,6 +488,8 @@ export type Settings = {
   arcalo_target: "page" | "task";
   /** Desktop updates: installed when the app quits, or only announced. */
   updates: UpdateMode;
+  /** „Startanimation“: the mark draws itself while the app loads. */
+  startup_animation: boolean;
 };
 
 export type UpdateMode = "auto" | "notify";

@@ -17,6 +17,8 @@ mod commands;
 mod crypto;
 mod defaultmail;
 #[cfg(desktop)]
+mod drafts;
+#[cfg(desktop)]
 mod installer;
 #[cfg(mobile)]
 mod mobile;
@@ -496,6 +498,20 @@ pub fn run() {
     };
     #[cfg(mobile)]
     let builder = builder.on_window_event(|window, event| mobile::window_event(window.app_handle(), event));
+    // Closing the window: the message being written is saved as a draft first.
+    #[cfg(desktop)]
+    let builder = builder.on_window_event(|window, event| {
+        if let tauri::WindowEvent::CloseRequested { api, .. } = event
+            && window.label() == "main"
+            && drafts::needs_save()
+        {
+            api.prevent_close();
+            let w = window.clone();
+            drafts::save_then(window.app_handle(), move |_| {
+                let _ = w.destroy();
+            });
+        }
+    });
     builder
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
@@ -613,6 +629,12 @@ pub fn run() {
             commands::cancel_send,
             commands::save_draft,
             commands::discard_draft,
+            commands::draft_of,
+            commands::attachments_by_id,
+            #[cfg(desktop)]
+            drafts::drafts_listen,
+            #[cfg(desktop)]
+            drafts::drafts_saved,
             commands::file_infos,
             commands::open_attachment,
             commands::save_attachment,
@@ -764,6 +786,19 @@ pub fn run() {
 #[allow(unused_variables)]
 fn on_run_event(app: &AppHandle, event: tauri::RunEvent) {
     match event {
+        // Quitting (Cmd+Q, the last window closed): the message being written is saved as a
+        // draft first, then the quit goes on as below.
+        #[cfg(desktop)]
+        tauri::RunEvent::ExitRequested { code: None, api, .. } if drafts::needs_save() => {
+            api.prevent_exit();
+            drafts::save_then(app, |app| {
+                if updates::installs_on_quit(app) {
+                    updates::quit(app);
+                } else {
+                    app.exit(0);
+                }
+            });
+        }
         // The window was closed (not `app.exit`): with an update to install, the app stays until
         // it is in place.
         #[cfg(desktop)]

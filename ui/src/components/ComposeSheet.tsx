@@ -38,8 +38,13 @@ import { AiText, PrivacyLine } from "./Assistant";
 type Props = {
   draft: ComposeState;
   accounts: Account[];
-  error: string | null;
+  /** Why sending or saving failed (the sheet stays open with the text). */
+  error: { title: string; detail: string } | null;
   sending: boolean;
+  /** The draft as it is now is saved („Gespeichert“). */
+  saved?: boolean;
+  /** Full screen (a phone): Tab stays in the sheet. Docked on a wide window it does not. */
+  modal?: boolean;
   onChange: (d: ComposeState) => void;
   /** Sends; `followupSecs`: „Erinnern, wenn keine Antwort“ that long after. */
   onSend: (followupSecs: number | null) => void;
@@ -113,29 +118,41 @@ const TITLE: Record<ComposeState["mode"], TKey> = {
   draft: "compose.draft",
 };
 
-/** To, Cc or Bcc: addresses as chips, suggestions from the address book while typing. */
+/** To, Cc or Bcc: addresses as chips, suggestions from the address book while typing. What is
+ *  typed and not yet a chip lives in the sheet's state (`text`), so it goes out with the message
+ *  even when it is sent before the field is left. */
 function AddressField({
   label,
   values,
+  text,
   onChange,
+  onText,
   autoFocus,
   extra,
 }: {
   label: string;
   values: string[];
+  text: string;
   onChange: (v: string[]) => void;
+  onText: (v: string) => void;
   autoFocus?: boolean;
   extra?: React.ReactNode;
 }) {
   const t = useT();
-  const [text, setText] = useState("");
   const [hits, setHits] = useState<Contact[]>([]);
   const [active, setActive] = useState(0);
   const input = useRef<HTMLInputElement>(null);
   const id = useRef(`addr-${Math.random().toString(36).slice(2)}`).current;
+  // The latest values for the blur timer, which runs after a render or two.
+  const latest = useRef({ values, text, onChange, onText });
+  latest.current = { values, text, onChange, onText };
+  const blurTimer = useRef<number | null>(null);
 
   useEffect(() => {
     if (autoFocus) input.current?.focus();
+    return () => {
+      if (blurTimer.current != null) clearTimeout(blurTimer.current);
+    };
   }, []);
 
   useEffect(() => {
@@ -144,24 +161,32 @@ function AddressField({
       setHits([]);
       return;
     }
+    let alive = true;
     const timer = setTimeout(() => {
       void api.suggest(q).then((list) => {
-        setHits(list.filter((c) => !values.some((v) => v.toLowerCase().includes(c.email.toLowerCase()))));
+        if (!alive) return;
+        setHits(list.filter((c) => !latest.current.values.some((v) => v.toLowerCase().includes(c.email.toLowerCase()))));
         setActive(0);
       });
     }, 100);
-    return () => clearTimeout(timer);
+    return () => {
+      alive = false;
+      clearTimeout(timer);
+    };
   }, [text]);
 
   const commit = (raw: string) => {
     const parts = splitAddresses(raw);
+    const { values, onChange, onText } = latest.current;
     if (parts.length) onChange([...values, ...parts]);
-    setText("");
+    onText("");
     setHits([]);
   };
   const pick = (c: Contact) => commit(c.name ? `${/[,;"]/.test(c.name) ? `"${c.name.replace(/"/g, "")}"` : c.name} <${c.email}>` : c.email);
 
   const onKey = (e: KeyboardEvent<HTMLInputElement>) => {
+    // Ctrl+Enter sends: the sheet takes the typed address along.
+    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) return;
     if (hits.length && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
       e.preventDefault();
       setActive((a) => (a + (e.key === "ArrowDown" ? 1 : -1) + hits.length) % hits.length);
@@ -185,7 +210,7 @@ function AddressField({
       <div className="chips" onMouseDown={(e) => e.target === e.currentTarget && (e.preventDefault(), input.current?.focus())}>
         {values.map((v, i) => (
           <span key={`${v}-${i}`} className={`chip${isValidAddress(v) ? "" : " chip-invalid"}`} title={isValidAddress(v) ? v : t("compose.invalidAddress")}>
-            <span className="chip-text">{v.replace(/\s*<[^>]+>$/, "") || v}</span>
+            <bdi className="chip-text">{v.replace(/\s*<[^>]+>$/, "") || v}</bdi>
             <button type="button" className="chip-remove" aria-label={t("compose.removeRecipient", { name: v })} onClick={() => onChange(values.filter((_, j) => j !== i))}>
               <X size={12} strokeWidth={2} aria-hidden />
             </button>
@@ -195,6 +220,7 @@ function AddressField({
           ref={input}
           id={id}
           className="chip-input"
+          dir="auto"
           value={text}
           role="combobox"
           aria-expanded={hits.length > 0}
@@ -204,13 +230,17 @@ function AddressField({
           onChange={(e) => {
             const v = e.target.value;
             if (/[,;]/.test(v)) commit(v);
-            else setText(v);
+            else onText(v);
           }}
           onKeyDown={onKey}
-          onBlur={() => setTimeout(() => {
-            if (text.trim()) commit(text);
-            setHits([]);
-          }, 120)}
+          onBlur={() => {
+            if (blurTimer.current != null) clearTimeout(blurTimer.current);
+            blurTimer.current = window.setTimeout(() => {
+              blurTimer.current = null;
+              if (latest.current.text.trim()) commit(latest.current.text);
+              setHits([]);
+            }, 120);
+          }}
           onPaste={(e) => {
             const pasted = e.clipboardData.getData("text");
             if (/[,;\n]/.test(pasted)) {
@@ -233,7 +263,7 @@ function AddressField({
                   pick(c);
                 }}
               >
-                <span className="suggestion-name">{c.name || c.email}</span>
+                <bdi className="suggestion-name">{c.name || c.email}</bdi>
                 {c.name && <span className="suggestion-email">{c.email}</span>}
               </li>
             ))}
@@ -269,6 +299,11 @@ function Editor({
   useEffect(() => {
     if (ref.current && ref.current.innerHTML !== html) ref.current.innerHTML = html || "<p><br></p>";
   }, [revision]);
+  const startLink = () => {
+    const sel = window.getSelection();
+    saved.current = sel && sel.rangeCount ? sel.getRangeAt(0).cloneRange() : null;
+    setLinking(true);
+  };
   const run = (cmd: string, value?: string) => {
     ref.current?.focus();
     document.execCommand(cmd, false, value);
@@ -289,16 +324,13 @@ function Editor({
         {tool(t("compose.bullets"), <List size={15} strokeWidth={2} aria-hidden />, () => run("insertUnorderedList"))}
         {tool(t("compose.numbers"), <ListOrdered size={15} strokeWidth={2} aria-hidden />, () => run("insertOrderedList"))}
         {tool(t("compose.quote"), <Quote size={15} strokeWidth={2} aria-hidden />, () => run("formatBlock", "blockquote"))}
-        {tool(t("compose.link"), <Link size={15} strokeWidth={2} aria-hidden />, () => {
-          const sel = window.getSelection();
-          saved.current = sel && sel.rangeCount ? sel.getRangeAt(0).cloneRange() : null;
-          setLinking(true);
-        })}
+        {tool(t("compose.link"), <Link size={15} strokeWidth={2} aria-hidden />, startLink)}
         {tool(t("compose.clearFormat"), <RemoveFormatting size={15} strokeWidth={2} aria-hidden />, () => run("removeFormat"))}
       </div>
       <div
         ref={ref}
         className="editor"
+        dir="auto"
         contentEditable
         role="textbox"
         aria-multiline="true"
@@ -313,6 +345,13 @@ function Editor({
           else onTyped?.("");
         }}
         onKeyDown={(e) => {
+          // Ctrl/Cmd+K is „Link einfügen“ here, as in other editors (not the command palette).
+          if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === "k") {
+            e.preventDefault();
+            e.stopPropagation();
+            startLink();
+            return;
+          }
           if (onKey?.(e)) e.preventDefault();
         }}
         onPaste={(e) => {
@@ -351,7 +390,7 @@ function Editor({
 
 /** The compose sheet: bottom right on a wide window, full screen on a phone. Esc closes it (and
  *  keeps the draft), Ctrl+Enter sends. Files dropped on the window are attached. */
-export function ComposeSheet({ draft, accounts, error, sending, onChange, onSend, onSendLater, onSaveDraft, onClose, onDiscard, aiOn, signByDefault }: Props) {
+export function ComposeSheet({ draft, accounts, error, sending, saved, modal, onChange, onSend, onSendLater, onSaveDraft, onClose, onDiscard, aiOn, signByDefault }: Props) {
   const t = useT();
   const lang = currentLang();
   const abilities = useAbilities(draft, onChange, signByDefault);
@@ -392,9 +431,16 @@ export function ComposeSheet({ draft, accounts, error, sending, onChange, onSend
   const sheet = useRef<HTMLDivElement>(null);
   const subject = useRef<HTMLInputElement>(null);
   const body = useRef<HTMLTextAreaElement>(null);
-  const set = (patch: Partial<ComposeState>) => onChange({ ...draft, ...patch });
   const latest = useRef(draft);
   latest.current = draft;
+  const set = (patch: Partial<ComposeState>) => onChange({ ...draft, ...patch });
+  /** A change on top of the latest one (two in one go, a chip and the cleared typing, both stay). */
+  const update = (patch: Partial<ComposeState>) => {
+    latest.current = { ...latest.current, ...patch };
+    onChange(latest.current);
+  };
+  const typing = draft.typing ?? { to: "", cc: "", bcc: "" };
+  const setTyping = (field: "to" | "cc" | "bcc", v: string) => update({ typing: { ...(latest.current.typing ?? { to: "", cc: "", bcc: "" }), [field]: v } });
   const [templates, setTemplates] = useState<Template[]>([]);
   const [snip, setSnip] = useState<SnippetPick | null>(null);
   const help = useAi();
@@ -528,15 +574,26 @@ export function ComposeSheet({ draft, accounts, error, sending, onChange, onSend
   };
 
   const account = accounts.find((a) => a.id === draft.accountId);
+  // Encrypting was chosen, but the recipients as they are now cannot all be encrypted to (a
+  // recipient without a key was added): said here, before sending fails.
+  const recipientCount = draft.to.length + draft.cc.length + draft.bcc.length;
+  const cannotEncrypt =
+    protect?.encrypt && abilities && recipientCount > 0 && !(protect.method === "pgp" ? abilities.pgp_encrypt : abilities.smime_encrypt)
+      ? protect.method === "pgp"
+        ? abilities.pgp_missing
+        : abilities.smime_missing
+      : null;
   return (
     <div
       ref={sheet}
       className="compose"
       role="dialog"
-      aria-modal="false"
+      aria-modal={modal ? "true" : "false"}
       aria-label={t(TITLE[draft.mode])}
       data-dropping={dropping || undefined}
       onKeyDown={(e) => {
+        // A dialog the sheet opened (the link prompt) has its own keys.
+        if ((e.target as HTMLElement).closest?.(".overlay")) return;
         if (e.key === "Escape") {
           e.stopPropagation();
           onClose();
@@ -549,11 +606,11 @@ export function ComposeSheet({ draft, accounts, error, sending, onChange, onSend
           e.preventDefault();
           onSaveDraft();
         }
-        if (e.key === "Tab") trapFocus(e, sheet.current);
+        if (e.key === "Tab" && modal) trapFocus(e, sheet.current);
       }}
     >
       <header className="compose-head">
-        <h2>{draft.subject.trim() || t(TITLE[draft.mode])}</h2>
+        <h2 dir="auto">{draft.subject.trim() || t(TITLE[draft.mode])}</h2>
         <button type="button" className="icon-btn" onClick={onClose} aria-label={t("compose.close")} title={t("compose.close")}>
           <X size={16} strokeWidth={1.75} aria-hidden />
         </button>
@@ -574,7 +631,9 @@ export function ComposeSheet({ draft, accounts, error, sending, onChange, onSend
         <AddressField
           label={t("compose.to")}
           values={draft.to}
-          onChange={(to) => set({ to })}
+          text={typing.to}
+          onText={(v) => setTyping("to", v)}
+          onChange={(to) => update({ to })}
           autoFocus={draft.mode === "new" || draft.mode === "forward"}
           extra={
             <span className="field-extra">
@@ -591,11 +650,11 @@ export function ComposeSheet({ draft, accounts, error, sending, onChange, onSend
             </span>
           }
         />
-        {draft.showCc && <AddressField label={t("compose.cc")} values={draft.cc} onChange={(cc) => set({ cc })} />}
-        {draft.showBcc && <AddressField label={t("compose.bcc")} values={draft.bcc} onChange={(bcc) => set({ bcc })} />}
+        {draft.showCc && <AddressField label={t("compose.cc")} values={draft.cc} text={typing.cc} onText={(v) => setTyping("cc", v)} onChange={(cc) => update({ cc })} />}
+        {draft.showBcc && <AddressField label={t("compose.bcc")} values={draft.bcc} text={typing.bcc} onText={(v) => setTyping("bcc", v)} onChange={(bcc) => update({ bcc })} />}
         <div className="field">
           <label htmlFor="compose-subject">{t("compose.subject")}</label>
-          <input id="compose-subject" ref={subject} className="input input-bare" value={draft.subject} onChange={(e) => set({ subject: e.target.value })} />
+          <input id="compose-subject" ref={subject} className="input input-bare" dir="auto" value={draft.subject} onChange={(e) => set({ subject: e.target.value })} />
         </div>
       </div>
       <div className="compose-body-wrap">
@@ -605,6 +664,7 @@ export function ComposeSheet({ draft, accounts, error, sending, onChange, onSend
           <textarea
             ref={body}
             className="compose-body"
+            dir="auto"
             aria-label={t("compose.body")}
             value={draft.text}
             onChange={(e) => {
@@ -741,10 +801,16 @@ export function ComposeSheet({ draft, accounts, error, sending, onChange, onSend
           <span>{t("protect.quotesEncrypted")}</span>
         </div>
       )}
+      {cannotEncrypt && (
+        <div className="notice notice-warning compose-cannot-encrypt" role="status">
+          <TriangleAlert size={16} strokeWidth={1.75} aria-hidden />
+          <span>{cannotEncrypt.length ? t("protect.cannotEncryptFor", { n: cannotEncrypt.length }) : t("protect.cannotEncryptOwn")}</span>
+        </div>
+      )}
       {error && (
         <div className="notice notice-danger compose-error" role="alert">
-          <strong>{t("compose.sendFailed")}</strong>
-          <span>{error}</span>
+          <strong>{error.title}</strong>
+          <span>{error.detail}</span>
         </div>
       )}
       <footer className="compose-foot">
@@ -844,6 +910,11 @@ export function ComposeSheet({ draft, accounts, error, sending, onChange, onSend
           </button>
         )}
         <span className="toolbar-gap" />
+        {saved && (
+          <span className="muted compose-saved" role="status">
+            {t("compose.saved")}
+          </span>
+        )}
         <span className="muted compose-account">{account?.email}</span>
         <button type="button" className="btn btn-quiet" onClick={onSaveDraft}>
           {t("compose.saveDraft")}

@@ -2,7 +2,7 @@ import { Archive, ArrowDown, Clock, Flag, FlagOff, Mail, MailOpen, Menu as MenuI
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { currentLang, useT } from "../lib/i18n";
 import { displayName, listDate, now } from "../lib/format";
-import { visibleRange } from "../lib/listing";
+import { MAX_LIST_PX, scrollWindow } from "../lib/listing";
 import { PULL_TRIGGER, pullDistance, swipeIntent, swipeOffset, swipeRemoves, swipeResult, swipeSide } from "../lib/touch";
 import type { MessageSummary, SwipeAction } from "../lib/types";
 import { Spinner } from "./ui";
@@ -87,7 +87,7 @@ export function MessageList(p: Props) {
   const lang = currentLang();
   const today = now();
   const scroller = p.listRef;
-  const [range, setRange] = useState({ start: 0, end: 40 });
+  const [range, setRange] = useState({ start: 0, end: 40, shift: 0, ratio: 1 });
   const [rowH, setRowH] = useState(76);
   const gesture = useRef<Gesture | null>(null);
   const swallowClick = useRef(false);
@@ -102,8 +102,8 @@ export function MessageList(p: Props) {
   const measure = () => {
     const el = scroller.current;
     if (!el) return;
-    const r = visibleRange(el.scrollTop, el.clientHeight, rowH, p.total);
-    setRange((old) => (old.start === r.start && old.end === r.end ? old : r));
+    const r = scrollWindow(el.scrollTop, el.clientHeight, rowH, p.total);
+    setRange((old) => (old.start === r.start && old.end === r.end && old.shift === r.shift && old.ratio === r.ratio ? old : r));
   };
 
   useEffect(measure, [p.total, rowH]);
@@ -123,8 +123,9 @@ export function MessageList(p: Props) {
     for (let i = range.start; i < range.end; i++) {
       if (p.rowAt(i)?.id !== p.current) continue;
       const top = i * rowH;
-      if (top < el.scrollTop) el.scrollTop = top;
-      else if (top + rowH > el.scrollTop + el.clientHeight) el.scrollTop = top + rowH - el.clientHeight;
+      const seen = el.scrollTop * range.ratio;
+      if (top < seen) el.scrollTop = top / range.ratio;
+      else if (top + rowH > seen + el.clientHeight) el.scrollTop = (top + rowH - el.clientHeight) / range.ratio;
       break;
     }
   }, [p.current]);
@@ -203,7 +204,7 @@ export function MessageList(p: Props) {
   const rows: ReactNode[] = [];
   for (let i = range.start; i < range.end; i++) {
     const m = p.rowAt(i);
-    const top = i * rowH;
+    const top = i * rowH - range.shift;
     if (!m) {
       rows.push(<div key={`ph-${i}`} className="row row-placeholder" style={{ top, height: rowH }} aria-hidden />);
       continue;
@@ -245,7 +246,7 @@ export function MessageList(p: Props) {
         <span className="row-body" style={sw ? { transform: `translateX(${sw.dx}px)`, transition: sw.leaving ? undefined : "none" } : undefined}>
           <span className="row-top">
             <span className="unread-slot">{!m.seen && <span className="unread-dot" aria-label={t("list.unread")} />}</span>
-            <span className="row-from">{displayName(m.from, lang)}</span>
+            <bdi className="row-from">{displayName(m.from, lang)}</bdi>
             {bundle > 1 ? (
               <span className="thread-count" aria-label={t("inbox.bundle", { n: bundle })}>
                 {bundle}
@@ -275,9 +276,13 @@ export function MessageList(p: Props) {
           </span>
           <span className="row-subject">
             {m.important && <span className="important-badge">{t("list.important")}</span>}
-            {m.subject || t("list.noSubject")}
+            <bdi>{m.subject || t("list.noSubject")}</bdi>
           </span>
-          {p.showSnippets && <span className="row-snippet">{m.snippet || " "}</span>}
+          {p.showSnippets && (
+            <span className="row-snippet" dir="auto">
+              {m.snippet || " "}
+            </span>
+          )}
         </span>
       </div>,
     );
@@ -391,7 +396,7 @@ export function MessageList(p: Props) {
             </div>
           )
         ) : (
-          <div className="messages-inner" style={{ height: p.total * rowH }}>
+          <div className="messages-inner" style={{ height: Math.min(p.total * rowH, MAX_LIST_PX) }}>
             {rows}
           </div>
         )}

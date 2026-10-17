@@ -8,6 +8,9 @@ import type { Account, Address, Attachment, ComposeDraft, FileInfo, MessageView,
 export type ComposeMode = "new" | "reply" | "replyAll" | "forward" | "draft";
 
 export type ComposeState = {
+  /** Which sheet this is: a new one for every message opened, so nothing of another message
+   *  (the editor's text, a typed address) stays in it. */
+  uid: number;
   mode: ComposeMode;
   accountId: number | null;
   to: string[];
@@ -30,6 +33,8 @@ export type ComposeState = {
   replyToId: number | null;
   /** Bumped when the body is replaced from outside, so the editor loads it again. */
   revision: number;
+  /** Addresses typed into To, Cc and Bcc that are no chip yet; they count as recipients. */
+  typing?: { to: string; cc: string; bcc: string };
   /** Signed and/or encrypted when sent (OpenPGP or S/MIME). */
   protect?: Protect | null;
   /** A reply to or forward of a decrypted message: the quote stays encrypted, or the sheet warns. */
@@ -49,10 +54,18 @@ export const textToEditorHtml = (s: string) =>
 /** The signature in the editor, with an empty line below it. */
 const sigBlock = (sig: string) => (sig ? `${textToEditorHtml(sig)}<p><br></p>` : "");
 
+let lastUid = 0;
+/** A new sheet's id. */
+export const nextUid = () => ++lastUid;
+
+/** The same message in a new sheet (put back after the undo of a send or a discard). */
+export const reopened = (s: ComposeState): ComposeState => ({ ...s, uid: nextUid(), revision: s.revision + 1 });
+
 const signatureText = (a: Account | null) => (a?.signature.trim() ? `-- \n${a.signature.trim()}` : "");
 
 function base(account: Account | null, rich: boolean): ComposeState {
   return {
+    uid: nextUid(),
     mode: "new",
     accountId: account?.id ?? null,
     to: [],
@@ -154,27 +167,11 @@ export function replyDraft(m: MessageView, mode: "reply" | "replyAll" | "forward
   return d;
 }
 
-/** A draft from the Drafts folder, opened to go on writing. */
-export function draftFromMessage(m: MessageView, account: Account | null, rich: boolean): ComposeState {
-  const d = base(account, rich);
-  d.mode = "draft";
-  d.to = m.to.map(line);
-  d.cc = m.cc.map(line);
-  d.showCc = d.cc.length > 0;
-  d.subject = m.summary.subject;
-  d.messageId = m.message_id;
-  d.inReplyTo = m.in_reply_to;
-  d.references = m.references;
-  d.forwarded = m.files;
-  const text = m.text ?? "";
-  if (rich) d.html = textToEditorHtml(text);
-  else d.text = text;
-  return d;
-}
-
-/** A message taken back from „Später senden“ (or any stored draft) in the compose sheet. */
-export function fromComposeDraft(d: ComposeDraft, rich: boolean): ComposeState {
-  const s = base(null, rich && d.html != null);
+/** A stored message in the compose sheet: a scheduled one taken back, or a draft from Drafts
+ *  (`draft_of`). `files`: its attachments as they are on disk now, `forwarded`: the stored
+ *  attachments that go along. A message written as rich text opens as rich text. */
+export function fromComposeDraft(d: ComposeDraft, files: FileInfo[] = [], forwarded: Attachment[] = []): ComposeState {
+  const s = base(null, d.html != null);
   return {
     ...s,
     mode: "draft",
@@ -186,11 +183,14 @@ export function fromComposeDraft(d: ComposeDraft, rich: boolean): ComposeState {
     showBcc: d.bcc.length > 0,
     subject: d.subject,
     html: d.html ?? "",
-    text: d.text,
+    text: d.html != null ? "" : d.text,
+    attachments: files,
+    forwarded,
     inReplyTo: d.in_reply_to,
     references: d.references,
     messageId: d.message_id,
     replyToId: d.reply_to_id,
+    protect: d.protect ?? null,
   };
 }
 
@@ -204,14 +204,31 @@ export function editorHtmlToText(html: string): string {
   return (div.textContent ?? "").replace(/\n{3,}/g, "\n\n").replace(/\s+$/, "");
 }
 
+/** The sheet with the addresses still being typed made recipients. */
+export function committed(s: ComposeState): ComposeState {
+  const t = s.typing;
+  if (!t || !(t.to.trim() || t.cc.trim() || t.bcc.trim())) return s;
+  return {
+    ...s,
+    to: [...s.to, ...splitAddresses(t.to)],
+    cc: [...s.cc, ...splitAddresses(t.cc)],
+    bcc: [...s.bcc, ...splitAddresses(t.bcc)],
+    showCc: s.showCc || !!t.cc.trim(),
+    showBcc: s.showBcc || !!t.bcc.trim(),
+    typing: { to: "", cc: "", bcc: "" },
+  };
+}
+
 /** Whether the sheet holds nothing worth keeping. */
-export function isEmpty(s: ComposeState): boolean {
+export function isEmpty(state: ComposeState): boolean {
+  const s = committed(state);
   const body = s.rich ? editorHtmlToText(s.html) : s.text;
   return !s.to.length && !s.cc.length && !s.bcc.length && !s.subject.trim() && !body.replace(/^-- [\s\S]*$/m, "").trim() && !s.attachments.length && !s.forwarded.length;
 }
 
 /** What the backend sends or saves. */
-export function toDraft(s: ComposeState): ComposeDraft {
+export function toDraft(state: ComposeState): ComposeDraft {
+  const s = committed(state);
   return {
     account_id: s.accountId ?? 0,
     to: s.to,

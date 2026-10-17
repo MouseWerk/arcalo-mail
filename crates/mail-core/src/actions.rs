@@ -522,6 +522,66 @@ pub fn queue_draft(store: &Store, d: &Draft, files: &[FileAttachment]) -> Result
     Ok(mid)
 }
 
+/// A draft from Drafts as the compose sheet edits it: its recipients with Bcc (kept in the stored
+/// copy), the editor's HTML (cleaned, without the frame [`compose::build`] puts around it), the
+/// message it answers and its own attachments, which go along when it is sent.
+pub fn draft_of(store: &Store, id: i64) -> Result<Draft> {
+    use rusqlite::OptionalExtension;
+    let d = store.message(id)?;
+    let line = |a: &crate::parse::Address| match &a.name {
+        Some(n) if !n.is_empty() => format!(
+            "{} <{}>",
+            if n.contains([',', ';', '"']) { format!("\"{}\"", n.replace('"', "")) } else { n.clone() },
+            a.email
+        ),
+        _ => a.email.clone(),
+    };
+    let bcc = store.raw_message(id)?.map(|raw| crate::parse::bcc_of(&raw)).unwrap_or_default();
+    let html = d.html.as_deref().map(|h| sanitize_html_with(body_of(h), true, false).html);
+    let reply_to_id = match &d.in_reply_to {
+        Some(mid) => store
+            .conn()
+            .query_row(
+                "SELECT id FROM messages WHERE account_id = ?1 AND message_id = ?2 AND draft = 0 ORDER BY id LIMIT 1",
+                rusqlite::params![d.account_id, mid],
+                |r| r.get(0),
+            )
+            .optional()?,
+        None => None,
+    };
+    let forwarded = d
+        .attachments
+        .iter()
+        .filter(|a| !(is_wrapper(a) || (a.inline && a.content_id.is_some())))
+        .map(|a| a.id)
+        .collect();
+    Ok(Draft {
+        account_id: d.account_id,
+        to: d.to.iter().map(line).collect(),
+        cc: d.cc.iter().map(line).collect(),
+        bcc: bcc.iter().map(line).collect(),
+        subject: d.summary.subject.clone(),
+        text: if html.is_some() { String::new() } else { d.text.clone().unwrap_or_default() },
+        html,
+        attachments: vec![],
+        in_reply_to: d.in_reply_to.clone(),
+        references: d.references.clone(),
+        message_id: d.message_id.clone(),
+        reply_to_id,
+        forwarded,
+        protect: None,
+    })
+}
+
+/// What is inside `<body>` (a whole HTML document as mail carries it), else all of it.
+fn body_of(html: &str) -> &str {
+    let lower = html.to_ascii_lowercase();
+    let Some(open) = lower.find("<body") else { return html };
+    let Some(start) = lower[open..].find('>').map(|i| open + i + 1) else { return html };
+    let end = lower[start..].rfind("</body>").map(|i| start + i).unwrap_or(html.len());
+    &html[start..end]
+}
+
 /// Removes a draft from Drafts (the user discarded it).
 pub fn discard_draft(store: &Store, account_id: i64, message_id: &str) -> Result<()> {
     if let Some(drafts) = store.mailbox_by_role(account_id, Role::Drafts)? {
@@ -872,6 +932,44 @@ mod tests {
         let kinds: Vec<String> = outbox::entries(&s).unwrap().into_iter().map(|e| e.kind).collect();
         assert_eq!(kinds, ["create_folder", "save_draft"]);
         discard_draft(&s, account, &mid).unwrap();
+    }
+
+    #[test]
+    fn a_draft_opens_again_with_bcc_formatting_files_and_the_message_it_answers() {
+        let (s, account, _, ids) = setup();
+        let drafts = s
+            .upsert_mailbox(
+                account,
+                &MailboxEntry { name: "Drafts".into(), delimiter: Some('/'), attributes: vec!["\\Drafts".into()] },
+            )
+            .unwrap();
+        let d = Draft {
+            account_id: account,
+            to: vec!["Jonas Berger <jonas@example.org>".into()],
+            bcc: vec!["chef@example.org".into()],
+            subject: "Re: Nachricht 1".into(),
+            html: Some("<p>Hallo <b>Jonas</b></p><ul><li>Punkt</li></ul>".into()),
+            in_reply_to: Some("m1@x".into()),
+            references: vec!["m1@x".into()],
+            ..Draft::default()
+        };
+        let file =
+            FileAttachment { name: "Plan.pdf".into(), mime_type: "application/pdf".into(), data: b"%PDF".to_vec() };
+        let account_row = s.account(account).unwrap();
+        let raw = compose::build(&account_row, &d, &[file], "d1@example.org", now(), true).unwrap();
+        let parsed = parse(&raw).unwrap();
+        let id = s.insert_message(drafts, &header(1, &raw), &parsed).unwrap();
+        s.set_body_raw(id, &parsed, Some(&raw)).unwrap();
+        let back = draft_of(&s, id).unwrap();
+        assert_eq!(back.to, ["Jonas Berger <jonas@example.org>"]);
+        assert_eq!(back.bcc, ["chef@example.org"]);
+        let html = back.html.unwrap();
+        assert!(html.contains("<b>Jonas</b>") && html.contains("<li>Punkt</li>"), "{html}");
+        assert!(!html.contains("<body") && !html.contains("font-family"), "without the frame: {html}");
+        assert_eq!(back.reply_to_id, Some(ids[0]));
+        assert_eq!(back.message_id.as_deref(), Some("d1@example.org"));
+        assert_eq!(back.forwarded.len(), 1, "its file goes along");
+        assert_eq!(s.attachment(back.forwarded[0]).unwrap().filename.as_deref(), Some("Plan.pdf"));
     }
 
     #[test]

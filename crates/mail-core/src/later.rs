@@ -406,7 +406,8 @@ pub fn schedule_send(
             .filter(|s| !s.is_empty())
             .collect::<Vec<_>>()
             .join(", ");
-    let draft = Draft { message_id: Some(mid.clone()), attachments: vec![], ..d.clone() };
+    // The files stay named by their paths, so „Bearbeiten“ attaches them again.
+    let draft = Draft { message_id: Some(mid.clone()), ..d.clone() };
     store.conn().execute(
         "INSERT INTO scheduled (account_id, due_at, op, draft, subject, recipients, message_id, followup_secs, created_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
@@ -442,8 +443,9 @@ pub fn scheduled(store: &Store) -> Result<Vec<Scheduled>> {
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
-/// Takes a scheduled message back; returns its draft to open it again (without the files it
-/// had: they were in the finished message).
+/// Takes a scheduled message back; returns its draft to open it again, with the paths of its
+/// files and the ids of the stored attachments it forwards (the compose sheet attaches them
+/// again; a file gone from the disk since is said there).
 pub fn unschedule(store: &Store, id: i64) -> Result<Draft> {
     let draft: Option<String> =
         store.conn().query_row("SELECT draft FROM scheduled WHERE id = ?1", [id], |r| r.get(0)).optional()?;

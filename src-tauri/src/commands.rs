@@ -743,6 +743,20 @@ pub async fn save_draft(state: State<'_, AppState>, draft: Draft) -> Res<String>
     Ok(mid)
 }
 
+/// A draft from Drafts as it was written, to go on writing it.
+#[tauri::command]
+pub fn draft_of(state: State<'_, AppState>, id: i64) -> Res<Draft> {
+    actions::draft_of(&state.store(), id)
+}
+
+/// Stored attachments by id (those a draft or a scheduled message forwards); gone ones are left
+/// out.
+#[tauri::command]
+pub fn attachments_by_id(state: State<'_, AppState>, ids: Vec<i64>) -> Res<Vec<mail_core::store::Attachment>> {
+    let store = state.store();
+    Ok(ids.into_iter().filter_map(|id| store.attachment(id).ok()).collect())
+}
+
 #[tauri::command]
 pub fn discard_draft(state: State<'_, AppState>, account_id: i64, message_id: String) -> Res<()> {
     actions::discard_draft(&state.store(), account_id, &message_id)?;

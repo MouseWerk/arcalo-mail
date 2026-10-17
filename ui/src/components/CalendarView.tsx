@@ -1278,7 +1278,7 @@ function EventDetail({ event: e, calendars, onClose, onSave, onDelete, onReload 
         {e.link && (
           <button type="button" className={`btn ${past ? "" : "btn-primary"} calv-join`} onClick={() => void openExternal(e.link!).catch((err) => showToast({ title: t("calv.joinFailed"), detail: String(err), tone: "danger" }))}>
             <Video size={14} strokeWidth={1.75} aria-hidden />
-            <span>{t("meeting.join", { kind: e.link_kind ?? "Online" })}</span>
+            <span>{t("meeting.join", { kind: e.link_kind ?? t("meeting.online") })}</span>
           </button>
         )}
       </div>

@@ -9,7 +9,8 @@ import type { AccountInfo, AppInfo, ImapTransport, LanguageChoice, MicrosoftSign
 import { AiSection, ContactsSection, RulesSection, TemplatesSection } from "./PowerSettings";
 import { CalendarSection, CryptoSection } from "./CalendarSettings";
 import { explain } from "../lib/problems";
-import { ConfirmDialog, Segmented, Spinner, Switch, trapFocus } from "./ui";
+import { SHORTCUTS, keyLabel, usesCommand } from "../lib/shortcuts";
+import { ConfirmDialog, Segmented, Spinner, Switch, trapFocus, useSaveOnLeave } from "./ui";
 import { ProblemCard, Setup } from "./Setup";
 import { useRef } from "react";
 
@@ -50,27 +51,6 @@ const SECTIONS: [SettingsSection, TKey, typeof Bell][] = [
   ["about", "settings.about", Info],
 ];
 
-const SHORTCUTS: [string, TKey][] = [
-  ["j / k", "keys.nextPrev"],
-  ["Enter", "keys.open"],
-  ["e", "keys.archive"],
-  ["#", "keys.delete"],
-  ["!", "keys.spam"],
-  ["r", "keys.reply"],
-  ["a", "keys.replyAll"],
-  ["f", "keys.forward"],
-  ["c", "keys.compose"],
-  ["/", "keys.search"],
-  ["u", "keys.undo"],
-  ["x", "keys.select"],
-  ["s", "keys.flag"],
-  ["h", "keys.snooze"],
-  ["p", "keys.pin"],
-  ["Shift+I / Shift+U", "keys.readUnread"],
-  ["Ctrl+Enter", "keys.send"],
-  ["Ctrl+,", "keys.settings"],
-  ["Ctrl+K", "keys.palette"],
-];
 
 /** Asks where to save the diagnostics report and writes it. */
 export async function exportDiagnostics(t: ReturnType<typeof useT>): Promise<void> {
@@ -177,10 +157,19 @@ function AccountEditor({ a, onChanged, onRemoved }: { a: AccountInfo; onChanged:
     setPop3(a.transport.kind === "pop3" ? a.transport : null);
   }, [a.id]);
 
+  // What was saved last: leaving a field without a change saves nothing.
+  const saved = useRef({ name: a.name, sender: a.sender_name, signature: a.signature });
+  useEffect(() => {
+    saved.current = { name: a.name, sender: a.sender_name, signature: a.signature };
+  }, [a.id]);
+  const profileChanged = name !== saved.current.name || sender !== saved.current.sender || signature !== saved.current.signature;
   const saveProfile = async () => {
+    if (name === saved.current.name && sender === saved.current.sender && signature === saved.current.signature) return;
+    saved.current = { name, sender, signature };
     await api.updateAccount(a.id, name, sender, signature);
     onChanged();
   };
+  useSaveOnLeave(profileChanged, () => void saveProfile());
 
   const saveServers = async () => {
     const current: ImapTransport | Pop3Transport | null = pop3 ?? transport;
@@ -414,6 +403,7 @@ function NetworkSection({ net, onChange }: { net: NetworkSettings; onChange: (n:
   useEffect(() => {
     void api.systemProxy().then(setSystem);
   }, []);
+  useSaveOnLeave(JSON.stringify(draft) !== JSON.stringify(net), () => commit(draft));
   const commit = (n: NetworkSettings) => {
     const manualWithout = n.profiles.find((p) => p.mode === "manual" && !p.http_proxy.trim() && !p.socks_proxy.trim());
     setDraft(n);
@@ -594,6 +584,8 @@ const SWIPES: [SwipeAction, TKey][] = [
 export function SettingsView({ settings, accounts, info, section, onSection, onChange, onAccountsChanged, onClose, onSubscriptions, touch, phone }: Props) {
   const t = useT();
   const mobile = info?.platform === "android" || info?.platform === "ios";
+  const mac = usesCommand(info?.platform);
+  const keyNames = { ctrl: t("keys.ctrl"), shift: t("keys.shift"), enter: t("keys.enter"), del: t("keys.del") };
   const [accountId, setAccountId] = useState<number | null>(accounts[0]?.id ?? null);
   const [adding, setAdding] = useState(false);
   const [senders, setSenders] = useState<string[]>([]);
@@ -732,6 +724,9 @@ export function SettingsView({ settings, accounts, info, section, onSection, onC
                 </Row>
                 <Row label={t("settings.snippets")} description={t("settings.snippetsHint")}>
                   <Switch label={t("settings.snippets")} checked={settings.show_snippets} onChange={(show_snippets) => onChange({ show_snippets })} />
+                </Row>
+                <Row label={t("settings.startupAnimation")} description={t("settings.startupAnimationHint")}>
+                  <Switch label={t("settings.startupAnimation")} checked={settings.startup_animation} onChange={(startup_animation) => onChange({ startup_animation })} />
                 </Row>
               </div>
             )}
@@ -928,13 +923,13 @@ export function SettingsView({ settings, accounts, info, section, onSection, onC
               <div className="set-card">
                 <table className="keys">
                   <tbody>
-                    {SHORTCUTS.map(([k, label]) => (
-                      <tr key={k}>
+                    {SHORTCUTS.map(({ keys, label }) => (
+                      <tr key={label}>
                         <td>
-                          {k.split(" / ").map((part, i) => (
-                            <span key={part}>
+                          {keys.map((combo, i) => (
+                            <span key={combo.join("+")}>
                               {i > 0 && " / "}
-                              <kbd>{part.replace("Ctrl", t("keys.ctrl")).replace("Shift", t("keys.shift")).replace("Enter", t("keys.enter"))}</kbd>
+                              <kbd>{combo.map((k) => keyLabel(k, mac, keyNames)).join(mac ? "" : "+")}</kbd>
                             </span>
                           ))}
                         </td>

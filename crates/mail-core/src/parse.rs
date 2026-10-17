@@ -205,6 +205,11 @@ fn mime_of(part: &mail_parser::MessagePart<'_>) -> String {
     })
 }
 
+/// The Bcc recipients a message keeps (a draft, the copy in Sent).
+pub fn bcc_of(raw: &[u8]) -> Vec<Address> {
+    MessageParser::default().parse(raw).map(|m| addresses(m.bcc())).unwrap_or_default()
+}
+
 /// The content of attachment `index` (the order of [`ParsedMessage::attachments`]), decoded.
 pub fn attachment_data(raw: &[u8], index: u32) -> Option<Vec<u8>> {
     let m = MessageParser::default().parse(raw)?;

@@ -144,7 +144,7 @@ export function InvitationCard({ view, onAnswered, onOpenCalendar }: { view: Mes
             <span>{t(answer === "accepted" ? "invite.youAccepted" : answer === "tentative" ? "invite.youTentative" : "invite.youDeclined")}</span>
           </span>
         )}
-        {inv.link && !cancelled && <JoinButton url={inv.link} kind={inv.link_kind ?? "Online"} primary={answer === "accepted"} />}
+        {inv.link && !cancelled && <JoinButton url={inv.link} kind={inv.link_kind ?? t("meeting.online")} primary={answer === "accepted"} />}
         {!cancelled && (
           <button type="button" className="btn btn-sm btn-quiet" onClick={() => onOpenCalendar(card.event_key, inv.start)}>
             <CalendarDays size={14} strokeWidth={1.75} aria-hidden />

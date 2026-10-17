@@ -9,6 +9,36 @@ export function visibleRange(scrollTop: number, viewport: number, rowHeight: num
   return { start: Math.max(0, first - overscan), end: Math.min(total, first + count + overscan) };
 }
 
+/** The tallest list drawn as it is; browsers stop at about 33 million pixels (Chromium) or less. */
+export const MAX_LIST_PX = 8_000_000;
+
+/**
+ * The rows to render for a scroll position, for lists of any length. Up to [`MAX_LIST_PX`] the
+ * list is as tall as its rows; a longer one (hundreds of thousands of messages) is drawn that
+ * tall and its scroll position is stretched over all rows, so the end stays reachable. `height`:
+ * the list's height, `shift`: how far the rows are drawn above their own position, `ratio`: rows'
+ * pixels per scrolled pixel.
+ */
+export function scrollWindow(scrollTop: number, viewport: number, rowHeight: number, total: number, overscan = 8) {
+  const full = total * rowHeight;
+  const height = Math.min(full, MAX_LIST_PX);
+  const ratio = full > height && height > viewport ? (full - viewport) / (height - viewport) : 1;
+  const virtual = scrollTop * ratio;
+  return { ...visibleRange(virtual, viewport, rowHeight, total, overscan), shift: virtual - scrollTop, height, ratio };
+}
+
+/** The pages (of `size` rows) needed to select the rows between the anchor and row `index` that
+ *  were never loaded (a range across a page jumped past with the scroll bar). */
+export function rangeGaps(sel: Selection, order: (number | undefined)[], index: number, size: number): number[] {
+  if (sel.anchor === null) return [];
+  const a = order.indexOf(sel.anchor);
+  if (a < 0) return [];
+  const [lo, hi] = a < index ? [a, index] : [index, a];
+  const pages = new Set<number>();
+  for (let i = lo; i <= hi; i++) if (order[i] === undefined) pages.add(Math.floor(i / size));
+  return [...pages];
+}
+
 /** The pages (of `size` rows) a range of rows needs. */
 export function pagesFor(start: number, end: number, size: number): number[] {
   if (end <= start) return [];
@@ -125,4 +155,13 @@ export function isTyping(target: EventTarget | null): boolean {
   if (!el || !el.tagName) return false;
   const tag = el.tagName.toLowerCase();
   return tag === "input" || tag === "textarea" || tag === "select" || el.isContentEditable;
+}
+
+/** Whether a key press lands on a control of its own (a button, a link, a tab, a switch) outside
+ *  the message list, where Enter is that control's. */
+export function isControl(target: EventTarget | null): boolean {
+  const el = target as HTMLElement | null;
+  if (!el || typeof el.closest !== "function") return false;
+  if (el.closest(".messages")) return false;
+  return !!el.closest("button, a[href], summary, [role=button], [role=link], [role=tab], [role=switch], [role=menuitem], [role=menuitemradio], [role=option], [role=checkbox]");
 }

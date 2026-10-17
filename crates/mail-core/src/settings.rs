@@ -134,6 +134,9 @@ pub struct Settings {
     pub arcalo_target: ArcaloTarget,
     /// Desktop updates: downloaded in the background and installed on quit, or only announced.
     pub updates: crate::update::UpdateMode,
+    /// „Startanimation“: the mark draws itself while the app loads (never longer than that;
+    /// skipped with reduced motion).
+    pub startup_animation: bool,
 }
 
 /// The calendar's settings.
@@ -195,6 +198,7 @@ impl Default for Settings {
             sign_by_default: None,
             arcalo_target: ArcaloTarget::Page,
             updates: crate::update::UpdateMode::Auto,
+            startup_animation: true,
         }
     }
 }

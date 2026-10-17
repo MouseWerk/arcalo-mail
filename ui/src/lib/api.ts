@@ -6,6 +6,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { demo } from "./demo";
 import type {
   AccountDraft,
+  Attachment,
   AccountInfo,
   AppInfo,
   CheckResult,
@@ -158,6 +159,12 @@ export const api = {
   saveDraft: (draft: ComposeDraft) => call<string>("save_draft", { draft }, () => draft.message_id ?? `demo-${Date.now()}@example.org`),
   discardDraft: (accountId: number, messageId: string) => call<void>("discard_draft", { accountId, messageId }, () => undefined),
   fileInfos: (paths: string[]) => call<FileInfo[]>("file_infos", { paths }, () => []),
+  /** Stored attachments by id (the files a stored draft forwards). */
+  attachments: (ids: number[]) => call<Attachment[]>("attachments_by_id", { ids }, () => []),
+  /** A draft from Drafts as it was written: Bcc, the editor's HTML, the message it answers. */
+  draftOf: (id: number) => call<ComposeDraft>("draft_of", { id }, () => demo.draftOf(id)),
+  /** The open message was saved as a draft; the shell may quit now. */
+  draftsSaved: () => call<void>("drafts_saved", {}, () => undefined),
 
   openAttachment: (id: number, confirmed = false) => call<{ opened: boolean; risk: "none" | "macro" | "blocked" }>("open_attachment", { id, confirmed }, () => ({ opened: true, risk: "none" })),
   saveAttachment: (id: number, path: string) => call<void>("save_attachment", { id, path }, () => undefined),
@@ -361,6 +368,34 @@ export function onReminders(f: (r: Reminder[]) => void): () => void {
     listen<Reminder[]>("reminders", (e) => f(e.payload)).then((un) => {
       if (cancelled) un();
       else stop = un;
+    }),
+  );
+  return () => {
+    cancelled = true;
+    stop?.();
+  };
+}
+
+/**
+ * Before the app quits (closing the window, the tray's „Beenden“, Cmd+Q) the shell asks for the
+ * open message to be saved and waits for `drafts_saved`. In the browser preview the same request
+ * is the window event `arcalo-mail:save-drafts`. Returns the unsubscribe function.
+ */
+export function onSaveDrafts(f: () => Promise<void>): () => void {
+  if (!inApp()) {
+    const go = () => void f();
+    window.addEventListener("arcalo-mail:save-drafts", go);
+    return () => window.removeEventListener("arcalo-mail:save-drafts", go);
+  }
+  let stop: (() => void) | null = null;
+  let cancelled = false;
+  void import("@tauri-apps/api/event").then(({ listen }) =>
+    listen("save-drafts", () => void f().finally(() => void api.draftsSaved())).then((un) => {
+      if (cancelled) un();
+      else {
+        stop = un;
+        void invoke("drafts_listen").catch(() => {});
+      }
     }),
   );
   return () => {

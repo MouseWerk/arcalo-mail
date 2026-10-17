@@ -4,6 +4,7 @@
 import { useEffect, useMemo, useRef, useState, type ComponentType } from "react";
 import { useT } from "../lib/i18n";
 import { score } from "../lib/palette";
+import { useRestoreFocus } from "./ui";
 
 type IconType = ComponentType<{ size?: number; strokeWidth?: number; "aria-hidden"?: boolean }>;
 
@@ -34,6 +35,8 @@ export function CommandPalette({ commands, search, onClose }: { commands: Comman
     return s ? [...hits, s] : hits;
   }, [commands, query, search]);
 
+  const root = useRef<HTMLDivElement>(null);
+  useRestoreFocus(root);
   useEffect(() => setIndex(0), [query]);
   useEffect(() => {
     listRef.current?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: "nearest" });
@@ -47,7 +50,7 @@ export function CommandPalette({ commands, search, onClose }: { commands: Comman
 
   return (
     <div className="overlay palette-overlay" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="palette" role="dialog" aria-modal="true" aria-label={t("palette.label")}>
+      <div ref={root} className="palette" role="dialog" aria-modal="true" aria-label={t("palette.label")}>
         <input
           className="palette-input"
           autoFocus
@@ -73,6 +76,9 @@ export function CommandPalette({ commands, search, onClose }: { commands: Comman
             } else if (e.key === "Enter") {
               e.preventDefault();
               run(shown[index]);
+            } else if (e.key === "Tab") {
+              // The field is the palette's only stop: Tab stays in it.
+              e.preventDefault();
             }
           }}
         />
@@ -96,7 +102,9 @@ export function CommandPalette({ commands, search, onClose }: { commands: Comman
                   }}
                 >
                   <Icon size={15} strokeWidth={1.75} aria-hidden />
-                  <span className="palette-label">{c.label}</span>
+                  <span className="palette-label" dir="auto">
+                    {c.label}
+                  </span>
                   {c.hint && <span className="palette-hint">{c.hint}</span>}
                 </li>
               );
