@@ -1,5 +1,6 @@
 import {
   AlarmClock,
+  ArrowLeft,
   Bold,
   Check,
   ChevronDown,
@@ -12,6 +13,7 @@ import {
   Link,
   List,
   Lock,
+  MoreHorizontal,
   ShieldCheck,
   ListOrdered,
   Paperclip,
@@ -45,6 +47,9 @@ type Props = {
   saved?: boolean;
   /** Full screen (a phone): Tab stays in the sheet. Docked on a wide window it does not. */
   modal?: boolean;
+  /** A phone: an app bar at the top (back, attach, send, more) instead of the footer, the
+   *  formatting bar over the keyboard only while writing. */
+  phone?: boolean;
   onChange: (d: ComposeState) => void;
   /** Sends; `followupSecs`: „Erinnern, wenn keine Antwort“ that long after. */
   onSend: (followupSecs: number | null) => void;
@@ -390,7 +395,7 @@ function Editor({
 
 /** The compose sheet: bottom right on a wide window, full screen on a phone. Esc closes it (and
  *  keeps the draft), Ctrl+Enter sends. Files dropped on the window are attached. */
-export function ComposeSheet({ draft, accounts, error, sending, saved, modal, onChange, onSend, onSendLater, onSaveDraft, onClose, onDiscard, aiOn, signByDefault }: Props) {
+export function ComposeSheet({ draft, accounts, error, sending, saved, modal, phone, onChange, onSend, onSendLater, onSaveDraft, onClose, onDiscard, aiOn, signByDefault }: Props) {
   const t = useT();
   const lang = currentLang();
   const abilities = useAbilities(draft, onChange, signByDefault);
@@ -423,6 +428,8 @@ export function ComposeSheet({ draft, accounts, error, sending, saved, modal, on
   // „Erinnern, wenn keine Antwort“ after this many days (null: no reminder).
   const [remind, setRemind] = useState<number | null>(null);
   const [menu, setMenu] = useState<{ items: MenuItem[]; at: { x: number; y: number } } | null>(null);
+  // A phone: the caret is in the text (the formatting bar shows over the keyboard).
+  const [writing, setWriting] = useState(false);
   const followupSecs = remind == null ? null : remind * 86400;
   const above = (el: HTMLElement) => {
     const r = el.getBoundingClientRect();
@@ -573,6 +580,35 @@ export function ComposeSheet({ draft, accounts, error, sending, saved, modal, on
     else set({ rich: true, html: textToEditorHtml(draft.text), revision: draft.revision + 1 });
   };
 
+  const laterItems = (): MenuItem[] => sendLaterItems(t, (at) => onSendLater(at, followupSecs), () => onSendLater(null, followupSecs));
+  const remindItems = (): MenuItem[] => followupItems(t, remind ?? 0, (days) => setRemind(days), null, remind != null ? () => setRemind(null) : null);
+  const templateItems = (): MenuItem[] => {
+    const list = templates.filter((x) => x.kind === "template" && (x.account_id == null || x.account_id === draft.accountId));
+    const snippets = templates.filter((x) => x.kind === "snippet");
+    return [
+      ...(list.length ? list.map((x) => ({ label: x.name, onSelect: () => void insertTemplate(x) })) : [{ label: t("compose.noTemplates"), onSelect: () => {}, disabled: true }]),
+      ...(snippets.length ? ["separator" as const, { heading: t("compose.snippetHint") }] : []),
+    ];
+  };
+  const helpItems = (): MenuItem[] => (Object.keys(STYLE) as WritingStyle[]).map((s) => ({ label: t(STYLE[s]), onSelect: () => writingHelp(s) }));
+  const canProtect = !!(abilities?.pgp_sign || abilities?.smime_sign || abilities?.pgp_encrypt || abilities?.smime_encrypt || protect);
+  /** A phone's „more“ sheet: what the desktop's footer offers, each opening its own sheet. */
+  const moreItems = (): MenuItem[] => {
+    const open = (items: () => MenuItem[]) => () => setMenu({ items: items(), at: { x: 0, y: 0 } });
+    const items: MenuItem[] = [
+      { label: t("compose.sendLater"), icon: <Send size={16} strokeWidth={1.75} aria-hidden />, disabled: sending || draft.accountId == null, onSelect: open(laterItems) },
+      { label: remind != null ? t("compose.remindSet", { n: remind }) : t("compose.remind"), icon: <AlarmClock size={16} strokeWidth={1.75} aria-hidden />, onSelect: open(remindItems) },
+    ];
+    if (canProtect) items.push({ label: t("protect.menu"), icon: <ShieldCheck size={16} strokeWidth={1.75} aria-hidden />, onSelect: open(protectItems) });
+    items.push(
+      { label: draft.rich ? t("compose.toPlain") : t("compose.toRich"), icon: <Type size={16} strokeWidth={1.75} aria-hidden />, onSelect: toggleRich },
+      { label: t("compose.templates"), icon: <FileText size={16} strokeWidth={1.75} aria-hidden />, onSelect: open(templateItems) },
+    );
+    if (aiOn) items.push({ label: t("compose.writingHelp"), icon: <Sparkles size={16} strokeWidth={1.75} aria-hidden />, disabled: !dest?.provider, onSelect: open(helpItems) });
+    items.push("separator", { label: t("compose.discard"), icon: <Trash2 size={16} strokeWidth={1.75} aria-hidden />, danger: true, onSelect: onDiscard });
+    return items;
+  };
+
   const account = accounts.find((a) => a.id === draft.accountId);
   // Encrypting was chosen, but the recipients as they are now cannot all be encrypted to (a
   // recipient without a key was added): said here, before sending fails.
@@ -591,6 +627,8 @@ export function ComposeSheet({ draft, accounts, error, sending, saved, modal, on
       aria-modal={modal ? "true" : "false"}
       aria-label={t(TITLE[draft.mode])}
       data-dropping={dropping || undefined}
+      data-phone={phone || undefined}
+      data-writing={(phone && writing) || undefined}
       onKeyDown={(e) => {
         // A dialog the sheet opened (the link prompt) has its own keys.
         if ((e.target as HTMLElement).closest?.(".overlay")) return;
@@ -609,12 +647,35 @@ export function ComposeSheet({ draft, accounts, error, sending, saved, modal, on
         if (e.key === "Tab" && modal) trapFocus(e, sheet.current);
       }}
     >
-      <header className="compose-head">
-        <h2 dir="auto">{draft.subject.trim() || t(TITLE[draft.mode])}</h2>
-        <button type="button" className="icon-btn" onClick={onClose} aria-label={t("compose.close")} title={t("compose.close")}>
-          <X size={16} strokeWidth={1.75} aria-hidden />
-        </button>
-      </header>
+      {phone ? (
+        <header className="compose-head compose-bar">
+          <button type="button" className="icon-btn" onClick={onClose} aria-label={t("compose.close")}>
+            <ArrowLeft size={20} strokeWidth={1.75} aria-hidden />
+          </button>
+          <h2 dir="auto">{draft.subject.trim() || t(TITLE[draft.mode])}</h2>
+          {saved && (
+            <span className="muted compose-saved" role="status">
+              {t("compose.saved")}
+            </span>
+          )}
+          <button type="button" className="icon-btn" onClick={() => void pickFiles().then((p) => (p.length ? attach(p) : undefined))} aria-label={t("compose.attach")}>
+            <Paperclip size={20} strokeWidth={1.75} aria-hidden />
+          </button>
+          <button type="button" className="icon-btn compose-send" onClick={() => onSend(followupSecs)} disabled={sending || draft.accountId == null} aria-label={t("compose.send")}>
+            {sending ? <Spinner /> : <Send size={18} strokeWidth={1.75} aria-hidden />}
+          </button>
+          <button type="button" className="icon-btn" aria-haspopup="menu" aria-label={t("read.more")} data-compose="more" onClick={() => setMenu({ items: moreItems(), at: { x: 0, y: 0 } })}>
+            <MoreHorizontal size={20} strokeWidth={1.75} aria-hidden />
+          </button>
+        </header>
+      ) : (
+        <header className="compose-head">
+          <h2 dir="auto">{draft.subject.trim() || t(TITLE[draft.mode])}</h2>
+          <button type="button" className="icon-btn" onClick={onClose} aria-label={t("compose.close")} title={t("compose.close")}>
+            <X size={16} strokeWidth={1.75} aria-hidden />
+          </button>
+        </header>
+      )}
       <div className="compose-fields">
         {accounts.length > 1 && (
           <div className="field">
@@ -636,18 +697,29 @@ export function ComposeSheet({ draft, accounts, error, sending, saved, modal, on
           onChange={(to) => update({ to })}
           autoFocus={draft.mode === "new" || draft.mode === "forward"}
           extra={
-            <span className="field-extra">
-              {!draft.showCc && (
-                <button type="button" className="link-btn" onClick={() => set({ showCc: true })}>
-                  {t("compose.cc")}
-                </button>
-              )}
-              {!draft.showBcc && (
-                <button type="button" className="link-btn" onClick={() => set({ showBcc: true })}>
-                  {t("compose.bcc")}
-                </button>
-              )}
-            </span>
+            phone ? (
+              !draft.showCc &&
+              !draft.showBcc && (
+                <span className="field-extra">
+                  <button type="button" className="btn btn-sm btn-quiet compose-ccbcc" onClick={() => set({ showCc: true, showBcc: true })}>
+                    {t("compose.ccBcc")}
+                  </button>
+                </span>
+              )
+            ) : (
+              <span className="field-extra">
+                {!draft.showCc && (
+                  <button type="button" className="link-btn" onClick={() => set({ showCc: true })}>
+                    {t("compose.cc")}
+                  </button>
+                )}
+                {!draft.showBcc && (
+                  <button type="button" className="link-btn" onClick={() => set({ showBcc: true })}>
+                    {t("compose.bcc")}
+                  </button>
+                )}
+              </span>
+            )
           }
         />
         {draft.showCc && <AddressField label={t("compose.cc")} values={draft.cc} text={typing.cc} onText={(v) => setTyping("cc", v)} onChange={(cc) => update({ cc })} />}
@@ -657,7 +729,13 @@ export function ComposeSheet({ draft, accounts, error, sending, saved, modal, on
           <input id="compose-subject" ref={subject} className="input input-bare" dir="auto" value={draft.subject} onChange={(e) => set({ subject: e.target.value })} />
         </div>
       </div>
-      <div className="compose-body-wrap">
+      <div
+        className="compose-body-wrap"
+        onFocus={(e) => setWriting((e.target as HTMLElement).matches(".editor, .compose-body"))}
+        onBlur={(e) => {
+          if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setWriting(false);
+        }}
+      >
         {draft.rich ? (
           <Editor html={draft.html} revision={draft.revision} label={t("compose.body")} onChange={(html) => set({ html })} onTyped={typed} onKey={snippetKey} />
         ) : (
@@ -813,116 +891,98 @@ export function ComposeSheet({ draft, accounts, error, sending, saved, modal, on
           <span>{error.detail}</span>
         </div>
       )}
-      <footer className="compose-foot">
-        <span className="split-btn">
-          <button type="button" className="btn btn-primary" onClick={() => onSend(followupSecs)} disabled={sending || draft.accountId == null} title={t("compose.sendHint")}>
-            <Send size={15} strokeWidth={1.75} aria-hidden />
-            <span>{t("compose.send")}</span>
-          </button>
+      {!phone && (
+        <footer className="compose-foot">
+          <span className="split-btn">
+            <button type="button" className="btn btn-primary" onClick={() => onSend(followupSecs)} disabled={sending || draft.accountId == null} title={t("compose.sendHint")}>
+              <Send size={15} strokeWidth={1.75} aria-hidden />
+              <span>{t("compose.send")}</span>
+            </button>
+            <button
+              type="button"
+              className="btn btn-primary split-btn-more"
+              disabled={sending || draft.accountId == null}
+              aria-label={t("compose.sendLater")}
+              title={t("compose.sendLater")}
+              aria-haspopup="menu"
+              onClick={(e) => setMenu({ items: laterItems(), at: above(e.currentTarget) })}
+            >
+              <ChevronDown size={15} strokeWidth={1.75} aria-hidden />
+            </button>
+          </span>
           <button
             type="button"
-            className="btn btn-primary split-btn-more"
-            disabled={sending || draft.accountId == null}
-            aria-label={t("compose.sendLater")}
-            title={t("compose.sendLater")}
+            className={`btn btn-quiet remind-btn${remind != null ? " remind-on" : ""}`}
+            aria-pressed={remind != null}
             aria-haspopup="menu"
-            onClick={(e) => setMenu({ items: sendLaterItems(t, (at) => onSendLater(at, followupSecs), () => onSendLater(null, followupSecs)), at: above(e.currentTarget) })}
+            aria-label={remind != null ? t("compose.remindSet", { n: remind }) : t("compose.remind")}
+            title={t("compose.remind")}
+            onClick={(e) => setMenu({ items: remindItems(), at: above(e.currentTarget) })}
           >
-            <ChevronDown size={15} strokeWidth={1.75} aria-hidden />
+            <AlarmClock size={16} strokeWidth={1.75} aria-hidden />
+            {remind != null && <span>{t("compose.remindSet", { n: remind })}</span>}
           </button>
-        </span>
-        <button
-          type="button"
-          className={`btn btn-quiet remind-btn${remind != null ? " remind-on" : ""}`}
-          aria-pressed={remind != null}
-          aria-haspopup="menu"
-          aria-label={remind != null ? t("compose.remindSet", { n: remind }) : t("compose.remind")}
-          title={t("compose.remind")}
-          onClick={(e) =>
-            setMenu({
-              items: followupItems(t, remind ?? 0, (days) => setRemind(days), null, remind != null ? () => setRemind(null) : null),
-              at: above(e.currentTarget),
-            })
-          }
-        >
-          <AlarmClock size={16} strokeWidth={1.75} aria-hidden />
-          {remind != null && <span>{t("compose.remindSet", { n: remind })}</span>}
-        </button>
-        <button type="button" className="icon-btn" onClick={() => void pickFiles().then((p) => (p.length ? attach(p) : undefined))} aria-label={t("compose.attach")} title={t("compose.attach")}>
-          <Paperclip size={16} strokeWidth={1.75} aria-hidden />
-        </button>
-        {(abilities?.pgp_sign || abilities?.smime_sign || abilities?.pgp_encrypt || abilities?.smime_encrypt || protect) && (
-          <button
-            type="button"
-            className={`btn btn-quiet protect-btn${protect ? " protect-on" : ""}`}
-            data-compose="protect"
-            aria-haspopup="menu"
-            aria-pressed={!!protect}
-            aria-label={t("protect.menu")}
-            title={t("protect.menu")}
-            onClick={(e) => setMenu({ items: protectItems(), at: above(e.currentTarget) })}
-          >
-            {protect?.encrypt ? <Lock size={16} strokeWidth={1.75} aria-hidden /> : <ShieldCheck size={16} strokeWidth={1.75} aria-hidden />}
-            {protect && <span>{protect.encrypt ? t("protect.encryptedShort", { method: protect.method === "pgp" ? "OpenPGP" : "S/MIME" }) : t("protect.signedShort", { method: protect.method === "pgp" ? "OpenPGP" : "S/MIME" })}</span>}
+          <button type="button" className="icon-btn" onClick={() => void pickFiles().then((p) => (p.length ? attach(p) : undefined))} aria-label={t("compose.attach")} title={t("compose.attach")}>
+            <Paperclip size={16} strokeWidth={1.75} aria-hidden />
           </button>
-        )}
-        <button type="button" className="icon-btn" aria-pressed={draft.rich} onClick={toggleRich} aria-label={draft.rich ? t("compose.toPlain") : t("compose.toRich")} title={draft.rich ? t("compose.toPlain") : t("compose.toRich")}>
-          <Type size={16} strokeWidth={1.75} aria-hidden />
-        </button>
-        <button
-          type="button"
-          className="icon-btn"
-          data-compose="templates"
-          aria-haspopup="menu"
-          aria-label={t("compose.templates")}
-          title={t("compose.templates")}
-          onClick={(e) => {
-            const list = templates.filter((x) => x.kind === "template" && (x.account_id == null || x.account_id === draft.accountId));
-            const snippets = templates.filter((x) => x.kind === "snippet");
-            setMenu({
-              items: [
-                ...(list.length ? list.map((x) => ({ label: x.name, onSelect: () => void insertTemplate(x) })) : [{ label: t("compose.noTemplates"), onSelect: () => {}, disabled: true }]),
-                ...(snippets.length ? ["separator" as const, { heading: t("compose.snippetHint") }] : []),
-              ],
-              at: above(e.currentTarget),
-            });
-          }}
-        >
-          <FileText size={16} strokeWidth={1.75} aria-hidden />
-        </button>
-        {aiOn && (
+          {canProtect && (
+            <button
+              type="button"
+              className={`btn btn-quiet protect-btn${protect ? " protect-on" : ""}`}
+              data-compose="protect"
+              aria-haspopup="menu"
+              aria-pressed={!!protect}
+              aria-label={t("protect.menu")}
+              title={t("protect.menu")}
+              onClick={(e) => setMenu({ items: protectItems(), at: above(e.currentTarget) })}
+            >
+              {protect?.encrypt ? <Lock size={16} strokeWidth={1.75} aria-hidden /> : <ShieldCheck size={16} strokeWidth={1.75} aria-hidden />}
+              {protect && <span>{protect.encrypt ? t("protect.encryptedShort", { method: protect.method === "pgp" ? "OpenPGP" : "S/MIME" }) : t("protect.signedShort", { method: protect.method === "pgp" ? "OpenPGP" : "S/MIME" })}</span>}
+            </button>
+          )}
+          <button type="button" className="icon-btn" aria-pressed={draft.rich} onClick={toggleRich} aria-label={draft.rich ? t("compose.toPlain") : t("compose.toRich")} title={draft.rich ? t("compose.toPlain") : t("compose.toRich")}>
+            <Type size={16} strokeWidth={1.75} aria-hidden />
+          </button>
           <button
             type="button"
             className="icon-btn"
-            data-compose="help"
+            data-compose="templates"
             aria-haspopup="menu"
-            disabled={!dest?.provider}
-            aria-label={t("compose.writingHelp")}
-            title={dest?.provider ? t("compose.writingHelp") : t("ai.notAllowed")}
-            onClick={(e) =>
-              setMenu({
-                items: (Object.keys(STYLE) as WritingStyle[]).map((s) => ({ label: t(STYLE[s]), onSelect: () => writingHelp(s) })),
-                at: above(e.currentTarget),
-              })
-            }
+            aria-label={t("compose.templates")}
+            title={t("compose.templates")}
+            onClick={(e) => setMenu({ items: templateItems(), at: above(e.currentTarget) })}
           >
-            <Sparkles size={16} strokeWidth={1.75} aria-hidden />
+            <FileText size={16} strokeWidth={1.75} aria-hidden />
           </button>
-        )}
-        <span className="toolbar-gap" />
-        {saved && (
-          <span className="muted compose-saved" role="status">
-            {t("compose.saved")}
-          </span>
-        )}
-        <span className="muted compose-account">{account?.email}</span>
-        <button type="button" className="btn btn-quiet" onClick={onSaveDraft}>
-          {t("compose.saveDraft")}
-        </button>
-        <button type="button" className="icon-btn" onClick={onDiscard} aria-label={t("compose.discard")} title={t("compose.discard")}>
-          <Trash2 size={16} strokeWidth={1.75} aria-hidden />
-        </button>
-      </footer>
+          {aiOn && (
+            <button
+              type="button"
+              className="icon-btn"
+              data-compose="help"
+              aria-haspopup="menu"
+              disabled={!dest?.provider}
+              aria-label={t("compose.writingHelp")}
+              title={dest?.provider ? t("compose.writingHelp") : t("ai.notAllowed")}
+              onClick={(e) => setMenu({ items: helpItems(), at: above(e.currentTarget) })}
+            >
+              <Sparkles size={16} strokeWidth={1.75} aria-hidden />
+            </button>
+          )}
+          <span className="toolbar-gap" />
+          {saved && (
+            <span className="muted compose-saved" role="status">
+              {t("compose.saved")}
+            </span>
+          )}
+          <span className="muted compose-account">{account?.email}</span>
+          <button type="button" className="btn btn-quiet" onClick={onSaveDraft}>
+            {t("compose.saveDraft")}
+          </button>
+          <button type="button" className="icon-btn" onClick={onDiscard} aria-label={t("compose.discard")} title={t("compose.discard")}>
+            <Trash2 size={16} strokeWidth={1.75} aria-hidden />
+          </button>
+        </footer>
+      )}
       {menu && <Menu items={menu.items} at={menu.at} onClose={() => setMenu(null)} label={t("compose.sendLater")} />}
     </div>
   );

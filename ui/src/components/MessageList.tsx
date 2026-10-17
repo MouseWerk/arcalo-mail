@@ -5,6 +5,7 @@ import { displayName, listDate, now } from "../lib/format";
 import { MAX_LIST_PX, scrollWindow } from "../lib/listing";
 import { PULL_TRIGGER, pullDistance, swipeIntent, swipeOffset, swipeRemoves, swipeResult, swipeSide } from "../lib/touch";
 import type { MessageSummary, SwipeAction } from "../lib/types";
+import { Avatar } from "./Avatar";
 import { Spinner } from "./ui";
 
 export type BulkAction = "archive" | "delete" | "spam" | "read" | "unread" | "flag" | "move";
@@ -21,6 +22,8 @@ type Props = {
   /** „Auf dem Server suchen“: offered while searching; `busy` while it runs. */
   serverSearch: { busy: boolean; done: boolean } | null;
   showSnippets: boolean;
+  /** The sender's picture or initials at the start of each row (phones). */
+  avatars?: boolean;
   loading: boolean;
   emptyText: string;
   onQuery: (q: string) => void;
@@ -99,9 +102,17 @@ export function MessageList(p: Props) {
     setRowH(p.showSnippets ? tokenPx("--row-h", 76) : tokenPx("--row-h-compact", 54));
   }, [p.showSnippets, !!p.touch]);
 
+  // Touch screens: scrolling down folds the compose button to its icon, scrolling up opens it.
+  const [folded, setFolded] = useState(false);
+  const lastTop = useRef(0);
   const measure = () => {
     const el = scroller.current;
     if (!el) return;
+    if (p.touch) {
+      const down = el.scrollTop > lastTop.current;
+      if (Math.abs(el.scrollTop - lastTop.current) > 4) setFolded(down && el.scrollTop > rowH / 2);
+      lastTop.current = el.scrollTop;
+    }
     const r = scrollWindow(el.scrollTop, el.clientHeight, rowH, p.total);
     setRange((old) => (old.start === r.start && old.end === r.end && old.shift === r.shift && old.ratio === r.ratio ? old : r));
   };
@@ -244,45 +255,48 @@ export function MessageList(p: Props) {
       >
         {sw && side && <SwipeLayer action={side} m={m} dir={sw.dx < 0 ? "left" : "right"} />}
         <span className="row-body" style={sw ? { transform: `translateX(${sw.dx}px)`, transition: sw.leaving ? undefined : "none" } : undefined}>
-          <span className="row-top">
-            <span className="unread-slot">{!m.seen && <span className="unread-dot" aria-label={t("list.unread")} />}</span>
-            <bdi className="row-from">{displayName(m.from, lang)}</bdi>
-            {bundle > 1 ? (
-              <span className="thread-count" aria-label={t("inbox.bundle", { n: bundle })}>
-                {bundle}
-              </span>
-            ) : (
-              m.thread_count > 1 && (
-                <span className="thread-count" aria-label={t("list.threadCount", { n: m.thread_count })}>
-                  {m.thread_count}
+          {p.avatars && <Avatar who={m.from} className="row-avatar" />}
+          <span className="row-main">
+            <span className="row-top">
+              <span className="unread-slot">{!m.seen && <span className="unread-dot" aria-label={t("list.unread")} />}</span>
+              <bdi className="row-from">{displayName(m.from, lang)}</bdi>
+              {bundle > 1 ? (
+                <span className="thread-count" aria-label={t("inbox.bundle", { n: bundle })}>
+                  {bundle}
                 </span>
-              )
-            )}
-            <span className="row-icons">
-              {m.pinned && <Pin size={12} strokeWidth={1.75} className="pin" aria-label={t("read.pinned")} />}
-              {m.answered && <Reply size={12} strokeWidth={1.75} aria-label={t("list.answered")} />}
-              {m.has_attachments && <Paperclip size={12} strokeWidth={1.75} aria-label={t("list.attachment")} />}
-              {m.flagged && <Flag size={12} strokeWidth={1.75} className="flag" aria-label={t("list.flagged")} />}
-            </span>
-            {account && <span className="account-dot row-account" data-color={account.color} role="img" aria-label={t("inbox.account", { name: account.name })} title={account.name} />}
-            {due ? (
-              <span className="row-date row-due">
-                <Clock size={11} strokeWidth={1.75} aria-hidden />
-                {due}
+              ) : (
+                m.thread_count > 1 && (
+                  <span className="thread-count" aria-label={t("list.threadCount", { n: m.thread_count })}>
+                    {m.thread_count}
+                  </span>
+                )
+              )}
+              <span className="row-icons">
+                {m.pinned && <Pin size={12} strokeWidth={1.75} className="pin" aria-label={t("read.pinned")} />}
+                {m.answered && <Reply size={12} strokeWidth={1.75} aria-label={t("list.answered")} />}
+                {m.has_attachments && <Paperclip size={12} strokeWidth={1.75} aria-label={t("list.attachment")} />}
+                {m.flagged && <Flag size={12} strokeWidth={1.75} className="flag" aria-label={t("list.flagged")} />}
               </span>
-            ) : (
-              <span className="row-date">{listDate(m.date, today, lang)}</span>
+              {account && <span className="account-dot row-account" data-color={account.color} role="img" aria-label={t("inbox.account", { name: account.name })} title={account.name} />}
+              {due ? (
+                <span className="row-date row-due">
+                  <Clock size={11} strokeWidth={1.75} aria-hidden />
+                  {due}
+                </span>
+              ) : (
+                <span className="row-date">{listDate(m.date, today, lang)}</span>
+              )}
+            </span>
+            <span className="row-subject">
+              {m.important && <span className="important-badge">{t("list.important")}</span>}
+              <bdi>{m.subject || t("list.noSubject")}</bdi>
+            </span>
+            {p.showSnippets && (
+              <span className="row-snippet" dir="auto">
+                {m.snippet || " "}
+              </span>
             )}
           </span>
-          <span className="row-subject">
-            {m.important && <span className="important-badge">{t("list.important")}</span>}
-            <bdi>{m.subject || t("list.noSubject")}</bdi>
-          </span>
-          {p.showSnippets && (
-            <span className="row-snippet" dir="auto">
-              {m.snippet || " "}
-            </span>
-          )}
         </span>
       </div>,
     );
@@ -296,7 +310,7 @@ export function MessageList(p: Props) {
   );
 
   return (
-    <section className="list-pane" aria-label={t("list.label")}>
+    <section className="list-pane" aria-label={t("list.label")} data-folded={folded || undefined}>
       <header className="list-head">
         <div className="list-title">
           <button type="button" className="icon-btn folders-btn" onClick={p.onShowFolders} aria-label={t("nav.label")}>
@@ -400,6 +414,7 @@ export function MessageList(p: Props) {
             {rows}
           </div>
         )}
+        {p.touch && p.total > 0 && <p className="list-end muted">{p.searching ? t("list.results", { n: p.total }) : t("list.count", { n: p.total })}</p>}
         {p.loading && p.total === 0 && (
           <div className="empty">
             <Spinner label={t("list.loading")} />

@@ -175,7 +175,8 @@ export function Setup({ welcome, onDone, onCancel }: { welcome: boolean; onDone:
   const [protocol, setProtocol] = useState<"imap" | "pop3" | "jmap">("imap");
   const [pop3, setPop3] = useState<Pop3Transport | null>(null);
   const [jmapManual, setJmapManual] = useState<JmapManual>({ session_url: "", username: "", token: false });
-  const [microsoftBuilt, setMicrosoftBuilt] = useState(true);
+  // Off until the app says the build has a Microsoft client id: no sign-in offered that cannot work.
+  const [microsoftBuilt, setMicrosoftBuilt] = useState(false);
   // Each Microsoft sign-in counts up; leaving it (Back, Cancel, closing) counts up too, so a
   // browser sign-in that finishes later is dropped.
   const signInRun = useRef(0);
@@ -571,7 +572,7 @@ export function Setup({ welcome, onDone, onCancel }: { welcome: boolean; onDone:
                   {microsoftDomain ? t("ms.button") : step.kind === "failed" ? t("setup.tryAgain") : t("setup.continue")}
                 </button>
               </div>
-              {!microsoftDomain && (
+              {!microsoftDomain && microsoftBuilt && (
                 <div className="setup-other">
                   <span className="setup-or">{t("setup.or")}</span>
                   <button type="button" className="btn setup-ms" disabled={busy} onClick={() => void microsoft()}>

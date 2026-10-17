@@ -170,8 +170,7 @@ for (const size of SIZES) {
       });
       await app.browser.execute(() => document.execCommand("insertText", false, "Thanks Daniel, approved for the budget review."));
       await shot(size, tablet ? "3-compose" : "4-compose");
-      await app.click('.compose-foot [aria-label="Discard"]');
-      await app.waitUntil(async () => (await app.$$(".compose")).length === 0, 8000, "compose closed");
+      await mail.discardCompose(app, "Discard");
 
       // 5: the inbox in the dark theme.
       await setTheme("dark");

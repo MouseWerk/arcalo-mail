@@ -5,30 +5,20 @@ import android.content.Intent
 import android.content.res.Configuration
 import android.net.Uri
 import android.os.Bundle
-import android.view.View
 import android.webkit.WebView
 import androidx.activity.enableEdgeToEdge
-import androidx.core.view.ViewCompat
-import androidx.core.view.WindowInsetsCompat
 import java.security.MessageDigest
 import java.security.SecureRandom
 
 class MainActivity : TauriActivity() {
-  private var webView: WebView? = null
+  private val bars = SystemBars(this)
 
   override fun onCreate(savedInstanceState: Bundle?) {
     enableEdgeToEdge()
     super.onCreate(savedInstanceState)
-    // The app stays clear of the status bar, the navigation bar, a display cutout and the
-    // keyboard on every Android version (older WebViews report no safe-area insets), as Arcalo.
-    val content = findViewById<View>(android.R.id.content)
-    ViewCompat.setOnApplyWindowInsetsListener(content) { view, insets ->
-      val bars = insets.getInsets(
-        WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout() or WindowInsetsCompat.Type.ime()
-      )
-      view.setPadding(bars.left, bars.top, bars.right, bars.bottom)
-      WindowInsetsCompat.CONSUMED
-    }
+    // Edge to edge on every Android version: the page paints under the bars and keeps its
+    // content clear of them with the insets it is given (SystemBars.kt).
+    bars.restore()
     MailNotifier.createChannel(this)
     MailCheckWorker.schedule(this)
     takeRedirect(intent)
@@ -98,18 +88,12 @@ class MainActivity : TauriActivity() {
 
   override fun onWebViewCreate(webView: WebView) {
     super.onWebViewCreate(webView)
-    this.webView = webView
-    followFontScale()
+    bars.attach(webView)
   }
 
   override fun onConfigurationChanged(newConfig: Configuration) {
     super.onConfigurationChanged(newConfig)
-    followFontScale()
-  }
-
-  /** The system's font size (Settings → Display → Font size) for the app's text. */
-  private fun followFontScale() {
-    webView?.settings?.textZoom = (resources.configuration.fontScale * 100).toInt().coerceIn(85, 200)
+    bars.onConfigurationChanged()
   }
 
   /** The Microsoft sign-in came back (de.mousewerk.arcalo.mail://oauth?…): handed to Rust. */

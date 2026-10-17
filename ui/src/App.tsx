@@ -46,7 +46,7 @@ import { closeToast, runUndo, setUndo, showToast } from "./lib/toasts";
 import { displayName, now as clockNow, setClock } from "./lib/format";
 import { whenLabel } from "./lib/when";
 import { backStep, isTouch, layoutFor } from "./lib/touch";
-import { applyTypeScale, onVisibility, watchViewport } from "./lib/viewport";
+import { applyTypeScale, onVisibility, tellSystemBars, watchViewport } from "./lib/viewport";
 import type {
   AccountInfo,
   AppInfo,
@@ -92,7 +92,7 @@ import { ProblemCard } from "./components/Setup";
 import { Toasts } from "./components/Toasts";
 import { UpdateLayer, setBeforeRestart, startUpdates } from "./components/Updates";
 import { Outbox } from "./components/Outbox";
-import { ConfirmDialog, Dialog, Menu, PromptDialog, type MenuItem } from "./components/ui";
+import { ConfirmDialog, Dialog, LAYERS_EVENT, Menu, PromptDialog, closeTopLayer, openLayers, type MenuItem } from "./components/ui";
 import { PassphraseDialog } from "./components/Meeting";
 
 /** On a phone one pane is shown at a time; `view` says which (app.css, narrow layout). On a
@@ -272,6 +272,7 @@ export function App() {
   useEffect(() => {
     if (!settings) return;
     rememberSplash({ off: !settings.startup_animation, bg: cssHex("--bg-app"), ink: cssHex("--text"), seal: cssHex("--accent") });
+    tellSystemBars(theme !== "light", cssHex("--bg-app"));
   }, [settings?.startup_animation, theme]);
 
   const loadAccounts = useCallback(async () => {
@@ -328,6 +329,12 @@ export function App() {
     applyTypeScale(root);
     return watchViewport(root);
   }, [touch]);
+
+  // The layout on <html> too: what the app shows outside its panes (the setup, menus as bottom
+  // sheets, dialogs) follows it (app.css, components/ui.tsx).
+  useLayoutEffect(() => {
+    document.documentElement.dataset.layout = layout;
+  }, [layout]);
 
   // Hidden or shown again: a phone closes or opens its connections; back in front after a
   // while, the app checks for mail.
@@ -1646,8 +1653,9 @@ export function App() {
   syncBack.current = () => {
     if (!touch) return;
     const marked = (window.history.state as { arcaloBack?: boolean } | null)?.arcaloBack === true;
-    if (stepRef.current && !marked) window.history.pushState({ arcaloBack: true }, "");
-    else if (!stepRef.current && marked) {
+    const way = stepRef.current || openLayers() > 0;
+    if (way && !marked) window.history.pushState({ arcaloBack: true }, "");
+    else if (!way && marked) {
       ownBacks.current++;
       window.history.back();
     }
@@ -1668,10 +1676,17 @@ export function App() {
         syncBack.current();
         return;
       }
+      // A menu, sheet or dialog over the screen closes first.
+      if (closeTopLayer()) return;
       goBack.current();
     };
+    const onLayers = () => syncBack.current();
     window.addEventListener("popstate", onPop);
-    return () => window.removeEventListener("popstate", onPop);
+    window.addEventListener(LAYERS_EVENT, onLayers);
+    return () => {
+      window.removeEventListener("popstate", onPop);
+      window.removeEventListener(LAYERS_EVENT, onLayers);
+    };
   }, [touch]);
   useEffect(() => syncBack.current(), [touch, step, settingsNav]);
 
@@ -1878,6 +1893,7 @@ export function App() {
             onShowFolders={() => setView("folders")}
             request={calRequest}
             onRequestTaken={() => setCalRequest(null)}
+            phone={layout === "phone"}
           />
         ) : !results && place.kind === "ask" ? (
           <AskView on={aiOn} onOpen={(s) => openById(s.message_id)} onShowFolders={() => setView("folders")} onSettings={() => setSettingsOpen("ai")} />
@@ -1933,11 +1949,19 @@ export function App() {
             searching={results !== null}
             serverSearch={results !== null ? server : null}
             showSnippets={settings.show_snippets}
+            avatars={layout === "phone"}
             loading={!results && list.loading}
             emptyText={emptyText}
             head={
               inInbox ? (
-                <InboxHead tab={tab} counts={counts} focus={focus} onTab={setTab} onFocusEnd={() => updateSettings({ focus: false })} />
+                <InboxHead
+                  tab={tab}
+                  counts={counts}
+                  focus={focus}
+                  onTab={setTab}
+                  onFocusEnd={() => updateSettings({ focus: false })}
+                  onFocus={layout === "phone" ? () => updateSettings({ focus: true }) : undefined}
+                />
               ) : timeList && placeNote ? (
                 <p className="muted smart-note">{placeNote}</p>
               ) : undefined
@@ -1997,7 +2021,7 @@ export function App() {
             listRef={listRef}
             touch={touch ? { left: settings.swipe_left, right: settings.swipe_right, onSwipe: (m, a) => void swiped(m, a), onRefresh: refresh } : undefined}
             extra={
-              touch && layout !== "desktop" ? (
+              touch && layout !== "desktop" && !results ? (
                 <button type="button" className="compose-fab" onClick={() => newMessage()} aria-label={t("nav.compose")}>
                   <PenSquare size={20} strokeWidth={1.75} aria-hidden />
                   <span>{t("nav.compose")}</span>
@@ -2073,6 +2097,7 @@ export function App() {
           sending={sending}
           saved={isSaved(compose)}
           modal={layout === "phone"}
+          phone={layout === "phone"}
           onChange={(d) => setCompose((c) => (c && c.uid === d.uid ? d : c))}
           onSend={(followupSecs) => void send(followupSecs)}
           onSendLater={(at, followupSecs) => (at == null ? setWhen({ kind: "send", followupSecs }) : void sendLater(at, followupSecs))}

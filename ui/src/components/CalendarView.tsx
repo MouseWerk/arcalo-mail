@@ -108,6 +108,8 @@ type Props = {
   /** Open on an appointment or a day, or with a new appointment's draft (the assistant's), once. */
   request?: CalendarRequest | null;
   onRequestTaken?: () => void;
+  /** A phone: one day, the list or the month; the weeks need a wider screen. */
+  phone?: boolean;
 };
 
 function IconBtn({ icon: Icon, label, onClick, className, disabled, pressed }: { icon: typeof X; label: string; onClick: (e: React.MouseEvent<HTMLButtonElement>) => void; className?: string; disabled?: boolean; pressed?: boolean }) {
@@ -118,10 +120,12 @@ function IconBtn({ icon: Icon, label, onClick, className, disabled, pressed }: {
   );
 }
 
-export function CalendarView({ settings, onSettings, onShowFolders, request, onRequestTaken }: Props) {
+export function CalendarView({ settings, onSettings, onShowFolders, request, onRequestTaken, phone }: Props) {
   const t = useT();
   const cal = settings.calendar;
-  const [view, setViewState] = useState<CalView>(() => stored("arcalo-mail.calendar.view", ["day", "workweek", "week", "month", "agenda"] as const, "workweek"));
+  const [chosen, setViewState] = useState<CalView>(() => stored("arcalo-mail.calendar.view", ["day", "workweek", "week", "month", "agenda"] as const, "workweek"));
+  // On a phone a week shows as its day.
+  const view: CalView = phone && (chosen === "week" || chosen === "workweek") ? "day" : chosen;
   const [anchor, setAnchorState] = useState(() => session.anchor ?? clockNow());
   const setAnchor = (next: Date | ((d: Date) => Date)) =>
     setAnchorState((d) => {
@@ -351,7 +355,7 @@ export function CalendarView({ settings, onSettings, onShowFolders, request, onR
 
   const errors = overview?.sources.filter((x) => x.error) ?? [];
   const title = rangeTitle(view, range, anchor);
-  const viewOptions = (["day", "workweek", "week", "month", "agenda"] as CalView[]).map((v) => [v, t(VIEW_LABELS[v])] as [CalView, string]);
+  const viewOptions = ((phone ? ["day", "agenda", "month"] : ["day", "workweek", "week", "month", "agenda"]) as CalView[]).map((v) => [v, t(VIEW_LABELS[v])] as [CalView, string]);
   const writable = calendars.filter((c) => c.writable && c.kind !== "ics" && !c.hidden);
 
   return (

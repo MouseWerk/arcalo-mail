@@ -228,7 +228,11 @@ The same UI, store, commands and core. What differs:
 - **UI.** `lib/touch.ts` picks the layout (phone: one pane; tablet: list and message, folders in a drawer;
   desktop), the swipes, pull to refresh and what Back does; `lib/viewport.ts` follows the keyboard (visual viewport),
   iOS Dynamic Type and the app's visibility. Touch screens get 44 px targets and one step larger type; the safe areas
-  come from `env(safe-area-inset-*)` on iOS and from the activity's padding on Android.
+  come from `env(safe-area-inset-*)` on iOS. Android draws the app edge to edge: `SystemBars.kt` hands the status bar,
+  navigation bar, cutout and keyboard sizes and the system font size to the page as `--sat`/`--sar`/`--sab`/`--sal`,
+  `--ime` and `--type-scale` (read at start through `ArcaloSystemBars`, pushed on every change), shrinks the web view
+  above the keyboard, and takes the page's theme back for the bars' icon colors and the window behind the page at the
+  next start. On phones menus and dialogs are sheets from the bottom edge, and Back closes the topmost first.
 
 Release steps for the stores: [release-mobile.md](release-mobile.md).
 

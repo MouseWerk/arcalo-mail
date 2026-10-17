@@ -5,6 +5,37 @@ import { useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefO
 import { useT } from "../lib/i18n";
 
 /** A modal dialog: a scrim, focus inside, Esc and the close button close it. */
+// Sheets, menus and dialogs over a screen: Android's Back closes the topmost of them first
+// (App.tsx keeps a history entry while one is open).
+const backLayers: { close: () => void }[] = [];
+export const LAYERS_EVENT = "arcalo-layers";
+
+/** How many layers are open. */
+export const openLayers = () => backLayers.length;
+
+/** Closes the topmost layer; false when none is open. */
+export function closeTopLayer(): boolean {
+  const top = backLayers[backLayers.length - 1];
+  if (!top) return false;
+  top.close();
+  return true;
+}
+
+function useBackLayer(close: () => void) {
+  const ref = useRef(close);
+  ref.current = close;
+  useEffect(() => {
+    const layer = { close: () => ref.current() };
+    backLayers.push(layer);
+    window.dispatchEvent(new Event(LAYERS_EVENT));
+    return () => {
+      const i = backLayers.indexOf(layer);
+      if (i >= 0) backLayers.splice(i, 1);
+      window.dispatchEvent(new Event(LAYERS_EVENT));
+    };
+  }, []);
+}
+
 export function Dialog({
   title,
   description,
@@ -27,6 +58,7 @@ export function Dialog({
 }) {
   const t = useT();
   const ref = useRef<HTMLDivElement>(null);
+  useBackLayer(onClose);
   useEffect(() => {
     const before = document.activeElement as HTMLElement | null;
     const first = ref.current?.querySelector<HTMLElement>("[autofocus], input, select, textarea, button:not(.dialog-close)");
@@ -249,14 +281,19 @@ export type MenuItem =
 export function Menu({ items, at, onClose, label }: { items: MenuItem[]; at: { x: number; y: number }; onClose: () => void; label: string }) {
   const ref = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState(at);
+  // On a phone a menu is a sheet from the bottom edge, in reach of the thumb (app.css).
+  const [sheet] = useState(() => typeof document !== "undefined" && document.documentElement.dataset.layout === "phone");
   useRestoreFocus(ref);
+  useBackLayer(onClose);
   useLayoutEffect(() => {
     const el = ref.current;
     if (!el) return;
-    const r = el.getBoundingClientRect();
-    setPos({ x: Math.min(at.x, window.innerWidth - r.width - 8), y: Math.min(at.y, window.innerHeight - r.height - 8) });
-    el.querySelector<HTMLElement>("[role^='menuitem']:not([disabled])")?.focus();
-  }, [at]);
+    if (!sheet) {
+      const r = el.getBoundingClientRect();
+      setPos({ x: Math.min(at.x, window.innerWidth - r.width - 8), y: Math.min(at.y, window.innerHeight - r.height - 8) });
+    }
+    el.querySelector<HTMLElement>("[role^='menuitem']:not([disabled])")?.focus({ preventScroll: true });
+  }, [at, sheet]);
   useEffect(() => {
     const close = (e: MouseEvent) => {
       if (!ref.current?.contains(e.target as Node)) onClose();
@@ -275,61 +312,64 @@ export function Menu({ items, at, onClose, label }: { items: MenuItem[]; at: { x
     list[(i + dir + list.length) % list.length]?.focus();
   };
   return (
-    <div
-      ref={ref}
-      className="menu"
-      role="menu"
-      aria-label={label}
-      style={{ left: pos.x, top: pos.y }}
-      onKeyDown={(e) => {
-        if (e.key === "ArrowDown") {
-          e.preventDefault();
-          move(1);
-        } else if (e.key === "ArrowUp") {
-          e.preventDefault();
-          move(-1);
-        } else if (e.key === "Home" || e.key === "End") {
-          e.preventDefault();
-          const list = menuItems();
-          (e.key === "Home" ? list[0] : list[list.length - 1])?.focus();
-        } else if (e.key === "Escape") {
-          e.stopPropagation();
-          onClose();
-        } else if (e.key === "Tab") {
-          // Tab leaves the menu: it closes, the focus goes back to what opened it.
-          e.preventDefault();
-          onClose();
-        }
-      }}
-    >
-      {items.map((it, i) =>
-        it === "separator" ? (
-          <div key={i} className="menu-sep" role="separator" />
-        ) : "heading" in it ? (
-          <div key={i} className="menu-heading" role="presentation">
-            {it.heading}
-          </div>
-        ) : (
-          <button
-            key={i}
-            type="button"
-            role={it.checked === undefined ? "menuitem" : "menuitemradio"}
-            aria-checked={it.checked}
-            className={`menu-item${it.danger ? " menu-danger" : ""}`}
-            disabled={it.disabled}
-            onClick={() => {
-              onClose();
-              it.onSelect();
-            }}
-          >
-            {it.icon}
-            <span className="menu-label">{it.label}</span>
-            {it.hint && <span className="menu-hint">{it.hint}</span>}
-            {it.checked && <Check size={14} strokeWidth={2} aria-hidden className="menu-check" />}
-          </button>
-        ),
-      )}
-    </div>
+    <>
+      {sheet && <div className="sheet-scrim" aria-hidden />}
+      <div
+        ref={ref}
+        className={sheet ? "menu menu-sheet" : "menu"}
+        role="menu"
+        aria-label={label}
+        style={sheet ? undefined : { left: pos.x, top: pos.y }}
+        onKeyDown={(e) => {
+          if (e.key === "ArrowDown") {
+            e.preventDefault();
+            move(1);
+          } else if (e.key === "ArrowUp") {
+            e.preventDefault();
+            move(-1);
+          } else if (e.key === "Home" || e.key === "End") {
+            e.preventDefault();
+            const list = menuItems();
+            (e.key === "Home" ? list[0] : list[list.length - 1])?.focus();
+          } else if (e.key === "Escape") {
+            e.stopPropagation();
+            onClose();
+          } else if (e.key === "Tab") {
+            // Tab leaves the menu: it closes, the focus goes back to what opened it.
+            e.preventDefault();
+            onClose();
+          }
+        }}
+      >
+        {items.map((it, i) =>
+          it === "separator" ? (
+            <div key={i} className="menu-sep" role="separator" />
+          ) : "heading" in it ? (
+            <div key={i} className="menu-heading" role="presentation">
+              {it.heading}
+            </div>
+          ) : (
+            <button
+              key={i}
+              type="button"
+              role={it.checked === undefined ? "menuitem" : "menuitemradio"}
+              aria-checked={it.checked}
+              className={`menu-item${it.danger ? " menu-danger" : ""}`}
+              disabled={it.disabled}
+              onClick={() => {
+                onClose();
+                it.onSelect();
+              }}
+            >
+              {it.icon}
+              <span className="menu-label">{it.label}</span>
+              {it.hint && <span className="menu-hint">{it.hint}</span>}
+              {it.checked && <Check size={14} strokeWidth={2} aria-hidden className="menu-check" />}
+            </button>
+          ),
+        )}
+      </div>
+    </>
   );
 }
 
@@ -354,5 +394,10 @@ export function Segmented<T extends string>({ value, options, onChange, label }:
 }
 
 export function Spinner({ label }: { label?: string }) {
-  return <span className="spinner" role={label ? "status" : undefined} aria-label={label} />;
+  return (
+    <svg className="spinner" viewBox="0 0 16 16" width="16" height="16" role={label ? "status" : undefined} aria-label={label} aria-hidden={label ? undefined : true} focusable="false">
+      <circle className="spinner-track" cx="8" cy="8" r="7" />
+      <path className="spinner-arc" d="M8 1a7 7 0 0 1 7 7" />
+    </svg>
+  );
 }

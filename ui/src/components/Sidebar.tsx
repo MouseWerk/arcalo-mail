@@ -55,6 +55,17 @@ export function folderLabel(m: Mailbox, t: ReturnType<typeof useT>): string {
   return parts[parts.length - 1];
 }
 
+/** The name in an account's list: a folder of its own that is called like one of the account's
+ *  special folders (Gmail's „[Gmail]/Entwürfe“ shows as „Entwürfe“, and a label „Entwürfe“ may
+ *  exist too) is marked as a folder, so the two are told apart. */
+export function listLabel(m: Mailbox, all: Mailbox[], t: ReturnType<typeof useT>): string {
+  const name = folderLabel(m, t);
+  if (m.role) return name;
+  const key = name.trim().toLowerCase();
+  const taken = all.some((o) => o.role && o.id !== m.id && listedFolder(o) && folderLabel(o, t).trim().toLowerCase() === key);
+  return taken ? t("folder.sameName", { name }) : name;
+}
+
 export function folderIcon(m: Mailbox): IconType {
   if (!m.role && m.name === SCREENED_FOLDER) return ShieldOff;
   return m.role ? ROLE[m.role].icon : Folder;
@@ -96,7 +107,7 @@ function AccountStatusLine({ a, onSignIn, onSync }: { a: AccountInfo; onSignIn: 
     return (
       <div className="account-status account-status-alert" role="status">
         <CircleAlert size={14} strokeWidth={1.75} aria-hidden />
-        <span>{t("nav.signInNeeded")}</span>
+        <span className="account-status-text">{t("nav.signInNeeded")}</span>
         <button type="button" className="link-btn" onClick={onSignIn}>
           {t("nav.signIn")}
         </button>
@@ -106,7 +117,7 @@ function AccountStatusLine({ a, onSignIn, onSync }: { a: AccountInfo; onSignIn: 
     return (
       <div className="account-status" role="status" title={a.status?.error ?? undefined}>
         <WifiOff size={14} strokeWidth={1.75} aria-hidden />
-        <span>{s.state === "retrying" ? t("nav.retrying", { n: s.in_secs }) : t("nav.offline")}</span>
+        <span className="account-status-text">{s.state === "retrying" ? t("nav.retrying", { n: s.in_secs }) : t("nav.offline")}</span>
         <button type="button" className="icon-btn icon-btn-xs" onClick={onSync} aria-label={t("nav.retryNow")} title={t("nav.retryNow")}>
           <RefreshCw size={12} strokeWidth={1.75} aria-hidden />
         </button>
@@ -115,7 +126,7 @@ function AccountStatusLine({ a, onSignIn, onSync }: { a: AccountInfo; onSignIn: 
   return (
     <div className="account-status" role="status">
       <Spinner />
-      <span>{s.state === "connecting" ? t("nav.connecting") : t("nav.syncing")}</span>
+      <span className="account-status-text">{s.state === "connecting" ? t("nav.connecting") : t("nav.syncing")}</span>
     </div>
   );
 }
@@ -224,7 +235,7 @@ export function Sidebar({
                         }}
                       >
                         <Icon size={16} strokeWidth={1.75} aria-hidden />
-                        <span className="folder-name">{folderLabel(m, t)}</span>
+                        <span className="folder-name">{listLabel(m, mailboxes[a.id] ?? [], t)}</span>
                         {m.sync_error && (
                           <span className="folder-alert" title={t("folder.syncError", { error: m.sync_error })} aria-label={t("folder.syncError", { error: m.sync_error })}>
                             <CircleAlert size={14} strokeWidth={1.75} aria-hidden />

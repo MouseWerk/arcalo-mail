@@ -143,6 +143,13 @@ kbd {
   background: var(--accent-fill);
   opacity: 0.9;
 }
+/* A primary button that cannot be pressed yet: neutral and readable, not a faded accent. */
+.btn-primary:disabled {
+  border-color: transparent;
+  background: var(--bg-active);
+  color: var(--text-3);
+  opacity: 1;
+}
 .btn-quiet {
   border-color: transparent;
   background: transparent;
@@ -501,17 +508,35 @@ kbd {
   box-shadow: var(--shadow-sm);
 }
 
-/* ---- spinner */
+/* ---- spinner
+
+   An SVG ring of a fixed size: no selector for spans or flex items of its container can stretch
+   it, and it turns around its own middle in every engine (WebKitGTK, Android's WebView, WKWebView). */
 
 .spinner {
   display: inline-block;
   flex: none;
   width: var(--icon-sm);
+  min-width: var(--icon-sm);
   height: var(--icon-sm);
-  border: 2px solid var(--border-strong);
-  border-top-color: var(--text-2);
-  border-radius: var(--r-pill);
+  overflow: visible;
+  vertical-align: middle;
+  transform-box: fill-box;
+  transform-origin: center;
   animation: spin var(--dur-spin) linear infinite;
+}
+.spinner circle,
+.spinner path {
+  fill: none;
+  stroke-width: 2px;
+  vector-effect: non-scaling-stroke;
+}
+.spinner-track {
+  stroke: var(--border-strong);
+}
+.spinner-arc {
+  stroke: var(--text-2);
+  stroke-linecap: round;
 }
 
 /* ---- toasts */
@@ -519,7 +544,7 @@ kbd {
 .toasts {
   position: fixed;
   left: 50%;
-  bottom: var(--sp-5);
+  bottom: calc(var(--sp-5) + var(--safe-bottom));
   z-index: var(--z-toast);
   display: grid;
   gap: var(--sp-2);

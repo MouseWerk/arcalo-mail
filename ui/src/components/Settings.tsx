@@ -632,7 +632,7 @@ export function SettingsView({ settings, accounts, info, section, onSection, onC
               </button>
             )}
           </div>
-          {SECTIONS.map(([id, label, Icon]) => (
+          {SECTIONS.filter(([id]) => !(phone && id === "shortcuts")).map(([id, label, Icon]) => (
             <button
               key={id}
               type="button"

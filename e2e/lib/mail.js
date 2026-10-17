@@ -153,3 +153,15 @@ export async function openSettings(app, section) {
   await app.waitFor(".settings-nav");
   await clickText(app, ".settings-nav-item", section);
 }
+
+/** Discards the message being written: the footer's button, or on a phone „More“, then the
+ *  entry of that name. */
+export async function discardCompose(app, label) {
+  if ((await app.$$(".compose [data-compose='more']")).length) {
+    await app.click(".compose [data-compose='more']");
+    await clickText(app, ".menu-sheet .menu-item .menu-label", label);
+  } else {
+    await app.click(`.compose-foot [aria-label="${label}"]`);
+  }
+  await app.waitUntil(async () => (await app.$$(".compose")).length === 0, 8000, "compose closed");
+}

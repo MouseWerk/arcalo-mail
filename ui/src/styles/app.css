@@ -98,12 +98,16 @@
   color: var(--text-3);
   font-size: var(--fs-xs);
 }
-.account-status span {
+.account-status-text {
   flex: 1;
   min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .account-status .spinner {
   width: var(--sp-3);
+  min-width: var(--sp-3);
   height: var(--sp-3);
 }
 .account-status-alert {
@@ -294,13 +298,20 @@
 }
 .row-body {
   display: flex;
-  flex-direction: column;
-  justify-content: center;
-  gap: var(--sp-half);
+  align-items: center;
+  gap: var(--sp-3);
   height: 100%;
   padding: 0 var(--sp-3) 0 var(--sp-2);
   border-radius: inherit;
   transition: transform var(--dur) var(--ease-out);
+}
+.row-main {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  justify-content: center;
+  gap: var(--sp-half);
+  min-width: 0;
 }
 .row:hover {
   background: var(--bg-hover);
@@ -1055,13 +1066,16 @@
 .setup {
   flex: 1;
   display: grid;
-  place-items: center;
   min-height: 0;
   overflow: auto;
   padding: var(--sp-6);
 }
+/* Centered while it fits; a taller card starts at the top and scrolls (a centered grid item
+   taller than its container would be cut off at the top). */
+.setup-card {
+  margin: auto;
+}
 .settings .setup {
-  place-items: start stretch;
   padding: 0;
 }
 .setup-card {
@@ -1075,6 +1089,8 @@
 }
 .settings .setup-card {
   width: 100%;
+  margin: 0;
+  align-self: start;
   box-shadow: none;
   border: 1px solid var(--border);
 }
@@ -3298,8 +3314,19 @@ button.rule-text:hover {
   .rule-line .input {
     flex: 1 1 100%;
   }
+  /* The remove button next to the first field, the rest of the condition below. */
+  .rule-line > * {
+    order: 2;
+  }
+  .rule-line > :first-child {
+    order: 0;
+    flex-basis: calc(100% - var(--touch-min) - var(--sp-2));
+  }
+  .rule-line:not(:has(> .icon-btn)) > :first-child {
+    flex-basis: 100%;
+  }
   .rule-line > .icon-btn {
-    margin-left: auto;
+    order: 1;
   }
   .rule-tools .select {
     flex: 1 1 100%;
@@ -3743,3 +3770,456 @@ button.rule-text:hover {
 .app[data-layout="phone"] .compose-foot .btn { white-space: nowrap; }
 .app[data-layout="phone"] .compose-foot .toolbar-gap { flex-basis: 100%; height: 0; }
 .app[data-layout="phone"] .compose-foot .compose-account + .btn { margin-left: auto; }
+
+/* ---- phones: menus as bottom sheets (components/ui.tsx), in reach of the thumb */
+
+.sheet-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: calc(var(--z-menu) - 1);
+  background: var(--scrim);
+  animation: fade-in var(--dur) var(--ease-out);
+}
+.menu-sheet {
+  top: auto;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  min-width: 0;
+  max-height: min(80%, calc(var(--app-h, 100dvh) - var(--safe-top) - var(--sp-8)));
+  padding: var(--sp-3) calc(var(--sp-2) + var(--safe-right)) calc(var(--sp-3) + var(--safe-bottom)) calc(var(--sp-2) + var(--safe-left));
+  border-radius: var(--r-xl) var(--r-xl) 0 0;
+  box-shadow: var(--shadow-lg);
+  animation: sheet-up var(--dur) var(--ease-out);
+}
+.menu-sheet .menu-item {
+  height: auto;
+  min-height: var(--touch-row);
+  padding: 0 var(--sp-3);
+  font-size: var(--fs-md);
+  white-space: normal;
+}
+.menu-sheet .menu-heading {
+  padding: var(--sp-2) var(--sp-3) var(--sp-1);
+}
+@keyframes sheet-up {
+  from {
+    transform: translateY(100%);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .menu-sheet,
+  .sheet-scrim {
+    animation: none;
+  }
+}
+
+/* ---- phones: the setup over the whole screen, clear of the system bars */
+
+@media (max-width: 720px) {
+  .setup-welcome {
+    padding: 0;
+  }
+  .setup-welcome .setup-card {
+    width: 100%;
+    min-height: 100%;
+    margin: 0;
+    border-radius: 0;
+    box-shadow: none;
+    align-content: start;
+  }
+  .setup-welcome .setup-intro {
+    gap: var(--sp-2);
+    padding: calc(var(--sp-6) + var(--safe-top)) calc(var(--sp-4) + var(--safe-right)) var(--sp-5) calc(var(--sp-4) + var(--safe-left));
+    border-bottom: 0;
+    background: var(--bg-canvas);
+  }
+  .setup-welcome .setup-intro h1 {
+    font-size: var(--fs-xl);
+  }
+  .setup-welcome .setup-points {
+    margin-top: var(--sp-2);
+  }
+  .setup-welcome .setup-form {
+    padding: var(--sp-2) calc(var(--sp-4) + var(--safe-right)) calc(var(--sp-6) + var(--safe-bottom)) calc(var(--sp-4) + var(--safe-left));
+  }
+  .setup-welcome .setup-title {
+    padding-top: var(--sp-4);
+    border-top: 1px solid var(--border);
+  }
+  .setup-actions {
+    flex-wrap: wrap;
+  }
+  .setup-welcome .setup-actions .btn-primary {
+    flex: 1 1 100%;
+    order: -1;
+    height: var(--touch-row);
+  }
+  .setup-welcome .setup-actions .btn-quiet {
+    flex: 1 1 100%;
+  }
+  .setup-welcome .setup-actions .toolbar-gap {
+    display: none;
+  }
+}
+
+/* ---- phones: the list as a phone's mail app shows it
+
+   A large title with the folders button, a filled search field, the tabs as chips in a row that
+   scrolls sideways, rows from edge to edge with the sender's picture, and a compose button that
+   folds to its icon while the list scrolls down. The count of messages sits at the end of the
+   list instead of the header. */
+
+.app[data-layout="phone"] .list-head {
+  gap: var(--sp-2);
+  padding: calc(var(--sp-1) + var(--safe-top)) var(--sp-4) var(--sp-2);
+  border-bottom: 0;
+}
+.app[data-layout="phone"] .list-title {
+  gap: var(--sp-1);
+  margin-left: calc(-1 * var(--sp-3));
+  min-height: var(--toolbar-h);
+}
+.app[data-layout="phone"] .list-count,
+.app[data-layout="phone"] .focus-btn {
+  display: none;
+}
+.app[data-layout="phone"] .search-input {
+  height: var(--ctl-md);
+  border-color: transparent;
+  border-radius: var(--r-md);
+  background: var(--bg-active);
+}
+.inbox-chips {
+  display: flex;
+  gap: var(--sp-2);
+  margin: 0 calc(-1 * var(--sp-4));
+  padding: var(--sp-1) var(--sp-4);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.inbox-chips::-webkit-scrollbar {
+  display: none;
+}
+.inbox-chips .inbox-tabs {
+  gap: var(--sp-2);
+  margin: 0;
+  padding: 0;
+  overflow: visible;
+}
+.app[data-layout="phone"] .inbox-tab {
+  height: var(--ctl-md);
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+}
+.app[data-layout="phone"] .inbox-tab[aria-selected="true"] {
+  border-color: transparent;
+}
+.app[data-layout="phone"] .inbox-tab .inbox-tab-label {
+  display: inline;
+}
+.app[data-layout="phone"] .row {
+  left: 0;
+  right: 0;
+  border-radius: 0;
+}
+.app[data-layout="phone"] .row-body {
+  padding: 0 calc(var(--sp-4)) 0 var(--sp-4);
+}
+.row-avatar {
+  width: var(--avatar-row);
+  height: var(--avatar-row);
+  font-size: var(--fs-sm);
+}
+.app[data-layout="phone"] .unread-slot {
+  position: absolute;
+  top: 50%;
+  left: var(--sp-1);
+  width: var(--dot);
+  height: var(--dot);
+  transform: translateY(-50%);
+}
+.app[data-layout="phone"] .row-subject,
+.app[data-layout="phone"] .row-snippet {
+  margin-left: 0;
+}
+.list-end {
+  margin: 0;
+  padding: var(--sp-4) var(--sp-4) 0;
+  font-size: var(--fs-xs);
+  text-align: center;
+}
+.app[data-touch]:not([data-layout="desktop"]) .compose-fab {
+  justify-content: center;
+  min-width: var(--fab-h);
+  transition:
+    padding var(--dur) var(--ease-out),
+    gap var(--dur) var(--ease-out);
+}
+.app[data-touch]:not([data-layout="desktop"]) .list-pane[data-folded] .compose-fab {
+  gap: 0;
+  padding: 0;
+}
+.list-pane[data-folded] .compose-fab span {
+  display: none;
+}
+
+/* ---- phones: writing (components/ComposeSheet.tsx, `phone`)
+
+   An app bar at the top: back (the draft is kept), the title, „Gespeichert“, attach, send and a
+   „more“ sheet with the rest. The formatting bar sits over the keyboard while the text has the
+   caret, and is gone otherwise. */
+
+.app[data-touch] .compose-bar {
+  gap: var(--sp-1);
+  min-height: calc(var(--toolbar-h) + var(--safe-top));
+  padding: var(--safe-top) calc(var(--sp-1) + var(--safe-right)) 0 calc(var(--sp-1) + var(--safe-left));
+  border-bottom: 1px solid var(--border);
+}
+.compose-bar h2 {
+  flex: 1;
+  margin-left: var(--sp-1);
+}
+.compose-bar .compose-saved {
+  margin: 0 var(--sp-1);
+}
+.compose-send {
+  border-radius: var(--r-pill);
+  background: var(--accent-fill);
+  color: var(--on-accent);
+}
+.app[data-touch] .compose-send:hover,
+.compose-send:hover {
+  background: var(--accent-fill);
+  color: var(--on-accent);
+}
+.compose-send:disabled {
+  background: var(--bg-active);
+  color: var(--text-3);
+  opacity: 1;
+}
+.compose[data-phone] .compose-fields {
+  padding: 0 calc(var(--sp-4) + var(--safe-right)) 0 calc(var(--sp-4) + var(--safe-left));
+}
+.compose[data-phone] .field {
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: var(--sp-3);
+  min-height: var(--touch-row);
+  font-size: var(--fs-md);
+}
+.compose[data-phone] .field .select {
+  min-width: 0;
+}
+.compose-ccbcc {
+  color: var(--text-3);
+}
+.compose[data-phone] .format-bar {
+  display: none;
+  order: 2;
+  flex: none;
+  overflow-x: auto;
+  padding: var(--sp-half) calc(var(--sp-2) + var(--safe-right)) calc(var(--sp-half) + var(--safe-bottom)) calc(var(--sp-2) + var(--safe-left));
+  border-top: 1px solid var(--border);
+  border-bottom: 0;
+  background: var(--bg-raised);
+  scrollbar-width: none;
+}
+.compose[data-phone][data-writing] .format-bar {
+  display: flex;
+}
+.compose[data-phone] .editor,
+.compose[data-phone] .compose-body {
+  padding: var(--sp-4) calc(var(--sp-4) + var(--safe-right)) calc(var(--sp-4) + var(--safe-bottom)) calc(var(--sp-4) + var(--safe-left));
+}
+.compose[data-phone][data-writing] .editor,
+.compose[data-phone][data-writing] .compose-body {
+  padding-bottom: var(--sp-4);
+}
+.compose[data-phone] .compose-attachments {
+  order: 1;
+  padding: var(--sp-2) calc(var(--sp-4) + var(--safe-right)) calc(var(--sp-2) + var(--safe-bottom)) calc(var(--sp-4) + var(--safe-left));
+}
+
+/* ---- phones: dialogs as sheets from the bottom edge, clear of the system bars */
+
+:root[data-layout="phone"] .overlay:not(.settings-overlay) {
+  place-items: end stretch;
+  padding: calc(var(--sp-6) + var(--safe-top)) 0 0;
+}
+:root[data-layout="phone"] .dialog {
+  width: 100%;
+  max-height: calc(var(--app-h, 100dvh) - var(--safe-top) - var(--sp-6));
+  border-radius: var(--r-xl) var(--r-xl) 0 0;
+  animation: sheet-up var(--dur) var(--ease-out);
+}
+:root[data-layout="phone"] .dialog-head {
+  padding: var(--sp-3) calc(var(--sp-2) + var(--safe-right)) 0 calc(var(--sp-4) + var(--safe-left));
+}
+:root[data-layout="phone"] .dialog-body {
+  padding: var(--sp-4) calc(var(--sp-4) + var(--safe-right)) var(--sp-4) calc(var(--sp-4) + var(--safe-left));
+}
+:root[data-layout="phone"] .dialog-body:last-child {
+  padding-bottom: calc(var(--sp-4) + var(--safe-bottom));
+}
+:root[data-layout="phone"] .dialog-foot {
+  padding: var(--sp-3) calc(var(--sp-4) + var(--safe-right)) calc(var(--sp-3) + var(--safe-bottom)) calc(var(--sp-4) + var(--safe-left));
+}
+:root[data-layout="phone"] .dialog-foot .btn {
+  flex: 1;
+  height: var(--touch-row);
+}
+@media (prefers-reduced-motion: reduce) {
+  :root[data-layout="phone"] .dialog {
+    animation: none;
+  }
+}
+:root[data-layout="phone"] .palette-overlay {
+  place-items: start stretch;
+  padding: calc(var(--sp-2) + var(--safe-top)) var(--sp-2) 0;
+}
+
+/* ---- phones: the settings as a grouped list, a section as a page with a back button */
+
+.app[data-layout="phone"] .settings[data-page="nav"] .settings-nav {
+  gap: 0;
+  padding: calc(var(--sp-2) + var(--safe-top)) calc(var(--sp-4) + var(--safe-right)) calc(var(--sp-6) + var(--safe-bottom)) calc(var(--sp-4) + var(--safe-left));
+  background: var(--bg-app);
+}
+.app[data-layout="phone"] .settings-nav-title {
+  min-height: var(--toolbar-h);
+  padding: 0 0 var(--sp-2);
+  font-size: var(--fs-xl);
+}
+.app[data-layout="phone"] .settings-nav-title .icon-btn {
+  margin-right: calc(-1 * var(--sp-3));
+}
+.app[data-layout="phone"] .settings-nav-item {
+  gap: var(--sp-3);
+  min-height: var(--touch-row);
+  padding: 0 var(--sp-3) 0 var(--sp-4);
+  border-radius: 0;
+  background: var(--bg-raised);
+  color: var(--text);
+}
+.app[data-layout="phone"] .settings-nav-item svg:first-child {
+  color: var(--text-2);
+}
+.app[data-layout="phone"] .settings-nav-item + .settings-nav-item {
+  box-shadow: inset 0 1px 0 var(--border);
+}
+.app[data-layout="phone"] .settings-nav-item:first-of-type {
+  border-radius: var(--r-lg) var(--r-lg) 0 0;
+}
+.app[data-layout="phone"] .settings-nav-item:last-of-type {
+  border-radius: 0 0 var(--r-lg) var(--r-lg);
+}
+.app[data-layout="phone"] .settings-nav-item:active {
+  background: var(--bg-active);
+}
+.app[data-layout="phone"] .settings-head {
+  display: grid;
+  grid-template-columns: var(--touch-min) minmax(0, 1fr) var(--touch-min);
+  padding-right: var(--sp-1);
+  text-align: center;
+}
+.app[data-layout="phone"] .settings-head h2 {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Back leads to the list of sections, which closes the settings. */
+.app[data-layout="phone"] .settings-head > .icon-btn:last-child {
+  visibility: hidden;
+}
+.app[data-layout="phone"] .settings-body {
+  gap: var(--sp-3);
+  padding: var(--sp-4) calc(var(--sp-4) + var(--safe-right)) calc(var(--sp-8) + var(--safe-bottom)) calc(var(--sp-4) + var(--safe-left));
+  background: var(--bg-app);
+}
+.app[data-layout="phone"] .set-card {
+  border: 0;
+  padding: var(--sp-1) var(--sp-4) var(--sp-2);
+}
+.app[data-layout="phone"] .set-control,
+.app[data-layout="phone"] .set-control .select,
+.app[data-layout="phone"] .set-control .input {
+  max-width: 100%;
+}
+
+/* ---- phones: the calendar's header in two rows, clear of the status bar: the title with the
+   actions, then the way through the days and the view. */
+
+.app[data-touch] .calv-head {
+  padding-top: calc(var(--sp-2) + var(--safe-top));
+}
+.app[data-layout="phone"] .calv-head {
+  gap: var(--sp-1) var(--sp-2);
+  padding-right: calc(var(--sp-2) + var(--safe-right));
+  padding-left: calc(var(--sp-2) + var(--safe-left));
+}
+.app[data-layout="phone"] .calv-tools {
+  display: contents;
+}
+.app[data-layout="phone"] .calv-heading {
+  flex: 1 1 0;
+  order: 0;
+}
+.app[data-layout="phone"] .calv-actions {
+  order: 1;
+  margin-left: auto;
+  padding-left: 0;
+  border-left: 0;
+}
+.app[data-layout="phone"] .calv-head::after {
+  content: "";
+  flex-basis: 100%;
+  order: 2;
+}
+.app[data-layout="phone"] .calv-nav {
+  order: 3;
+}
+.app[data-layout="phone"] .calv-view-select {
+  order: 4;
+  margin-left: auto;
+  min-width: 0;
+}
+.app[data-layout="phone"] .calv-new {
+  width: var(--touch-min);
+  padding: 0;
+  border-color: transparent;
+  background: transparent;
+}
+.app[data-touch] .calv-scroll {
+  padding-bottom: var(--safe-bottom);
+}
+.app[data-touch] .list-foot {
+  padding-bottom: calc(var(--sp-2) + var(--safe-bottom));
+}
+.app[data-layout="phone"] .calv-kw {
+  display: none;
+}
+
+/* ---- phones: a message's cards at the screen's width */
+
+.protect-badge {
+  height: auto;
+  min-height: var(--ctl-xs);
+  padding-block: var(--sp-half);
+  line-height: 1.35;
+}
+.app[data-layout="phone"] .protect-badge {
+  border-radius: var(--r-md);
+}
+.app[data-layout="phone"] .invite-answer {
+  display: flex;
+  flex: 1 1 100%;
+  flex-wrap: nowrap;
+}
+.app[data-layout="phone"] .invite-answer button {
+  flex: 1;
+  justify-content: center;
+  min-width: 0;
+  min-height: var(--touch-min);
+  padding: 0 var(--sp-1);
+}
