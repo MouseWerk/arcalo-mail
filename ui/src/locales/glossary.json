@@ -16,6 +16,9 @@
     { "concept": "settings", "de": "Einstellungen", "en": "Settings", "forbiddenDe": ["Präferenzen*"], "forbiddenEn": ["Preferences*"] },
     { "concept": "sync", "de": "Synchronisierung (kurz: Sync)", "en": "sync", "forbiddenDe": ["Synchronisation*"], "forbiddenEn": ["synchronisation*", "Synchronisation*"] },
     { "concept": "key names", "de": "Strg, Umschalt, Eingabe, Entf, Leertaste", "en": "Ctrl, Shift, Enter, Delete, Space", "forbiddenDe": ["Ctrl", "Shift", "Enter"], "forbiddenEn": [], "note": "Keys are named as German keyboards print them." },
+    { "concept": "snooze", "de": "zurückstellen, Zurückgestellt", "en": "snooze", "forbiddenDe": ["Snooze*", "snooze*", "Schlummer*"], "forbiddenEn": [] },
+    { "concept": "screener", "de": "Neue Absender (prüfen, zulassen, abweisen)", "en": "new senders, Screener", "forbiddenDe": ["Screener*"], "forbiddenEn": [] },
+    { "concept": "unsubscribe", "de": "abbestellen, Abos", "en": "unsubscribe, subscriptions", "forbiddenDe": ["Unsubscribe*", "deabonnieren*", "Abonnements*"], "forbiddenEn": [] },
     { "concept": "übernehmen", "de": "übernehmen", "en": "import (e-mails, files), apply (settings, changes), keep (data)", "forbiddenDe": [], "forbiddenEn": ["taken over", "take over", "takes over"] }
   ]
 }

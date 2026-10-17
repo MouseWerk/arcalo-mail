@@ -82,8 +82,12 @@ const invite = [
   "",
 ].join("\r\n");
 
-/** Messages of the work account: [folder, message, flags]. */
-export function workMail() {
+/** The list headers of a newsletter with one-click unsubscribe (RFC 8058) at `url`. */
+const oneClick = (id, url) => [`List-Id: <${id}>`, `List-Unsubscribe: <${url}>`, "List-Unsubscribe-Post: List-Unsubscribe=One-Click"];
+
+/** Messages of the work account: [folder, message, flags]. `web`: an address on the test server
+ *  (the one newsletter the screenshots unsubscribe from). */
+export function workMail(web = (p) => `https://example.com${p}`) {
   const out = [];
   const add = (mailbox, m, flags = {}) => out.push({ mailbox, raw: message(m), date: m.date, flags });
 
@@ -139,7 +143,27 @@ For the review on Friday I will bring the updated empty states and the copy for 
 Priya`,
   });
 
-  add("INBOX", { from: "Field Notes <letters@fieldnotes.example>", to: EMMA, subject: "Field Notes #48: Designing for slow software", date: at(0, 9, 15), body: newsletterText, html: newsletter });
+  const fieldNotes = oneClick("letters.fieldnotes.example", "https://fieldnotes.example/unsubscribe/one-click");
+  add("INBOX", { from: "Field Notes <letters@fieldnotes.example>", to: EMMA, subject: "Field Notes #48: Designing for slow software", date: at(0, 9, 15), body: newsletterText, html: newsletter, headers: fieldNotes });
+  add("INBOX", { from: "Field Notes <letters@fieldnotes.example>", to: EMMA, subject: "Field Notes #47: The quiet interface", date: at(7, 9, 15), body: "Field Notes, issue 47: The quiet interface.\n\nWhy the calmest screens are the ones that leave things out.", headers: fieldNotes }, { seen: true });
+  add("INBOX", {
+    from: "Design Weekly <hello@designweekly.example>",
+    to: EMMA,
+    subject: "Five type pairings for product teams",
+    date: at(2, 6, 30),
+    body: "This week: five type pairings that hold up in dense interfaces, and a reader's question about icon sizes.",
+    headers: oneClick("weekly.designweekly.example", web("/unsubscribe?list=design-weekly")),
+  });
+  add("INBOX", {
+    from: "Product Digest <digest@productdigest.example>",
+    to: EMMA,
+    subject: "The week in product: pricing pages",
+    date: at(3, 7, 0),
+    body: "Pricing pages that explain themselves, and what changed in onboarding this quarter.",
+    headers: ["List-Id: <digest.productdigest.example>", "List-Unsubscribe: <mailto:leave@productdigest.example?subject=unsubscribe>"],
+  }, { seen: true });
+  add("INBOX", { from: "Build server <noreply@ci.example.com>", to: EMMA, subject: "Deploy finished: onboarding-beta", date: at(0, 7, 12), body: "onboarding-beta was deployed to the staging environment in 4 minutes." });
+  add("INBOX", { from: "Calendar <noreply@calendar.example.com>", to: EMMA, subject: "Reminder: Design review tomorrow at 15:00", date: at(0, 6, 0), body: "Design review: onboarding flow, Friday 13 March at 15:00." }, { seen: true });
   add("INBOX", {
     from: JONAS,
     to: EMMA,
@@ -208,7 +232,16 @@ export function personalMail() {
   const add = (mailbox, m, flags = {}) => out.push({ mailbox, raw: message(m), date: m.date, flags });
   add("INBOX", { from: "Sofia Marin <sofia.marin@example.net>", to: me, subject: "Lunch on Friday?", date: at(0, 7, 55), body: "Lunch on Friday? The new place by the river has a terrace now." });
   add("INBOX", { from: "Marta Silva <marta.silva@example.net>", to: me, subject: "Apartment viewing on Saturday", date: at(1, 19, 2), body: "The viewing is on Saturday at 11. The flat is on the third floor; ring twice." }, { seen: true });
-  add("INBOX", { from: "City Library <events@library.example>", to: me, subject: "Book club: the April pick", date: at(4, 8, 0), body: "The book club meets on 2 April. This month we read a novel about a lighthouse keeper." }, { seen: true });
+  add("INBOX", {
+    from: "City Library <events@library.example>",
+    to: me,
+    subject: "Book club: the April pick",
+    date: at(4, 8, 0),
+    body: "The book club meets on 2 April. This month we read a novel about a lighthouse keeper.",
+    headers: ["List-Id: <events.library.example>", "List-Unsubscribe: <mailto:events-leave@library.example>"],
+  });
+  add("INBOX", { from: "Bank <no-reply@bank.example>", to: me, subject: "New sign-in to your account", date: at(0, 6, 40), body: "We noticed a new sign-in to your online banking from a browser on Linux." });
+  add("INBOX", { from: "Cinema <tickets@cinema.example>", to: me, subject: "Your order 2231: two tickets for Saturday", date: at(2, 20, 15), body: "Order 2231: two tickets for Saturday, 14 March, 20:00, hall 3." }, { seen: true });
   return out;
 }
 

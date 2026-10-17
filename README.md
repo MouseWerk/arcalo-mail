@@ -18,13 +18,13 @@
 </p>
 
 <p align="center">
-  <img src="docs/screenshots/inbox-light.png" alt="Arcalo Mail: folders of two accounts, the inbox and a conversation of three messages" width="100%">
+  <img src="docs/screenshots/inbox-light.png" alt="Arcalo Mail: all inboxes of two accounts sorted into tabs, a dot per account, and a conversation of three messages" width="100%">
 </p>
 
 Arcalo Mail keeps a copy of your mailboxes on your computer and works on that copy: the list opens at once, search
 answers while you type, and reading, archiving, flagging and writing go on without a connection. Changes reach the
 server in the background, in order, as soon as it can be reached. The app talks to your mail provider and nothing
-else.
+else (except a newsletter's unsubscribe address, when you click Unsubscribe).
 
 It works with any IMAP/SMTP provider, signs in to Microsoft 365 and Outlook.com with Microsoft (no password in the
 app), guides you to a Gmail app password, and speaks JMAP where the provider offers it (Fastmail and others).
@@ -38,22 +38,70 @@ It speaks English and German and follows your system's language unless you choos
 Folders of all accounts on the left, the list in the middle, the message or the whole conversation on the right.
 Unread messages carry a dot, conversations show how many messages they hold, attachments, answers and flags show
 in the row. Everything has a key: `j`/`k` to move, `e` to archive, `#` to delete, `r`, `a` and `f` to answer, `s`
-to flag, `u` to undo, `c` to write and `/` to search. Archive, delete and move wait five seconds before they reach
+to flag, `h` to snooze, `p` to pin, `u` to undo, `c` to write and `/` to search. Archive, delete and move wait five seconds before they reach
 the server, so `u` takes them back without a trace.
 
 <p align="center">
   <img src="docs/screenshots/inbox-dark.png" alt="The same inbox in the dark theme" width="100%">
 </p>
 
+### An inbox that sorts itself
+
+The inbox comes in tabs: People, Newsletters, Notifications, Receipts and Other, each with its unread count. The
+app sorts on your device, from what the header says (mailing list and unsubscribe headers, `Precedence`,
+`Auto-Submitted`, machine senders, receipts and orders in German and English); anyone you wrote to is a person.
+Move a sender to another tab once and its mail goes there from then on. Pin what must stay on top. Newsletters come
+as one row per sender and open as a stream of their issues, one below the other. Focus shows only people and
+pinned messages, and only they notify you. With two accounts or more, "All inboxes" opens first, with a colored
+dot for each account. Done (`e`) archives, and an empty inbox says so, calmly.
+
+<p align="center">
+  <img src="docs/screenshots/inbox-tabs.png" alt="The work inbox sorted into tabs: people with a pinned message on top, and the counts of newsletters, notifications and receipts" width="100%">
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/inbox-zero.png" alt="An empty inbox: all done, unread mail waiting in two other tabs and one snoozed message coming back later" width="100%">
+</p>
+
+### New senders and subscriptions
+
+The Screener is off unless you switch it on, in the setup or in the settings. Then mail from people who never
+wrote to you waits under "New senders" until you let the sender in or turn it away once; contacts and replies to
+your messages always come through. Mail of a sender you turned away goes to a "Screened Out" folder on the server,
+now and later; nothing is deleted. Subscriptions lists every sender you can unsubscribe from: one click where the
+sender supports it (RFC 8058), otherwise the e-mail the list asks for, or its web page after you confirm.
+
+<p align="center">
+  <img src="docs/screenshots/screener.png" alt="New senders: first-time senders with Let in and Turn away, one of their messages open" width="100%">
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/subscriptions.png" alt="Subscriptions: newsletters with one-click unsubscribe, one of them unsubscribed" width="100%">
+</p>
+
+### Later, not now
+
+Snooze a message until later today, tomorrow, the weekend, next week or a time you pick (`h`): it waits in a
+"Snoozed" folder on the server, so other apps see it out of the inbox too, and comes back unread at the top. Write
+now and send later: the message waits in the app and goes out at its time (on a computer that was off then, at the
+app's next start; on a phone with the next background check). "Remind me if no answer" brings a message back when
+nobody answered by then. "Read later" keeps a list of what you put aside.
+
+<p align="center">
+  <img src="docs/screenshots/snooze-menu.png" alt="The snooze menu: later today, tomorrow, next week, or a time to pick" width="100%">
+</p>
+
 ### HTML mail without the tracking
 
 HTML mail is cleaned before it is shown (no scripts, forms, frames or style sheets) and drawn in a sandboxed frame
 with its own content security policy. Remote images are blocked, so senders do not learn when you read their mail;
-one click loads them for this message, another for every message of that sender. Quoted text is folded away, and
-every HTML message can also be read as plain text.
+one click loads them for this message, another for every message of that sender. Tracking pixels and link trackers
+(click redirects, `utm_` and similar parameters) are removed from every message, also when images load, and the
+message says how many; no request ever goes to them. Quoted text is folded away, and every HTML message can also be
+read as plain text.
 
 <p align="center">
-  <img src="docs/screenshots/reading-html.png" alt="A newsletter with three blocked remote images and the buttons to load them" width="100%">
+  <img src="docs/screenshots/reading-html.png" alt="A newsletter's issues as one stream: remote images blocked, the tracking pixel removed" width="100%">
 </p>
 
 ### Writing
@@ -183,6 +231,13 @@ tells you, without a server of ours in between.
   Outbox and go out in order when the server is back. The newest messages of each folder (or all of the last 30
   days) are fetched ahead, large ones and attachments when you open them.
 - **Conversations:** by the reply headers, and replies that lost them by their subject.
+- **Sorted inbox:** tabs for people, newsletters, notifications, receipts and other, sorted on the device from the
+  headers; senders moved to another tab stay there; newsletter bundles; focus; pin; the unified inbox of all accounts.
+- **Screener and subscriptions:** first-time senders wait until let in (off by default); turned-away senders go to
+  "Screened Out"; one-click unsubscribe (RFC 8058), by e-mail, or the list's page after you confirm.
+- **Time tools:** snooze (synced through a "Snoozed" folder), send later, reminders when no answer came, read later,
+  done and inbox zero.
+- **Tracker protection:** tracking pixels and link trackers removed from every message, counted per message.
 - **Folders:** create, rename and delete folders; move messages by menu or key; spam and archive with one key.
 - **Notifications:** a desktop notification for new mail, the unread count on the app icon and in the tray, with
   quick actions there.
@@ -195,9 +250,13 @@ tells you, without a server of ours in between.
 
 - **Local-first.** Your mail is stored in one SQLite database in your user folder and searched there.
 - **No telemetry.** The app connects only to the mail servers you set up, Microsoft's sign-in for Microsoft
-  accounts and, while you add an account, to the lookups that find their addresses. No analytics, no crash upload,
-  no server of ours in between.
+  accounts, while you add an account to the lookups that find their addresses, and to a newsletter's unsubscribe
+  address when you ask for it. No analytics, no crash upload, no server of ours in between. Sorting, the Screener
+  and the time tools run on the device.
 - **Remote content blocked.** Images from the internet load only when you say so, for one message or one sender.
+  Tracking pixels never load, and links lose their trackers.
+- **Unsubscribing** is the one request to a sender's web address, and only when you click "Unsubscribe": a single
+  POST that says nothing about you but the unsubscribe itself (RFC 8058).
 - **Passwords and sign-in tokens** are kept in your system's credential store (Windows Credential Manager, the
   macOS and iOS keychain, the Secret Service on Linux; on Android encrypted with a key of the Android Keystore), never
   in the database, the settings or a log. On a Linux desktop without a keyring they go to a file only your user can

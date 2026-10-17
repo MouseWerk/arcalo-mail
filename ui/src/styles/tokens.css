@@ -267,11 +267,11 @@
   /* Scrims behind sheets and dialogs. */
   --scrim: rgb(0 0 0 / 0.5);
   /* The accounts' dots in the unified inbox (markers, never a state). */
-  --account-1: #7aa2f7;
-  --account-2: #8bd17c;
-  --account-3: #e0af68;
-  --account-4: #bb9af7;
-  --account-5: #f38ba8;
+  --account-1: #4fc1a6;
+  --account-2: #e0af68;
+  --account-3: #f38ba8;
+  --account-4: #8bd17c;
+  --account-5: #c49af7;
   --account-6: #56c6d8;
 }
 
@@ -333,11 +333,11 @@
   --paper-rule: #d4d4d8;
   --unread: var(--accent-fill);
   --scrim: rgb(0 0 0 / 0.28);
-  --account-1: #3567cc;
-  --account-2: #3a8a2b;
-  --account-3: #b26f12;
-  --account-4: #7a4bd0;
-  --account-5: #c23a5c;
+  --account-1: #138a72;
+  --account-2: #b26f12;
+  --account-3: #c23a5c;
+  --account-4: #3a8a2b;
+  --account-5: #8a4bd0;
   --account-6: #12839a;
 }
 
@@ -401,10 +401,10 @@
   --paper-rule: #8a8a90;
   --unread: #ffffff;
   --scrim: rgb(0 0 0 / 0.7);
-  --account-1: #9cbcff;
-  --account-2: #a6f2a8;
-  --account-3: #ffd479;
-  --account-4: #d6bcff;
-  --account-5: #ffa6ba;
+  --account-1: #7ef0d4;
+  --account-2: #ffd479;
+  --account-3: #ffa6ba;
+  --account-4: #a6f2a8;
+  --account-5: #d6bcff;
   --account-6: #8ae8f7;
 }

@@ -49,7 +49,7 @@ const openMessage = (subject) => mail.openMessage(app, subject);
 before(async () => {
   work = await startServer({ user: WORK, password: "sample-password" });
   personal = await startServer({ user: PERSONAL, password: "sample-password" });
-  await fill(work, workMail());
+  await fill(work, workMail(work.webUrl));
   await fill(personal, personalMail());
   dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "arcalo-mail-shots-"));
 });
@@ -123,14 +123,42 @@ scene("dark", async () => {
   await setTheme("light");
 });
 
+scene("tabs", async () => {
+  // The work inbox sorted: people first, a pinned message on top, the other tabs with counts.
+  await openFolder("Work", "Inbox");
+  await openMessage("Customer interviews: notes");
+  await app.keys("p");
+  await mail.waitRow(app, "Customer interviews: notes");
+  await openMessage("Q2 launch plan");
+  await app.browser.execute(() => document.activeElement?.blur());
+  await shot("inbox-tabs");
+});
+
 scene("html", async () => {
-  await openMessage("Field Notes #48");
+  // A newsletter's issues as one stream: remote images blocked, the tracking pixel removed.
+  await mail.openTab(app, "newsletters");
+  await mail.waitRow(app, "Field Notes #48: Designing for slow software");
+  for (const r of await app.$$(".row")) if ((await app.textOf(r)).includes("Field Notes")) await r.click();
   await app.waitFor(".reading-pane .notice");
+  await app.waitFor(".tracker-note");
   await shot("reading-html");
+});
+
+scene("subscriptions", async () => {
+  await clickText(".list-title-tools .btn span", "Subscriptions");
+  await app.waitText(".subscription-item", /Design Weekly/);
+  for (const item of await app.$$(".subscription-item")) {
+    if ((await app.textOf(item)).includes("Design Weekly")) await (await item.$(".btn")).click();
+  }
+  await clickText(".dialog-foot .btn-primary", "Unsubscribe");
+  await app.waitText(".subscription-item", /Unsubscribed/);
+  await shot("subscriptions");
 });
 
 scene("compose", async () => {
   // Forwarding the invoice: its PDF goes along.
+  await openFolder("Work", "Inbox");
+  await mail.openTab(app, "receipts");
   await openMessage("Invoice INV-2026-031");
   await clickText(".reading-pane .toolbar .btn", "Forward");
   await app.waitFor(".compose .compose-attachments");
@@ -171,6 +199,32 @@ scene("settings", async () => {
   await app.keys("Escape");
 });
 
+scene("snooze", async () => {
+  await openFolder("Work", "Inbox");
+  await openMessage("Draft for the case study");
+  await app.click('.reading-pane .toolbar [data-action="snooze"]');
+  await app.waitFor(".menu");
+  await shot("snooze-menu");
+  await app.keys("Escape");
+});
+
+scene("screener", async () => {
+  // The Screener switched on two days ago: who wrote for the first time since waits.
+  const s = await app.invoke("get_settings");
+  await app.invoke("set_settings", { settings: { ...s, screener: true, screener_since: NOW - 2 * 86400 } });
+  await app.browser.refresh();
+  await app.waitUntil(async () => (await app.browser.execute(() => document.body.classList.contains("ready"))) === true, 20000, "ready after reload");
+  await mail.openView(app, "New senders");
+  await app.waitText(".screener-item", /Sofia Marin/);
+  for (const item of await app.$$(".screener-item")) if ((await app.textOf(item)).includes("Sofia Marin")) await (await item.$(".smart-main")).click();
+  await app.waitText(".message-subject", /Lunch on Friday/);
+  await shot("screener");
+  const back = await app.invoke("get_settings");
+  await app.invoke("set_settings", { settings: { ...back, screener: false, screener_since: null } });
+  await app.browser.refresh();
+  await app.waitUntil(async () => (await app.browser.execute(() => document.body.classList.contains("ready"))) === true, 20000, "ready after reload");
+});
+
 scene("contrast", async () => {
   await setTheme("contrast");
   await openMessage("Photos from the offsite");
@@ -200,4 +254,23 @@ scene("narrow", async () => {
   await openFolder("Personal", "Inbox");
   await openMessage("Lunch on Friday?");
   await shot("narrow");
+});
+
+scene("zero", async () => {
+  // Everything done in the personal inbox: the calm empty state, the other tabs with unread mail,
+  // and a snoozed message that comes back.
+  await app.browser.setWindowSize(1440, 900);
+  await openFolder("Personal", "Inbox");
+  await openMessage("Apartment viewing on Saturday");
+  // Snoozed for a week of real time (the screenshots' clock is in the past).
+  const id = Number(await app.browser.execute(() => document.querySelector(".row[aria-current='true']")?.dataset.id));
+  await app.invoke("snooze", { ids: [id], until: Math.floor(Date.now() / 1000) + 7 * 86400 });
+  await app.click(".sidebar");
+  await openFolder("Personal", "Inbox");
+  await mail.waitRow(app, "Apartment viewing on Saturday", false);
+  await openMessage("Lunch on Friday?");
+  await app.keys("e");
+  await app.waitFor(".inbox-zero", 15000);
+  await app.browser.execute(() => document.activeElement?.blur());
+  await shot("inbox-zero");
 });

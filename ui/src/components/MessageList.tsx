@@ -245,7 +245,6 @@ export function MessageList(p: Props) {
         <span className="row-body" style={sw ? { transform: `translateX(${sw.dx}px)`, transition: sw.leaving ? undefined : "none" } : undefined}>
           <span className="row-top">
             <span className="unread-slot">{!m.seen && <span className="unread-dot" aria-label={t("list.unread")} />}</span>
-            {account && <span className="account-dot" data-color={account.color} role="img" aria-label={t("inbox.account", { name: account.name })} title={account.name} />}
             <span className="row-from">{displayName(m.from, lang)}</span>
             {bundle > 1 ? (
               <span className="thread-count" aria-label={t("inbox.bundle", { n: bundle })}>
@@ -264,6 +263,7 @@ export function MessageList(p: Props) {
               {m.has_attachments && <Paperclip size={12} strokeWidth={1.75} aria-label={t("list.attachment")} />}
               {m.flagged && <Flag size={12} strokeWidth={1.75} className="flag" aria-label={t("list.flagged")} />}
             </span>
+            {account && <span className="account-dot row-account" data-color={account.color} role="img" aria-label={t("inbox.account", { name: account.name })} title={account.name} />}
             {due ? (
               <span className="row-date row-due">
                 <Clock size={11} strokeWidth={1.75} aria-hidden />

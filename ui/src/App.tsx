@@ -226,20 +226,25 @@ export function App() {
     return { list, all };
   }, []);
 
+  const placeRef = useRef(place);
+  placeRef.current = place;
+  const mailboxRef = useRef(mailboxId);
+  mailboxRef.current = mailboxId;
+  // Where the app opens was decided (before that, a folder list that arrives opens nothing).
+  const startedRef = useRef(false);
+
   /** Where the app opens: all inboxes with two accounts or more (unless switched off), else the
    *  first account's inbox. */
   const openStart = useCallback((list: AccountInfo[], all: Record<number, Mailbox[]>, unified: boolean) => {
     const first = list.map((a) => all[a.id]?.find((m) => m.role === "inbox")).find(Boolean) ?? null;
-    if (list.length > 1 && unified) {
-      setMailboxId(null);
-      setPlace({ kind: "inbox", account: null });
-    } else if (first) {
-      setMailboxId(first.id);
-      setPlace({ kind: "inbox", account: first.account_id });
-    } else {
-      setMailboxId(null);
-      setPlace({ kind: "folder" });
-    }
+    const [p, id]: [Place, number | null] =
+      list.length > 1 && unified ? [{ kind: "inbox", account: null }, null] : first ? [{ kind: "inbox", account: first.account_id }, first.id] : [{ kind: "folder" }, null];
+    // The refs at once: a folder list that arrives before the next render must not open another inbox.
+    placeRef.current = p;
+    mailboxRef.current = id;
+    startedRef.current = true;
+    setMailboxId(id);
+    setPlace(p);
   }, []);
 
   useEffect(() => {
@@ -281,16 +286,12 @@ export function App() {
     [],
   );
 
-  const placeRef = useRef(place);
-  placeRef.current = place;
-  const mailboxRef = useRef(mailboxId);
-  mailboxRef.current = mailboxId;
   const reloadMailboxes = useCallback(async (accountId: number) => {
     const boxes = await api.mailboxes(accountId);
     setMailboxes((all) => ({ ...all, [accountId]: boxes }));
     // The first sync brings the folders: open the inbox once it is there.
     const inbox = boxes.find((b) => b.role === "inbox");
-    if (inbox && placeRef.current.kind === "folder" && mailboxRef.current == null) {
+    if (inbox && startedRef.current && placeRef.current.kind === "folder" && mailboxRef.current == null) {
       setMailboxId(inbox.id);
       setPlace({ kind: "inbox", account: inbox.account_id });
     }
@@ -1144,6 +1145,8 @@ export function App() {
   // ---------------------------------------------------------------- places
 
   const goPlace = (p: Place, mailbox: number | null = null) => {
+    // An inbox opens at its first tab.
+    if (p.kind === "inbox") setTab("people");
     setQuery("");
     setShowOutbox(false);
     setMailboxId(mailbox);

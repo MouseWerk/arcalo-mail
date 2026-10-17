@@ -2185,6 +2185,10 @@
 .account-dot[data-color="6"] {
   background: var(--account-6);
 }
+.row-account {
+  width: calc(var(--dot) - 2px);
+  height: calc(var(--dot) - 2px);
+}
 .account-head .account-dot {
   margin-right: calc(-1 * var(--sp-1));
 }
@@ -2293,8 +2297,15 @@
   color: var(--text-3);
   font-size: var(--fs-sm);
 }
+.smart-meta {
+  overflow: hidden;
+}
 .smart-meta > span {
   white-space: nowrap;
+}
+.smart-meta > span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .smart-subject {
   flex: 1;

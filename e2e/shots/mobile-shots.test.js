@@ -104,6 +104,7 @@ test("phone, writing and the settings", async () => {
   await app.browser.setWindowSize(390, 844);
   await setTheme("light");
   await inbox();
+  await mail.openTab(app, "receipts");
   await mail.openMessage(app, "Invoice INV-2026-031");
   await app.click('.touch-actions [aria-label="Reply"]');
   await app.waitFor(".compose");

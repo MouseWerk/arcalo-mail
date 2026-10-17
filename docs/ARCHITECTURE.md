@@ -48,6 +48,10 @@ Identifier: `de.mousewerk.arcalo.mail`.
 | `parse` | RFC 5322/MIME with mail-parser: addresses, dates, ids, text and HTML bodies, attachments, preview line | done |
 | `sanitize` | ammonia allow-list: no scripts, forms, frames, style sheets or `url()`; remote images removed and counted unless allowed; links get `noopener noreferrer` | done |
 | `outbox` | Offline queue: send (and the copy for Sent), flags, move, delete, drafts, folders; strict order per account, due times for the undo window, backoff, parked steps the server refused | done |
+| `triage` | The inbox that sorts itself: a category per message from its header (`classify`: list and unsubscribe headers, `Precedence`, `Auto-Submitted`, machine and transactional senders, receipt words in German and English), decided again when read (a sender's own tab, people for anyone the user wrote to); pages and counts per tab, newsletter bundles per sender, focus (people and pinned), the unified inbox (all accounts); the Screener (`screener_since`, contacts, replies and the user's addresses pass; allowed and blocked senders, blocked mail moved to „Screened Out“ after each inbox sync); subscriptions | done |
+| `later` | Time tools: pin and read later by Message-ID (`marks`), snooze (a „Snoozed“ folder on the server, or `snoozed_until` on this device; back unread on top through `bumped_at`), send later (`scheduled`: the finished outbox step), follow-up reminders (due unless someone else answered); `tick` does what is due in one transaction (the shell's clock every 10 s and at start, the phones' background check) | done |
+| `unsubscribe` | `List-Unsubscribe` (RFC 2369): one-click POST (RFC 8058) through `network::client_for(Service::Unsubscribe)`, else a message through the outbox, else the page after the user confirmed; only on the user's click | done |
+| `tracking` | Tracking pixels (one pixel, hidden, known hosts and paths) taken out of the HTML before sanitizing, click redirects unwrapped and campaign parameters removed from links; counted per message; no request | done |
 | `settings`, `settings_migrate` | One JSON object with a `version`; ordered, idempotent steps on the raw JSON, unknown keys kept (Arcalo's scheme) | done |
 | `i18n` | `tr!`/`trf!` pairs for backend texts in German and English | done |
 
@@ -55,6 +59,9 @@ Identifier: `de.mousewerk.arcalo.mail`.
 
 `0001_init.sql` below; `0003_sync_sources.sql` adds `messages.base_subject` and the JMAP mapping (`jmap_state`,
 `jmap_mailboxes`, `jmap_emails`: a UID per message and folder, MODSEQs, „gone“ rows for QRESYNC's vanished UIDs);
+`0004_inbox_tools.sql` adds `messages.category`, `list_id`, `unsubscribe`, `one_click`, `snoozed_until` and
+`bumped_at`, and the tables `senders` (a sender's tab and the Screener's answer), `unsubscribes`, `marks` (pinned,
+read later), `snoozes`, `scheduled` (send later) and `followups`.
 `0002_mail_actions.sql` adds `messages.hidden` (moved or deleted here, not yet on the
 server) and `reply_to_json`, `message_bodies.raw` (small messages kept whole, so their attachments open offline),
 `attachments.section` and `data`, `accounts.signature`, `contacts` (recipient suggestions) and `remote_senders`
@@ -95,6 +102,8 @@ per account on a worker and carries out its actions.
   them for the message or its sender. Style attributes keep layout and color properties only, nothing that loads
   (a color given with the `background` shorthand is kept as `background-color`). The UI shows how many images were
   blocked and offers „Bilder laden“ for the message and „Immer für …“ for the sender.
+- Tracking pixels and link trackers go first, whatever the user allowed for remote images (`tracking.rs`); the
+  reading pane says how many („Tracker entfernt“).
 - The reading pane renders the result in an `<iframe sandbox="allow-same-origin">` (no `allow-scripts`, so nothing
   in the mail runs; same origin only lets the app catch link clicks) with `srcdoc` and a meta CSP of its own:
   `default-src 'none'; img-src data: cid:` (plus `https:` once allowed), inline styles only. The app's CSP applies
@@ -195,5 +204,7 @@ All of them were checked on crates.io; only the ones in use are in `Cargo.toml` 
   `conformance` job starts Dovecot and GreenMail containers); locally it is ignored.
 - `e2e/` starts the built app under tauri-driver (WebdriverIO, as Arcalo) against the test server program:
   setup, reading, writing, search, offline, folders and bulk actions, Microsoft sign-in (the test follows the
-  address the app opened), the Gmail guide and JMAP. `e2e/shots` writes the README screenshots from English sample
+  address the app opened), the Gmail guide and JMAP, the sorted inbox (tabs, bundles, focus, moving a sender,
+  trackers, one-click unsubscribe to the test server's web side), the Screener, the unified inbox, snooze, send
+  later (also at the next start) and reminders (`ARCALO_MAIL_TICK_SECS=1` speeds up the clock). `e2e/shots` writes the README screenshots from English sample
   mailboxes on a fixed clock (`ARCALO_MAIL_NOW`).

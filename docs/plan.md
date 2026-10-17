@@ -71,6 +71,24 @@ conformance job against Dovecot and GreenMail. Still open: the signed update fee
   GitHub APK (Google Play updates the Play install), a Play service account for uploads from CI. To verify on
   devices: everything native (see release-mobile.md, "What only a device or CI can show").
 
+## Where we are (1.0.0 features: the sorted inbox and the time tools)
+
+- **Inbox that sorts itself**: tabs (people, newsletters, notifications, receipts, other) classified on the device
+  from the header, a sender moved to another tab stays there, counts per tab, newsletter bundles opened as a
+  stream, focus (people and pinned, notifications only for them), the unified inbox with account dots (first with
+  two accounts or more), done and a calm inbox zero.
+- **Screener** (off by default, offered in the setup and the settings): first-time senders wait in „Neue
+  Absender“; contacts, replies and mail from before it was on pass; turned-away senders' mail moves to „Screened
+  Out“, nothing is deleted.
+- **Unsubscribe**: the subscriptions list; one-click POST (RFC 8058) through the network module, else the e-mail
+  the list asks for, else its page after confirmation.
+- **Tracker protection**: pixels and link trackers removed from every message with a count, never requested.
+- **Time tools**: snooze (a „Snoozed“ folder on the server, local for messages without Message-ID), send later
+  (desktop while the app runs and at its next start, phones in the background check), follow-up reminders on send
+  and on a message, pin, read later.
+- Open: rules (local and Sieve) and the AI assistant of the owner decisions; snooze by keyword for servers that
+  refuse new folders; IMAP keywords for pins so other devices see them.
+
 ## Milestone 1 – desktop, one IMAP/SMTP account
 
 Goal: daily use with one IMAP/SMTP account on Windows, macOS and Linux.
@@ -149,10 +167,9 @@ Goal: daily use with one IMAP/SMTP account on Windows, macOS and Linux.
 
 ## Later
 
-- Unified inbox across accounts, smart folders (unread, flagged, today).
+- Smart folders (unread, flagged, today).
 - Rules (local, run on new mail; Sieve upload where the server has ManageSieve).
-- Snooze (local, with a hidden folder on the server so other clients see it) and send later (local queue; the app
-  must be running, or the server's FUTURERELEASE where offered).
+- Send later through the server's FUTURERELEASE where offered (the computer may be off then).
 - PGP (Autocrypt, rPGP or Sequoia) and S/MIME (certificates from the system store), signing and encryption.
 - Encryption at rest (SQLCipher, as Arcalo; off by default) and app lock.
 - **Arcalo integration**: „An Arcalo senden“ (a mail becomes a page or is linked from one, as Arcalo's
