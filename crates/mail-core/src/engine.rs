@@ -1019,14 +1019,18 @@ async fn background<C: Connector>(ctx: Rc<Ctx<C>>) {
                 gates: &gates,
                 log: Some(&*log),
             };
+            // The inbox's bodies first: what was just listed opens at once, also offline.
+            let bodies = ctx.background_bodies.replace(false) || full;
+            if bodies {
+                bodies_ahead(&ctx, c, &settings, &gates, true).await?;
+                ctx.publish_log();
+            }
             if full {
                 ctx.inbox_gate.pass().await;
                 other_folders(&ctx, c, caps, &settings, &opts).await?;
-                ctx.background_bodies.set(true);
                 ctx.publish_log();
             }
-            if ctx.background_bodies.replace(false) {
-                bodies_ahead(&ctx, c, &settings, &gates, true).await?;
+            if bodies {
                 // The inbox's older mail before the other folders' bodies.
                 while !ctx.stopping.get() && !ctx.background_full.get() {
                     if !backfill_part(&ctx, c, &opts, true).await? {
@@ -1062,7 +1066,9 @@ async fn background<C: Connector>(ctx: Rc<Ctx<C>>) {
                     }
                     continue;
                 }
-                ctx.background_full.set(ctx.background_full.get() || failures > 0);
+                // What the broken connection did not finish is done again on the next.
+                ctx.background_full.set(ctx.background_full.get() || full);
+                ctx.background_bodies.set(true);
                 tokio::select! {
                     _ = ctx.background_wake.notified() => {}
                     _ = tokio::time::sleep(crate::sync::reconnect_delay(failures)) => {}
