@@ -29,6 +29,10 @@ pub enum Error {
     /// Data written by a newer version, which this one does not change.
     #[error("{0}")]
     Newer(String),
+    /// The connection broke after a whole message went to the SMTP server, before its answer:
+    /// the message may have been delivered, so it is not sent again by itself.
+    #[error("{0}")]
+    Unconfirmed(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

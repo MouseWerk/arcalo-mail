@@ -25,6 +25,7 @@ pub const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0004_inbox_tools.sql"),
     include_str!("../migrations/0005_power_tools.sql"),
     include_str!("../migrations/0006_calendar_crypto.sql"),
+    include_str!("../migrations/0007_sync_safety.sql"),
 ];
 pub const SCHEMA_VERSION: u32 = MIGRATIONS.len() as u32;
 
@@ -47,6 +48,12 @@ pub struct Mailbox {
     pub sync: SyncState,
     pub unread: u32,
     pub total: u32,
+    /// Why the server would not open the folder at the last try (it is skipped until
+    /// `sync_retry_at`).
+    #[serde(default)]
+    pub sync_error: Option<String>,
+    #[serde(default)]
+    pub sync_retry_at: Option<i64>,
 }
 
 /// The last known server state of a folder.
@@ -374,11 +381,16 @@ impl Store {
 
     /// Adds a folder of a `LIST` answer or updates its attributes; returns its id.
     pub fn upsert_mailbox(&self, account_id: i64, e: &MailboxEntry) -> Result<i64> {
+        self.upsert_mailbox_with_role(account_id, e, e.role())
+    }
+
+    /// [`Self::upsert_mailbox`] with the role decided for the whole list (`imap::roles`).
+    pub fn upsert_mailbox_with_role(&self, account_id: i64, e: &MailboxEntry, role: Option<Role>) -> Result<i64> {
         self.conn.execute(
             "INSERT INTO mailboxes (account_id, name, delimiter, role, selectable) VALUES (?1, ?2, ?3, ?4, ?5)
              ON CONFLICT (account_id, name) DO UPDATE SET delimiter = excluded.delimiter, role = excluded.role,
                selectable = excluded.selectable",
-            params![account_id, e.name, e.delimiter.map(String::from), e.role().map(Role::as_str), e.selectable()],
+            params![account_id, e.name, e.delimiter.map(String::from), role.map(Role::as_str), e.selectable()],
         )?;
         Ok(self.conn.query_row(
             "SELECT id FROM mailboxes WHERE account_id = ?1 AND name = ?2",
@@ -437,12 +449,32 @@ impl Store {
             },
             unread: r.get(9)?,
             total: r.get(10)?,
+            sync_error: r.get(11)?,
+            sync_retry_at: r.get(12)?,
         })
     }
 
     const MAILBOX_COLS: &str = "b.id, b.account_id, b.name, b.delimiter, b.role, b.selectable, b.uid_validity, b.uid_next, \
          b.highest_modseq, (SELECT COUNT(*) FROM messages m WHERE m.mailbox_id = b.id AND m.seen = 0 AND m.hidden = 0), \
-         (SELECT COUNT(*) FROM messages m WHERE m.mailbox_id = b.id AND m.hidden = 0)";
+         (SELECT COUNT(*) FROM messages m WHERE m.mailbox_id = b.id AND m.hidden = 0), b.sync_error, b.sync_retry_at";
+
+    /// Notes that the server refused a folder (`Some`), which then waits longer each time
+    /// before the next try (5 minutes, doubling, at most 6 hours); `None`: it synced again.
+    pub fn set_folder_error(&self, mailbox_id: i64, error: Option<&str>) -> Result<()> {
+        match error {
+            None => self.conn.execute(
+                "UPDATE mailboxes SET sync_error = NULL, sync_failures = 0, sync_retry_at = NULL
+                 WHERE id = ?1 AND (sync_error IS NOT NULL OR sync_failures > 0)",
+                [mailbox_id],
+            )?,
+            Some(e) => self.conn.execute(
+                "UPDATE mailboxes SET sync_error = ?2, sync_failures = sync_failures + 1,
+                   sync_retry_at = ?3 + MIN(300 << MIN(sync_failures, 10), 21600) WHERE id = ?1",
+                params![mailbox_id, e, now()],
+            )?,
+        };
+        Ok(())
+    }
 
     /// The folders of an account: the inbox and the other special folders first, then by name.
     pub fn mailboxes(&self, account_id: i64) -> Result<Vec<Mailbox>> {

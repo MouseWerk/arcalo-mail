@@ -44,7 +44,8 @@ export type Problem =
   | { kind: "protocol"; detail: string }
   | { kind: "admin_consent"; detail: string }
   | { kind: "smtp_auth_disabled"; detail: string }
-  | { kind: "proxy"; proxy: string; detail: string };
+  | { kind: "proxy"; proxy: string; detail: string }
+  | { kind: "busy"; detail: string };
 
 export type AccountStatus =
   | { state: "connecting" }
@@ -98,6 +99,8 @@ export type Mailbox = {
   selectable: boolean;
   unread: number;
   total: number;
+  /** Why the server would not open the folder at the last try (it is tried again later). */
+  sync_error?: string | null;
 };
 
 export type MessageSummary = {

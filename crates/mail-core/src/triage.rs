@@ -777,6 +777,17 @@ mod tests {
         assert_eq!(blocked_senders(&s).unwrap(), ["spam@example.net"]);
     }
 
+    /// A turned-away sender stays turned away whatever case the address comes in.
+    #[test]
+    fn blocked_senders_match_in_any_case() {
+        let (s, account, inbox_id) = store_with_inbox();
+        block_sender(&s, "news@example.net").unwrap();
+        add(&s, inbox_id, 1, &raw("News <News@Example.NET>", "Angebot", ""));
+        add(&s, inbox_id, 2, &raw("Jonas <jonas@example.org>", "Hallo", ""));
+        assert_eq!(move_blocked(&s, Some(account)).unwrap().hidden.len(), 1);
+        assert_eq!(subjects(&s, &query(Category::People)), ["Hallo"]);
+    }
+
     #[test]
     fn subscriptions_list_senders_with_a_way_out() {
         let (s, _, inbox_id) = store_with_inbox();

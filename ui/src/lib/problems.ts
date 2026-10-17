@@ -32,6 +32,8 @@ export function explain(p: Problem): Explained {
       return { title: "problem.smtpAuthDisabled", hint: "problem.smtpAuthDisabledHint", vars: {}, detail: p.detail };
     case "proxy":
       return { title: "problem.proxy", hint: "problem.proxyHint", vars: { proxy: p.proxy }, detail: p.detail };
+    case "busy":
+      return { title: "problem.busy", hint: "problem.busyHint", vars: {}, detail: p.detail };
   }
 }
 

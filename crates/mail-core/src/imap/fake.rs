@@ -85,6 +85,9 @@ pub struct FakeImap {
     pub changed: bool,
     /// Commands that fail once with `NO`, by their first word (`MOVE`, `APPEND`, …).
     pub fail: Vec<String>,
+    /// Folders the server lists but refuses to open (`NO [NOPERM]`: a shared folder without
+    /// the read right).
+    pub refuse_select: Vec<String>,
 }
 
 impl Default for FakeImap {
@@ -117,7 +120,7 @@ impl FakeImap {
         mailboxes.insert("INBOX".to_string(), FakeMailbox::new(&[]));
         mailboxes.insert("Sent".to_string(), FakeMailbox::new(&["\\Sent"]));
         mailboxes.insert("Trash".to_string(), FakeMailbox::new(&["\\Trash"]));
-        FakeImap { caps, mailboxes, selected: None, log: vec![], changed: false, fail: vec![] }
+        FakeImap { caps, mailboxes, selected: None, log: vec![], changed: false, fail: vec![], refuse_select: vec![] }
     }
 
     /// Adds the other usual folders (Drafts, Archive, Junk).
@@ -219,6 +222,10 @@ impl FakeImap {
 
     pub fn do_select(&mut self, mailbox: &str, qresync: Option<QresyncParams>) -> Result<Selected> {
         let caps = self.caps;
+        if self.refuse_select.iter().any(|r| r == mailbox) {
+            self.log.push(format!("SELECT {mailbox} refused"));
+            return Err(no(&format!("[NOPERM] no read right on {mailbox}")));
+        }
         let m = self.mailboxes.get(mailbox).ok_or_else(|| no(&format!("no such folder {mailbox}")))?;
         let info = m.info();
         let mut out = Selected { info, vanished: vec![], changed: vec![] };

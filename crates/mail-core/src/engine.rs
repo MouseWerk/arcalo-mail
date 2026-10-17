@@ -27,19 +27,24 @@ use crate::imap::client::ImapSession;
 use crate::imap::{ANSWERED, Capabilities, FLAGGED, IdleOutcome, ImapClient, Role, SEEN, Search};
 use crate::network::Problem;
 use crate::oauth::TokenSource;
-use crate::outbox::{self, Op};
+use crate::outbox::{self, Op, Queued};
 use crate::store::{Store, now};
 use crate::sync::{
     Action, Event, IDLE_RENEW, POLL_INTERVAL, State, SyncMachine, fetch_attachment, fetch_body, server_search,
     sync_folders, sync_mailbox,
 };
-use crate::{autoconfig, smtp, tr};
+use crate::{autoconfig, smtp, tr, trf};
 
 /// How a worker reaches the account's servers.
 pub trait Connector: Send + 'static {
     type Imap: ImapClient + 'static;
     /// A new, signed-in IMAP connection.
     fn imap(&self) -> impl Future<Output = Result<Self::Imap>>;
+    /// The connection for what the user waits for (bodies, attachments, search) next to the
+    /// worker's own.
+    fn imap_on_demand(&self) -> impl Future<Output = Result<Self::Imap>> {
+        self.imap()
+    }
     /// Sends a finished message.
     fn send(&self, from: &str, to: &[String], raw: &[u8]) -> impl Future<Output = Result<()>>;
     /// Whether the server files sent mail in Sent itself (Gmail, Microsoft).
@@ -365,11 +370,56 @@ fn b64(s: &str) -> Result<Vec<u8>> {
     base64::engine::general_purpose::STANDARD.decode(s).map_err(|e| Error::Invalid(e.to_string()))
 }
 
+/// Selects the folder of a step's UIDs; refused when the folder is not the one the UIDs were
+/// taken from (its UIDVALIDITY changed: the server rebuilt it, and the same numbers may name
+/// other messages now).
+async fn select_for<I: ImapClient>(conn: &mut I, mailbox: &str, uid_validity: Option<u32>) -> Result<()> {
+    let sel = conn.select(mailbox, None).await?;
+    match uid_validity {
+        Some(v) if v != sel.info.uid_validity => Err(Error::Invalid(trf!(
+            "Der Ordner „{mailbox}“ wurde auf dem Server neu aufgebaut, seit du das getan hast; die Nachrichten haben neue Nummern. Damit keine falsche Nachricht betroffen ist, wartet diese Änderung: Verwirf sie und mach sie noch einmal.",
+            "The folder “{mailbox}” was rebuilt on the server since you did this; its messages have new numbers. So that no wrong message is affected, this change waits: discard it and do it again."
+        ))),
+        _ => Ok(()),
+    }
+}
+
+/// Whether the server filed a message with this Message-ID in Sent already (it went out on
+/// an earlier attempt whose answer was lost).
+async fn already_in_sent<I: ImapClient>(conn: &mut I, sent: &str, raw: &[u8]) -> Result<bool> {
+    let Some(mid) = crate::parse::parse(raw).ok().and_then(|p| p.message_id) else { return Ok(false) };
+    conn.select(sent, None).await?;
+    Ok(!conn.search(&Search::MessageId(mid)).await?.is_empty())
+}
+
 /// Carries out one step of the queue; returns the folders it touched.
-async fn apply<C: Connector>(ctx: &Ctx<C>, conn: &mut C::Imap, id: i64, op: &Op) -> Result<Vec<String>> {
+async fn apply<C: Connector>(ctx: &Ctx<C>, conn: &mut C::Imap, q: &Queued) -> Result<Vec<String>> {
+    let (id, op) = (q.id, &q.op);
     match op {
         Op::Send { raw_b64, from, recipients, sent_b64, sent_mailbox, draft, answered } => {
-            ctx.connector.send(from, recipients, &b64(raw_b64)?).await?;
+            let raw = b64(raw_b64)?;
+            // A server that files sent mail itself shows whether an earlier attempt went out.
+            let filed = async |conn: &mut C::Imap| match sent_mailbox {
+                Some(sent) if ctx.connector.files_sent() => match already_in_sent(conn, sent, &raw).await {
+                    Ok(found) => Ok(found),
+                    Err(e) if is_transient(&e) => Err(e),
+                    Err(_) => Ok(false),
+                },
+                _ => Ok(false),
+            };
+            if q.attempts == 0 || !filed(conn).await? {
+                match ctx.connector.send(from, recipients, &raw).await {
+                    Ok(()) => {}
+                    // The answer to the message went missing: the server's Sent says whether it
+                    // went out; else the user decides (never sent twice by itself).
+                    Err(Error::Unconfirmed(e)) => {
+                        if !filed(conn).await.unwrap_or(false) {
+                            return Err(Error::Unconfirmed(e));
+                        }
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
             ctx.notice(Notice::Sent { account_id: ctx.account_id, outbox_id: id });
             // Sent: what is left is filing it; that step never sends again.
             let rest = Op::AppendSent {
@@ -379,7 +429,8 @@ async fn apply<C: Connector>(ctx: &Ctx<C>, conn: &mut C::Imap, id: i64, op: &Op)
                 answered: answered.clone(),
             };
             outbox::replace(&ctx.store, id, &rest)?;
-            let mut touched = Box::pin(apply(ctx, conn, id, &rest)).await?;
+            let next = Queued { op: rest, ..q.clone() };
+            let mut touched = Box::pin(apply(ctx, conn, &next)).await?;
             // The server filed it (Gmail, Microsoft, JMAP): Sent is synced right away.
             if ctx.connector.files_sent()
                 && let Some(sent) = sent_mailbox
@@ -403,14 +454,21 @@ async fn apply<C: Connector>(ctx: &Ctx<C>, conn: &mut C::Imap, id: i64, op: &Op)
                 touched.push(drafts.name);
             }
             if let Some((mb, uid)) = answered {
-                conn.select(mb, None).await?;
-                conn.store(&[*uid], &[ANSWERED], true).await?;
-                touched.push(mb.clone());
+                match select_for(conn, mb, q.uid_validity).await {
+                    Ok(()) => {
+                        conn.store(&[*uid], &[ANSWERED], true).await?;
+                        touched.push(mb.clone());
+                    }
+                    Err(e) if is_transient(&e) => return Err(e),
+                    // The folder is gone or was rebuilt: the UID may name another message now,
+                    // so the mark stays off.
+                    Err(_) => {}
+                }
             }
             Ok(touched)
         }
         Op::Flags { mailbox, uids, seen, flagged } => {
-            conn.select(mailbox, None).await?;
+            select_for(conn, mailbox, q.uid_validity).await?;
             if let Some(s) = seen {
                 conn.store(uids, &[SEEN], *s).await?;
             }
@@ -420,18 +478,18 @@ async fn apply<C: Connector>(ctx: &Ctx<C>, conn: &mut C::Imap, id: i64, op: &Op)
             Ok(vec![mailbox.clone()])
         }
         Op::Keyword { mailbox, uids, keyword, add } => {
-            conn.select(mailbox, None).await?;
+            select_for(conn, mailbox, q.uid_validity).await?;
             conn.store(uids, &[keyword.as_str()], *add).await?;
             Ok(vec![mailbox.clone()])
         }
         Op::Move { from, to, uids, ids } => {
-            conn.select(from, None).await?;
+            select_for(conn, from, q.uid_validity).await?;
             conn.move_to(uids, to).await?;
             ctx.store.remove_messages(ids)?;
             Ok(vec![from.clone(), to.clone()])
         }
         Op::Delete { mailbox, uids, ids } => {
-            conn.select(mailbox, None).await?;
+            select_for(conn, mailbox, q.uid_validity).await?;
             conn.expunge(uids).await?;
             ctx.store.remove_messages(ids)?;
             Ok(vec![mailbox.clone()])
@@ -465,13 +523,31 @@ async fn apply<C: Connector>(ctx: &Ctx<C>, conn: &mut C::Imap, id: i64, op: &Op)
     }
 }
 
-/// Replays the due steps of the queue in order. A connection failure stops the replay (the
-/// caller reconnects); a refusal parks the step and goes on.
+/// Runs a step while renewing its claim, so no other worker takes it meanwhile.
+async fn apply_claimed<C: Connector>(ctx: &Ctx<C>, conn: &mut C::Imap, q: &Queued) -> Result<Vec<String>> {
+    let work = apply(ctx, conn, q);
+    tokio::pin!(work);
+    loop {
+        tokio::select! {
+            r = &mut work => return r,
+            _ = tokio::time::sleep(outbox::LEASE_RENEW) => {
+                let _ = outbox::renew(&ctx.store, q.id);
+            }
+        }
+    }
+}
+
+/// Replays the due steps of the queue, each lane in order. A connection failure stops the
+/// replay (the caller reconnects); a refusal parks the step and goes on; a message the SMTP
+/// server did not take waits without holding up the rest.
 async fn replay<C: Connector>(ctx: &Ctx<C>, conn: &mut C::Imap) -> Result<Vec<String>> {
     let mut touched = vec![];
     while let Some(q) = outbox::next_due(&ctx.store, ctx.account_id, now())? {
-        outbox::start(&ctx.store, q.id)?;
-        let result = apply(ctx, conn, q.id, &q.op).await;
+        // Taken back a moment ago, or another worker of the account runs it.
+        if !outbox::start(&ctx.store, q.id)? {
+            continue;
+        }
+        let result = apply_claimed(ctx, conn, &q).await;
         // The notice follows the queue's new state: a UI that reads the queue when it hears
         // of it must not see the step that just finished.
         let outcome = match result {
@@ -496,9 +572,10 @@ async fn replay<C: Connector>(ctx: &Ctx<C>, conn: &mut C::Imap) -> Result<Vec<St
         };
         ctx.notice(Notice::Outbox { account_id: ctx.account_id });
         if let Some(e) = outcome {
-            // A send that could not reach the SMTP server: the IMAP connection is fine.
+            // A send that could not reach the SMTP server: the IMAP connection is fine, and
+            // the other steps go on.
             if matches!(q.op, Op::Send { .. }) {
-                break;
+                continue;
             }
             return Err(e);
         }
@@ -529,9 +606,26 @@ async fn sync_round<C: Connector>(ctx: &Ctx<C>, conn: &mut C::Imap, caps: Capabi
         ids.extend(touched.iter().filter_map(|n| ctx.mailbox_named(n)));
         ids.dedup();
     }
+    // Folders the server would not open lately wait for their next try.
+    let at = now();
+    ids.retain(|id| ctx.store.mailbox(*id).is_ok_and(|m| m.sync_retry_at.is_none_or(|t| t <= at)));
     let inbox = ctx.inbox().map(|m| m.id);
     for &id in &ids {
-        let r = sync_mailbox(conn, &ctx.store, caps, id).await?;
+        let r = match sync_mailbox(conn, &ctx.store, caps, id).await {
+            Ok(r) => {
+                ctx.store.set_folder_error(id, None)?;
+                r
+            }
+            Err(e) if is_transient(&e) => return Err(e),
+            // The server refused this folder (no read right, gone since the LIST): the others
+            // go on, the folder shows why it is not up to date.
+            Err(e) => {
+                crate::diag::log(&format!("account-{}", ctx.account_id), &format!("folder {id} skipped: {e}"));
+                ctx.store.set_folder_error(id, Some(&e.to_string()))?;
+                ctx.notice(Notice::Changed { account_id: ctx.account_id, mailboxes: vec![] });
+                continue;
+            }
+        };
         if r.changed() || touched.iter().any(|n| ctx.mailbox_named(n) == Some(id)) {
             ctx.notice(Notice::Changed { account_id: ctx.account_id, mailboxes: vec![id] });
         }
@@ -572,8 +666,11 @@ async fn sync_round<C: Connector>(ctx: &Ctx<C>, conn: &mut C::Imap, caps: Capabi
     let mut ahead: Vec<i64> = inbox.into_iter().collect();
     ahead.extend(ids.iter().copied().filter(|id| Some(*id) != inbox && !virtual_folders.contains(id)));
     for id in ahead {
-        if crate::sync::prefetch_bodies(conn, &ctx.store, id, settings.prefetch).await? > 0 {
-            ctx.notice(Notice::Changed { account_id: ctx.account_id, mailboxes: vec![id] });
+        match crate::sync::prefetch_bodies(conn, &ctx.store, id, settings.prefetch).await {
+            Ok(n) if n > 0 => ctx.notice(Notice::Changed { account_id: ctx.account_id, mailboxes: vec![id] }),
+            Ok(_) => {}
+            Err(e) if is_transient(&e) => return Err(e),
+            Err(e) => crate::diag::log(&format!("account-{}", ctx.account_id), &format!("folder {id}: {e}")),
         }
     }
     Ok(())
@@ -623,7 +720,6 @@ async fn run<C: Connector>(
     mut rx: mpsc::UnboundedReceiver<Command>,
     sink: Sink,
 ) {
-    let _ = outbox::recover(&store);
     let ctx = Rc::new(Ctx { account_id, store: Rc::new(store), connector: Rc::new(connector), sink });
     let wake = Rc::new(Notify::new());
     let queue: Rc<RefCell<VecDeque<Command>>> = Rc::default();
@@ -659,7 +755,6 @@ async fn run<C: Connector>(
 /// first lines, log out. Returns the new unread messages of the inbox. The caller bounds the
 /// time it may take.
 pub async fn check_once<C: Connector>(account_id: i64, store: Store, connector: C) -> Result<Vec<i64>> {
-    let _ = outbox::recover(&store);
     let found: Arc<Mutex<Vec<i64>>> = Arc::default();
     let into = found.clone();
     let sink: Sink = Arc::new(move |n| {
@@ -796,6 +891,17 @@ async fn main_loop<C: Connector>(ctx: &Ctx<C>, wake: &Notify, queue: &RefCell<Ve
                 if let State::Backoff { .. } = m.state {
                     ctx.status(Status::Retrying { in_secs: d.as_secs() }, last_error.as_ref());
                 }
+                // Without IDLE: wake for the next full sync and the next due step of the queue
+                // (an undo window that ends), as the Idle branch does.
+                let d = if m.state == State::Polling {
+                    let mut d = d.min(POLL_INTERVAL.saturating_sub(last_full.map_or(Duration::ZERO, |t| t.elapsed())));
+                    if let Ok(Some(due)) = outbox::next_due_at(&ctx.store, ctx.account_id) {
+                        d = d.min(Duration::from_secs((due - now()).max(0) as u64 + 1));
+                    }
+                    d.max(Duration::from_secs(1))
+                } else {
+                    d
+                };
                 let until = tokio::time::Instant::now() + d;
                 loop {
                     tokio::select! {
@@ -891,7 +997,7 @@ async fn on_demand<C: Connector>(ctx: Rc<Ctx<C>>, mut rx: mpsc::UnboundedReceive
 
 async fn connected<'a, C: Connector>(ctx: &Ctx<C>, conn: &'a mut Option<C::Imap>) -> Result<&'a mut C::Imap> {
     if conn.is_none() {
-        *conn = Some(ctx.connector.imap().await?);
+        *conn = Some(ctx.connector.imap_on_demand().await?);
     }
     Ok(conn.as_mut().expect("just connected"))
 }
@@ -1063,6 +1169,14 @@ mod tests {
         refuse: Arc<Mutex<Option<Problem>>>,
         smtp_down: Arc<Mutex<bool>>,
         password: Arc<Mutex<String>>,
+        /// How long a send takes (a large attachment, a slow server).
+        slow: Arc<Mutex<Duration>>,
+        /// Sends under way.
+        in_flight: Arc<std::sync::atomic::AtomicU32>,
+        /// The server files sent mail in Sent itself (as Gmail).
+        files_sent: Arc<Mutex<bool>>,
+        /// The answer to the message gets lost (it went out all the same).
+        lose_answer: Arc<Mutex<bool>>,
     }
 
     struct FakeConnector {
@@ -1082,11 +1196,22 @@ mod tests {
             if *self.mail.smtp_down.lock().unwrap() {
                 return Err(Error::Connection(Problem::Refused { host: "smtp".into(), port: 587 }));
             }
+            use std::sync::atomic::Ordering;
+            self.mail.in_flight.fetch_add(1, Ordering::SeqCst);
+            let slow = *self.mail.slow.lock().unwrap();
+            tokio::time::sleep(slow).await;
             self.mail.sent.lock().unwrap().push((from.into(), to.to_vec(), raw.to_vec()));
+            self.mail.in_flight.fetch_sub(1, Ordering::SeqCst);
+            if *self.mail.files_sent.lock().unwrap() {
+                self.server.with(|f| f.deliver("Sent", raw, 1_760_000_900));
+            }
+            if *self.mail.lose_answer.lock().unwrap() {
+                return Err(Error::Unconfirmed("connection closed after the message".into()));
+            }
             Ok(())
         }
         fn files_sent(&self) -> bool {
-            false
+            *self.mail.files_sent.lock().unwrap()
         }
         fn set_password(&self, password: String) {
             *self.mail.password.lock().unwrap() = password;
@@ -1104,6 +1229,10 @@ mod tests {
     }
 
     fn setup(name: &str) -> Setup {
+        setup_with(name, FakeImap::default().with_all_folders())
+    }
+
+    fn setup_with(name: &str, mut fake: FakeImap) -> Setup {
         let dir = std::env::temp_dir().join(format!("mail-engine-{name}-{}-{}", std::process::id(), now()));
         std::fs::create_dir_all(&dir).unwrap();
         let db = dir.join("mail.db");
@@ -1117,7 +1246,6 @@ mod tests {
                 transport: preset(Provider::Imap, "maria@example.org").unwrap(),
             })
             .unwrap();
-        let mut fake = FakeImap::default().with_all_folders();
         fake.deliver("INBOX", &sample("a@x", "Willkommen", None, "Hallo"), 1_760_000_000);
         Setup { db, store, account, server: SharedFake::new(fake), mail: Mailer::default(), notices: Arc::default() }
     }
@@ -1151,6 +1279,22 @@ mod tests {
                 Notice::Status { status, .. } => Some(status.clone()),
                 _ => None,
             })
+        }
+
+        fn connector(&self) -> FakeConnector {
+            FakeConnector { server: self.server.clone(), mail: self.mail.clone() }
+        }
+
+        fn send_op(&self, subject: &str) -> Op {
+            Op::Send {
+                raw_b64: base64::engine::general_purpose::STANDARD.encode(sample("out@x", subject, None, "Danke")),
+                from: "maria@example.org".into(),
+                recipients: vec!["jonas@example.org".into()],
+                sent_b64: None,
+                sent_mailbox: Some("Sent".into()),
+                draft: None,
+                answered: None,
+            }
         }
     }
 
@@ -1414,5 +1558,157 @@ mod tests {
         assert_eq!(hits, [id]);
         drop(w);
         s.until("stopped", |s| s.status() == Some(Status::Stopped)).await;
+    }
+
+    /// A server without IDLE: a step whose undo window ends goes out then, not at the next
+    /// poll five minutes later.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn due_steps_go_out_on_time_without_idle() {
+        let caps = Capabilities { idle: false, ..FakeImap::default().caps };
+        let s = setup_with("poll-due", FakeImap::new(caps).with_all_folders());
+        let w = s.start();
+        s.until("first sync", |s| s.status() == Some(Status::Ready)).await;
+        outbox::enqueue_at(&s.store, s.account, &s.send_op("Bald"), now() + 1).unwrap();
+        w.send(Command::Kick);
+        s.until("sent when due", |s| !s.mail.sent.lock().unwrap().is_empty()).await;
+    }
+
+    /// A message that cannot reach the SMTP server holds up no other change: read flags and a
+    /// new folder reach the IMAP server, and the folder stays here meanwhile.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_send_that_cannot_go_out_holds_up_no_other_change() {
+        let s = setup("send-lane");
+        let w = s.start();
+        s.until("first sync", |s| s.status() == Some(Status::Ready)).await;
+        *s.mail.smtp_down.lock().unwrap() = true;
+        outbox::enqueue(&s.store, s.account, &s.send_op("Später")).unwrap();
+        w.send(Command::Kick);
+        s.until("send failed", |s| outbox::entries(&s.store).unwrap().iter().any(|e| e.state == "failed")).await;
+        let id = s.store.messages(s.inbox(), 10, 0).unwrap()[0].id;
+        crate::actions::set_flags(&s.store, &[id], Some(true), None).unwrap();
+        crate::actions::create_folder(&s.store, s.account, None, "Projekte").unwrap();
+        w.send(Command::Kick);
+        w.send(Command::SyncNow);
+        s.until("flag and folder on the server", |s| {
+            s.server.with(|f| f.mailboxes["INBOX"].messages[&1].flags.seen && f.mailboxes.contains_key("Projekte"))
+        })
+        .await;
+        s.until("only the send waits", |s| {
+            outbox::entries(&s.store).unwrap().iter().map(|e| e.kind.clone()).collect::<Vec<_>>() == ["send"]
+        })
+        .await;
+        assert!(s.store.mailbox_by_name(s.account, "Projekte").unwrap().is_some());
+        assert!(s.store.summaries(&[id]).unwrap()[0].seen);
+        assert!(s.mail.sent.lock().unwrap().is_empty());
+        // The SMTP server is back: the message goes out.
+        *s.mail.smtp_down.lock().unwrap() = false;
+        let send = outbox::entries(&s.store).unwrap()[0].id;
+        outbox::retry(&s.store, send).unwrap();
+        w.send(Command::Kick);
+        s.until("sent", |s| outbox::pending(&s.store, s.account).unwrap() == 0).await;
+        assert_eq!(s.mail.sent.lock().unwrap().len(), 1);
+    }
+
+    /// A folder the server lists but will not open: the others are synced, the account gets to
+    /// IDLE, and the folder says why it is empty.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_folder_the_server_will_not_open_holds_up_no_other_folder() {
+        let mut fake = FakeImap::default().with_all_folders();
+        fake.mailboxes.insert("Geteilt".into(), crate::imap::fake::FakeMailbox::new(&[]));
+        fake.mailboxes.insert("Kunden".into(), crate::imap::fake::FakeMailbox::new(&[]));
+        fake.refuse_select.push("Geteilt".into());
+        let s = setup_with("noperm", fake);
+        s.server.with(|f| f.deliver("Kunden", &sample("k@x", "Auftrag", None, "x"), 1_760_000_050));
+        let _w = s.start();
+        s.until("ready", |s| s.status() == Some(Status::Ready)).await;
+        let kunden = s.store.mailbox_by_name(s.account, "Kunden").unwrap().unwrap();
+        assert_eq!(kunden.total, 1, "the folder after the refused one is synced");
+        assert!(
+            !s.notices
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|n| matches!(n, Notice::Status { status: Status::Retrying { .. }, .. })),
+            "no reconnect for one folder"
+        );
+        let selects = || s.server.with(|f| f.log.iter().filter(|l| l.as_str() == "SELECT Geteilt refused").count());
+        assert_eq!(selects(), 1);
+        // The next round leaves it out for a while.
+        s.server.with(|f| f.deliver("INBOX", &sample("n@x", "Neu", None, "x"), 1_760_000_100));
+        s.until("new mail", |s| s.store.messages(s.inbox(), 10, 0).unwrap().len() == 2).await;
+        assert_eq!(selects(), 1, "not tried again at once");
+    }
+
+    /// A move or delete queued with the UIDs of one UIDVALIDITY never acts on another: the
+    /// folder was rebuilt on the server, the step waits for the user.
+    #[tokio::test]
+    async fn queued_deletes_never_hit_messages_of_a_rebuilt_folder() {
+        let s = setup("uidvalidity");
+        s.server.with(|f| f.deliver("Trash", &sample("t1@x", "Alt 1", None, "x"), 1_760_000_001));
+        s.server.with(|f| f.deliver("Trash", &sample("t2@x", "Wichtig behalten", None, "x"), 1_760_000_002));
+        check_once(s.account, Store::open(&s.db).unwrap(), s.connector()).await.unwrap();
+        let trash = s.store.mailbox_by_role(s.account, Role::Trash).unwrap().unwrap();
+        let alt = s.store.messages(trash.id, 10, 0).unwrap().into_iter().find(|m| m.subject == "Alt 1").unwrap();
+        crate::actions::delete(&s.store, &[alt.id]).unwrap();
+        // Another client removes „Alt 1“, then the server renumbers the folder.
+        s.server.with(|f| {
+            f.expunge("Trash", 1);
+            f.renumber("Trash");
+        });
+        s.store.conn().execute("UPDATE outbox SET next_try = 0", []).unwrap();
+        check_once(s.account, Store::open(&s.db).unwrap(), s.connector()).await.unwrap();
+        assert_eq!(s.server.with(|f| f.subjects("Trash")), ["Wichtig behalten"]);
+        let e = outbox::entries(&s.store).unwrap();
+        assert_eq!((e.len(), e[0].kind.as_str(), e[0].state.as_str()), (1, "delete", "parked"), "{e:?}");
+    }
+
+    /// A second worker of the same account (its servers changed, the phone came back to the
+    /// front) while the first one still sends: the message goes out once.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_second_worker_never_sends_a_running_message_again() {
+        use std::sync::atomic::Ordering;
+        let s = setup("restart");
+        *s.mail.slow.lock().unwrap() = Duration::from_millis(1500);
+        let w = s.start();
+        s.until("first sync", |s| s.status() == Some(Status::Ready)).await;
+        outbox::enqueue(&s.store, s.account, &s.send_op("Einmal")).unwrap();
+        w.send(Command::Kick);
+        s.until("sending", |s| s.mail.in_flight.load(Ordering::SeqCst) > 0).await;
+        drop(w);
+        let w2 = s.start();
+        // The phone's background check at the same time.
+        let _ = check_once(s.account, Store::open(&s.db).unwrap(), s.connector()).await;
+        s.until("done", |s| outbox::pending(&s.store, s.account).unwrap() == 0).await;
+        w2.send(Command::SyncNow);
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert_eq!(s.mail.sent.lock().unwrap().len(), 1, "sent once");
+        assert_eq!(s.server.with(|f| f.subjects("Sent")), ["Einmal"]);
+    }
+
+    /// The answer to a sent message went missing: it is never sent again by itself. A server
+    /// that files sent mail shows it in Sent (done); else the step waits for the user.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_send_whose_answer_was_lost_is_not_sent_again_by_itself() {
+        for files_sent in [false, true] {
+            let s = setup(if files_sent { "lost-answer-filed" } else { "lost-answer" });
+            *s.mail.lose_answer.lock().unwrap() = true;
+            *s.mail.files_sent.lock().unwrap() = files_sent;
+            let w = s.start();
+            s.until("first sync", |s| s.status() == Some(Status::Ready)).await;
+            outbox::enqueue(&s.store, s.account, &s.send_op("Vielleicht")).unwrap();
+            w.send(Command::Kick);
+            if files_sent {
+                s.until("done", |s| outbox::pending(&s.store, s.account).unwrap() == 0).await;
+                assert!(s.notices.lock().unwrap().iter().any(|n| matches!(n, Notice::Sent { .. })));
+            } else {
+                s.until("waits for the user", |s| {
+                    outbox::entries(&s.store).unwrap().iter().any(|e| e.kind == "send" && e.state == "parked")
+                })
+                .await;
+            }
+            w.send(Command::SyncNow);
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            assert_eq!(s.mail.sent.lock().unwrap().len(), 1, "files_sent {files_sent}: sent once");
+        }
     }
 }

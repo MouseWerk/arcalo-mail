@@ -6,6 +6,7 @@ const KIND: Record<string, TKey> = {
   send: "outbox.send",
   append_sent: "outbox.appendSent",
   flags: "outbox.flags",
+  keyword: "outbox.keyword",
   move: "outbox.move",
   delete: "outbox.delete",
   save_draft: "outbox.saveDraft",
@@ -39,14 +40,20 @@ export function Outbox({ entries, accounts, onRetry, onDiscard, onShowFolders }:
           return (
             <li key={e.id} className="outbox-item" data-state={e.state}>
               <span className="outbox-icon">
-                {parked ? <CircleAlert size={16} strokeWidth={1.75} aria-hidden /> : e.kind === "send" ? <Upload size={16} strokeWidth={1.75} aria-hidden /> : <Clock size={16} strokeWidth={1.75} aria-hidden />}
+                {parked || e.state === "failed" ? <CircleAlert size={16} strokeWidth={1.75} aria-hidden /> : e.kind === "send" ? <Upload size={16} strokeWidth={1.75} aria-hidden /> : <Clock size={16} strokeWidth={1.75} aria-hidden />}
               </span>
               <div className="outbox-text">
                 <div className="outbox-title">{t(KIND[e.kind] ?? "outbox.other")}</div>
                 <div className="outbox-meta muted">
                   {account?.name || account?.email}
                   {" · "}
-                  {parked ? t("outbox.refused") : e.state === "failed" ? t("outbox.retryAt", { time: time(e.next_try) }) : t("outbox.waiting")}
+                  {parked
+                    ? t("outbox.refused")
+                    : e.state === "failed"
+                      ? t(e.kind === "send" ? "outbox.sendWaits" : "outbox.retryAt", { time: time(e.next_try) })
+                      : e.state === "running"
+                        ? t("outbox.running")
+                        : t("outbox.waiting")}
                 </div>
                 {e.last_error && <div className="outbox-error">{e.last_error}</div>}
               </div>

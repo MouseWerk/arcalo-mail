@@ -1550,6 +1550,7 @@ export function App() {
           current={place.kind === "folder" || (place.kind === "inbox" && place.account != null) ? mailboxId : null}
           showingOutbox={showOutbox}
           outboxCount={outbox.length}
+          outboxWaiting={outbox.some((e) => e.state === "failed" || e.state === "parked")}
           views={viewEntries()}
           accountColor={accountColor}
           onSelect={goMailbox}

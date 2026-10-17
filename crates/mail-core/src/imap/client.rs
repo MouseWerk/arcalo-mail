@@ -252,10 +252,12 @@ impl ImapSession {
             Credential::XOAuth2(token) => s.xoauth2(username, token).await?,
         }
         s.refresh_caps().await?;
-        if s.has("ENABLE") {
-            if s.caps.qresync {
-                s.command("ENABLE QRESYNC").await?;
-            } else if s.caps.condstore {
+        // QRESYNC only once the server switched it on: else every `SELECT … (QRESYNC …)` would
+        // be refused.
+        let qresync = s.caps.qresync && s.has("ENABLE") && s.command("ENABLE QRESYNC").await?.status == Status::Ok;
+        if !qresync {
+            s.caps.qresync = false;
+            if s.caps.condstore && s.has("ENABLE") {
                 s.command("ENABLE CONDSTORE").await?;
             }
         }
@@ -888,13 +890,33 @@ impl ImapClient for ImapSession {
         Ok(map)
     }
 
+    /// Without UIDPLUS a plain `EXPUNGE` removes every message marked `\\Deleted`, also those
+    /// another client only marked (its „mark as deleted“, undo still possible there): their mark
+    /// comes off for the moment and goes back on after (RFC 4315, section 1).
     async fn expunge(&mut self, uids: &[u32]) -> Result<()> {
         if uids.is_empty() {
             return Ok(());
         }
+        if self.caps.uidplus {
+            self.store(uids, &[DELETED], true).await?;
+            return check(self.command(&format!("UID EXPUNGE {}", uid_set(uids))).await?, "EXPUNGE").map(drop);
+        }
+        let done = check(self.command("UID SEARCH DELETED").await?, "SEARCH")?;
+        let others: Vec<u32> = done
+            .data
+            .iter()
+            .filter_map(|d| match d {
+                Response::MailboxData(MailboxDatum::Search(list)) => Some(list.clone()),
+                _ => None,
+            })
+            .flatten()
+            .filter(|u| !uids.contains(u))
+            .collect();
+        self.store(&others, &[DELETED], false).await?;
         self.store(uids, &[DELETED], true).await?;
-        let cmd = if self.caps.uidplus { format!("UID EXPUNGE {}", uid_set(uids)) } else { "EXPUNGE".into() };
-        check(self.command(&cmd).await?, "EXPUNGE").map(drop)
+        let expunged = check(self.command("EXPUNGE").await?, "EXPUNGE").map(drop);
+        let restored = self.store(&others, &[DELETED], true).await;
+        expunged.and(restored)
     }
 
     async fn append(&mut self, mailbox: &str, flags: &[&str], raw: &[u8]) -> Result<Option<u32>> {
@@ -1003,5 +1025,77 @@ mod tests {
         assert_eq!(parts[2].content_id.as_deref(), Some("logo@x"));
         assert!(!parts[2].is_attachment(), "an image the HTML shows");
         assert_eq!(decode_2231("utf-8''Gr%C3%BC%C3%9Fe.pdf"), "Grüße.pdf");
+    }
+
+    /// A server on loopback that answers the login with `login` and `ENABLE` with `enable`.
+    async fn scripted(login: &'static str, enable: &'static str) -> u16 {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let (sock, _) = listener.accept().await.unwrap();
+            let mut io = BufReader::new(sock);
+            let caps = "IMAP4rev1 AUTH=PLAIN ENABLE CONDSTORE QRESYNC IDLE";
+            io.get_mut().write_all(format!("* OK [CAPABILITY {caps}] ready\r\n").as_bytes()).await.unwrap();
+            loop {
+                let mut line = String::new();
+                if io.read_line(&mut line).await.unwrap_or(0) == 0 {
+                    return;
+                }
+                let (tag, cmd) = line.trim_end().split_once(' ').unwrap_or(("*", ""));
+                let out = match cmd.to_ascii_uppercase().as_str() {
+                    "CAPABILITY" => format!("* CAPABILITY {caps}\r\n{tag} OK done\r\n"),
+                    "AUTHENTICATE PLAIN" => {
+                        io.get_mut().write_all(b"+ \r\n").await.unwrap();
+                        let mut token = String::new();
+                        io.read_line(&mut token).await.unwrap();
+                        format!("{tag} {login}\r\n")
+                    }
+                    c if c.starts_with("ENABLE") => format!("{tag} {enable}\r\n"),
+                    "LOGOUT" => format!("* BYE\r\n{tag} OK bye\r\n"),
+                    _ => format!("{tag} BAD what\r\n"),
+                };
+                io.get_mut().write_all(out.as_bytes()).await.unwrap();
+            }
+        });
+        port
+    }
+
+    /// RFC 5530: a login refused for a reason of the server's (its authentication backend is
+    /// down, too many sessions) is no wrong password.
+    #[tokio::test]
+    async fn temporary_login_failures_are_no_wrong_password() {
+        for code in [
+            "[UNAVAILABLE] Temporary authentication failure",
+            "[INUSE] Mailbox in use",
+            "[LIMIT] Too many sessions",
+            "[SERVERBUG] Oops",
+        ] {
+            let port = scripted(Box::leak(format!("NO {code}").into_boxed_str()), "OK").await;
+            let server = Server::new("127.0.0.1", port, crate::account::Security::Plain);
+            let e = ImapSession::connect(&server, "maria", "pw").await.err().unwrap();
+            let sign_in = matches!(&e, Error::Connection(p) if p.needs_sign_in());
+            assert!(!sign_in && crate::engine::is_transient(&e), "{code}: {e:?}");
+        }
+        let port = scripted("NO [AUTHENTICATIONFAILED] Invalid credentials", "OK").await;
+        let server = Server::new("127.0.0.1", port, crate::account::Security::Plain);
+        let e = ImapSession::connect(&server, "maria", "pw").await.err().unwrap();
+        assert!(matches!(&e, Error::Connection(p) if p.needs_sign_in()), "{e:?}");
+    }
+
+    /// A server that offers QRESYNC but refuses to switch it on: no `SELECT … (QRESYNC …)`,
+    /// which it would refuse for every folder.
+    #[tokio::test]
+    async fn a_refused_enable_turns_qresync_off() {
+        let port = scripted("OK signed in", "NO not today").await;
+        let server = Server::new("127.0.0.1", port, crate::account::Security::Plain);
+        let mut c = ImapSession::connect(&server, "maria", "pw").await.unwrap();
+        let caps = c.capabilities().await.unwrap();
+        assert!(!caps.qresync, "{caps:?}");
+        assert!(caps.condstore && caps.idle);
+        let port = scripted("OK signed in", "OK").await;
+        let server = Server::new("127.0.0.1", port, crate::account::Security::Plain);
+        let mut c = ImapSession::connect(&server, "maria", "pw").await.unwrap();
+        assert!(c.capabilities().await.unwrap().qresync);
     }
 }

@@ -44,6 +44,8 @@ pub struct FakeJmapState {
     epoch: u64,
     /// Calendars offered (`urn:ietf:params:jmap:calendars`), when set.
     pub calendars: Option<crate::calendar::jmap::fake::FakeJmapCalendars>,
+    /// A `role` sent as it is for a folder (a server that sends odd values).
+    pub raw_roles: BTreeMap<String, String>,
 }
 
 static EPOCHS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -289,7 +291,9 @@ impl FakeJmapState {
 
     fn mailbox_json(&self, fake: &FakeImap, name: &str, id: &str) -> Value {
         let m = &fake.mailboxes[name];
-        let role = if name.eq_ignore_ascii_case("INBOX") {
+        let role = if let Some(r) = self.raw_roles.get(name) {
+            Some(r.clone())
+        } else if name.eq_ignore_ascii_case("INBOX") {
             Some("inbox".to_string())
         } else {
             m.attributes.iter().find_map(|a| {

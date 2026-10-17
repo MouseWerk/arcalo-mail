@@ -280,3 +280,46 @@ fn reads_event_source_states() {
     assert_eq!(got, [StateChange { email: Some("5".into()), mailbox: Some("2".into()) }]);
     assert_eq!(buf, "event: sta");
 }
+
+/// Two saves of one draft replayed in one round (it was saved twice while offline): the
+/// second finds the copy the first one put there, so one draft stays.
+#[tokio::test(flavor = "multi_thread")]
+async fn saves_of_a_draft_in_one_round_leave_one_copy() {
+    let s = setup("drafts").await;
+    let w = s.start();
+    s.until("first sync", |s| s.status() == Some(Status::Ready)).await;
+    let draft = |subject: &str| Op::SaveDraft {
+        mailbox: "Drafts".into(),
+        raw_b64: base64::engine::general_purpose::STANDARD.encode(sample("entwurf@x", subject, None, "x")),
+        message_id: "entwurf@x".into(),
+    };
+    outbox::enqueue(&s.store, s.account, &draft("Entwurf 1")).unwrap();
+    outbox::enqueue(&s.store, s.account, &draft("Entwurf 2")).unwrap();
+    w.send(Command::Kick);
+    s.until("replayed", |s| outbox::pending(&s.store, s.account).unwrap() == 0).await;
+    assert_eq!(s.with(|f| f.subjects("Drafts")), ["Entwurf 2"]);
+    drop(w);
+}
+
+/// A server that sends an empty or unusual folder role: the folder is listed without one.
+#[tokio::test(flavor = "multi_thread")]
+async fn odd_folder_roles_do_no_harm() {
+    let s = setup("roles").await;
+    {
+        let mut srv = s.server.lock().unwrap();
+        srv.1.raw_roles.insert("Archive".into(), String::new());
+        srv.1.raw_roles.insert("Junk".into(), "ünbekannt".into());
+    }
+    let client = JmapClient::connect(
+        &format!("http://127.0.0.1:{}/jmap/session", s.port),
+        &JmapAuth::Basic { user: USER.into(), password: PW.into() },
+    )
+    .await
+    .unwrap();
+    let mut j = JmapSession::new(client, Store::open(&s.db).unwrap(), s.account, Duration::from_millis(50));
+    let list = j.list().await.unwrap();
+    let archive = list.iter().find(|e| e.name == "Archive").unwrap();
+    assert!(archive.attributes.is_empty(), "{archive:?}");
+    assert!(list.iter().any(|e| e.name == "Junk"));
+    assert_eq!(list.iter().find(|e| e.name == "Sent").unwrap().role(), Some(Role::Sent));
+}

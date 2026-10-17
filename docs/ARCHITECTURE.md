@@ -47,7 +47,7 @@ Identifier: `de.mousewerk.arcalo.mail`.
 | `thread` | Conversations from Message-ID, In-Reply-To and References; adopts early replies, merges threads; replies without those headers join by base subject (a reply prefix, 45 days back, setting `subject_threads`) | done |
 | `parse` | RFC 5322/MIME with mail-parser: addresses, dates, ids, text and HTML bodies, attachments, preview line | done |
 | `sanitize` | ammonia allow-list: no scripts, forms, frames, style sheets or `url()`; remote images removed and counted unless allowed; links get `noopener noreferrer` | done |
-| `outbox` | Offline queue: send (and the copy for Sent), flags, move, delete, drafts, folders; strict order per account, due times for the undo window, backoff, parked steps the server refused | done |
+| `outbox` | Offline queue: send (and the copy for Sent), flags, move, delete, drafts, folders; strict order per account in two lanes (sending, everything else), due times for the undo window, backoff, parked steps the server refused; a step is claimed by its worker with a lease it renews (never run twice) and carries the UIDVALIDITY of its UIDs | done |
 | `triage` | The inbox that sorts itself: a category per message from its header (`classify`: list and unsubscribe headers, `Precedence`, `Auto-Submitted`, machine and transactional senders, receipt words in German and English), decided again when read (a sender's own tab, people for anyone the user wrote to); pages and counts per tab, newsletter bundles per sender, focus (people and pinned), the unified inbox (all accounts); the Screener (`screener_since`, contacts, replies and the user's addresses pass; allowed and blocked senders, blocked mail moved to „Screened Out“ after each inbox sync); subscriptions | done |
 | `later` | Time tools: pin and read later by Message-ID (`marks`), snooze (a „Snoozed“ folder on the server, or `snoozed_until` on this device; back unread on top through `bumped_at`), send later (`scheduled`: the finished outbox step), follow-up reminders (due unless someone else answered); `tick` does what is due in one transaction (the shell's clock every 10 s and at start, the phones' background check) | done |
 | `unsubscribe` | `List-Unsubscribe` (RFC 2369): one-click POST (RFC 8058) through `network::client_for(Service::Unsubscribe)`, else a message through the outbox, else the page after the user confirmed; only on the user's click | done |
@@ -98,11 +98,12 @@ server) and `reply_to_json`, `message_bodies.raw` (small messages kept whole, so
 | Table | Purpose |
 |---|---|
 | `accounts` | Provider, display name, address, sender name, `transport` (JSON of `account::Transport`). No secrets |
-| `mailboxes` | Folders per account: name, delimiter, role, selectable, and the sync state `uid_validity`, `uid_next`, `highest_modseq`, `last_sync` |
+| `mailboxes` | Folders per account: name, delimiter, role, selectable, the sync state `uid_validity`, `uid_next`, `highest_modseq`, `last_sync`, and `sync_error` with the next try for a folder the server would not open |
 | `messages` | One row per message per folder (`UNIQUE (mailbox_id, uid)`): ids for threading, subject, sender, recipients (JSON), dates, size, flags, keywords, `thread_id`, snippet, `has_body` |
 | `message_bodies` | Text and the HTML as sent (sanitized each time it is shown, so a better sanitizer covers old mail), `remote_allowed` |
 | `attachments` | Per message: part index, file name, type, size, Content-ID, inline, `local_path` once saved |
-| `outbox` | The offline queue (kind, JSON payload, state, attempts, next try, last error) |
+| `outbox` | The offline queue (kind, JSON payload, state, attempts, next try, last error, the UIDVALIDITY of its UIDs, the owner and lease of a running step) |
+| `message_refs` | Every Message-ID a message refers to (References, In-Reply-To), indexed: threading finds earlier replies without reading every message |
 | `messages_fts` | FTS5, contentless with delete support, over subject, people and body text (unicode61, diacritics removed; ß folded to ss by the store) |
 | `settings` | Key/value; the app settings are the JSON under `app` |
 
@@ -110,16 +111,26 @@ server) and `reply_to_json`, `message_bodies.raw` (small messages kept whole, so
 
 1. Connect (TLS or STARTTLS through `network`), authenticate (password or XOAUTH2 with a fresh access token),
    `CAPABILITY`, `ENABLE QRESYNC` when offered.
-2. `LIST` (with SPECIAL-USE): folders are added, updated, removed.
+2. `LIST` (with SPECIAL-USE): folders are added, updated, removed; folders created or renamed here keep their place
+   until the queue brought the change to the server. Roles come from the attributes; a role by name (a top folder,
+   or one right below INBOX) only where no folder carries that attribute, once per role.
 3. Per folder, inbox first: `SELECT` with `(QRESYNC (uidvalidity modseq))` when known. A different UIDVALIDITY
    clears the folder and fetches it again. Otherwise changed flags and vanished UIDs (QRESYNC), or flags
    `CHANGEDSINCE` plus a UID list when the count says something was removed (CONDSTORE), or flags and UID list
-   (plain). New mail: headers above the stored UIDNEXT, in batches of 500.
+   (plain). New mail: headers above the stored UIDNEXT, in batches of 500. Messages with a flag change still in the
+   queue keep the local flags. A folder the server refuses is skipped (its error shown, tried again after 5 minutes,
+   doubling up to 6 hours); the other folders go on.
 4. Bodies of the newest 60 messages per folder up to 256 KB right after the sync (first lines in the list, search
    over their text, offline reading); others when a message is opened.
 5. The inbox connection waits in IDLE (renewed every 25 minutes); other folders are polled every 5 minutes or
-   synced when IDLE ends. Failures back off from 5 s to 5 minutes; a refused login stops until the user signs in.
-6. The offline queue replays in order before each sync; the local change is shown at once.
+   synced when IDLE ends; without IDLE the wait ends early when a queued step is due. Failures back off from 5 s to
+   5 minutes (also when connecting works and the rounds fail); a refused login stops until the user signs in, a
+   temporary refusal (RFC 5530 `[UNAVAILABLE]`, `[INUSE]`, POP3 `[IN-USE]`) retries by itself.
+6. The offline queue replays in order before each sync; the local change is shown at once. A step whose folder has
+   another UIDVALIDITY now is parked, never applied to other messages. Without UIDPLUS, `EXPUNGE` keeps the
+   `\Deleted` marks of other clients (taken off for the moment and set again). A send whose answer was lost after
+   the whole message went over is not sent again by itself: a server that files sent mail shows it in Sent, else
+   the step waits for the user.
 
 `SyncMachine` decides these steps and does no I/O itself, so every transition is unit-tested; the shell runs one
 per account on a worker and carries out its actions.

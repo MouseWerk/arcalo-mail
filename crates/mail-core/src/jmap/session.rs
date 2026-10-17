@@ -101,6 +101,13 @@ fn mailbox_ids_of(v: &Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// The SPECIAL-USE attribute of a JMAP role (`sent` → `\\Sent`); none for an empty or odd one.
+fn role_attribute(role: &str) -> Option<String> {
+    let mut chars = role.chars();
+    let first = chars.next().filter(char::is_ascii_alphabetic)?;
+    Some(format!("\\{}{}", first.to_ascii_uppercase(), chars.as_str()))
+}
+
 /// A stable, non-zero UIDVALIDITY for a JMAP folder id (FNV-1a).
 pub fn uid_validity_of(mailbox_id: &str) -> u32 {
     let mut h: u32 = 0x811c9dc5;
@@ -570,7 +577,7 @@ impl ImapClient for JmapSession {
             .map(|m| MailboxEntry {
                 name: m.name.clone(),
                 delimiter: Some('/'),
-                attributes: m.role.iter().map(|r| format!("\\{}{}", r[..1].to_ascii_uppercase(), &r[1..])).collect(),
+                attributes: m.role.as_deref().and_then(role_attribute).into_iter().collect(),
             })
             .collect())
     }
@@ -861,7 +868,13 @@ impl ImapClient for JmapSession {
             .flatten()
             .filter_map(|i| i.as_str().map(str::to_string))
             .collect();
-        // Messages that arrived since the last sync have no UID yet; the next sync brings them.
+        // Messages that came since the mapping was brought up to date (a draft saved a moment
+        // ago, in the same round) get their UID first: a search for a draft must find every copy.
+        let known: HashSet<String> =
+            self.map(|m| m.entries(&mb))?.into_iter().filter(|e| !e.gone).map(|e| e.email_id).collect();
+        if found.iter().any(|id| !known.contains(id)) {
+            self.refresh().await?;
+        }
         Ok(self
             .map(|m| m.entries(&mb))?
             .into_iter()
@@ -911,5 +924,8 @@ mod unit {
             &json!({ "headers": [{ "name": "Subject", "value": " Hallo\r\n Welt" }, { "name": "From", "value": " a@x" }] }),
         );
         assert_eq!(h, b"Subject: Hallo\r\n Welt\r\nFrom: a@x\r\n\r\n");
+        assert_eq!(role_attribute("sent").as_deref(), Some("\\Sent"));
+        assert_eq!(role_attribute(""), None);
+        assert_eq!(role_attribute("ärger"), None);
     }
 }
