@@ -2,7 +2,7 @@
 
 Decided by the owner on 2026-10-16 for the first release.
 
-- **Version:** the first public release is 1.0.0.
+- **Version:** the first public release is 1.1.0 (changed 2026-10-17, see below).
 - **iOS:** MouseWerk joins the paid Apple Developer Program; Arcalo Mail is distributed through TestFlight and
   the App Store. The owner creates the account and adds the signing secrets to the repository's GitHub
   secrets; until then the iOS job only compiles. This is an exception to Arcalo's "no paid certificates"
@@ -73,3 +73,9 @@ with the Google sign-in.
   encrypted drafts; Comfort: voice dictation in the compose sheet (Arcalo's local speech recognition), an undo
   history for every action, Arcalo's themes and a reading mode, quick reply from notifications on desktop and
   phone, watch apps (Apple Watch, Wear OS).
+
+## First release is 1.1.0 (2026-10-17)
+
+There is no 1.0.0 release. The first public release is 1.1.0 and contains the 1.0.0 scope plus the 1.1 scope
+above (security, comfort, Exchange on premises, Google sign-in when verified, iOS widget, Microsoft Store and
+winget). Work for it happens on main again; the `next` branch is merged into main when its round is done.

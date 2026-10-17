@@ -645,6 +645,7 @@ impl ImapClient for JmapSession {
                     internal_date: m.get("receivedAt").and_then(Value::as_str).and_then(parse_utc).unwrap_or(0),
                     size: m.get("size").and_then(Value::as_u64).unwrap_or(0) as u32,
                     header: header_bytes(m),
+                    gm_msgid: None,
                 });
             }
         }

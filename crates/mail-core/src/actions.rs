@@ -738,8 +738,11 @@ pub fn message_view_with(
         // A large message: its calendar part came with the text.
         invitation = crate::itip::card(store, id, &data)?;
     }
-    let images =
-        if detail.html.as_deref().is_some_and(|h| h.contains("cid:")) { store.inline_images(id)? } else { vec![] };
+    let images = if detail.html.as_deref().is_some_and(|h| h.to_ascii_lowercase().contains("cid:")) {
+        store.inline_images(id)?
+    } else {
+        vec![]
+    };
     let clean = |html: &str| -> Sanitized { sanitize_html_inline(html, allow, &images) };
     let body = match (&detail.html, &detail.text) {
         (Some(html), text) => {

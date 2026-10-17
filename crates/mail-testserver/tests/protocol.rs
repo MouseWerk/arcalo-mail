@@ -745,3 +745,55 @@ async fn without_uidplus_a_move_leaves_messages_others_marked_deleted() {
     c.expunge(&[3]).await.unwrap();
     assert_eq!(srv.shared.with(|f| f.subjects("INBOX")), ["Marked by another client"]);
 }
+
+/// Gmail over the wire, as the owner's account answers: `X-GM-EXT-1`, the German folders below
+/// „[Gmail]“ in modified UTF-7, a label with brackets, X-GM-MSGID on every copy, the beginning
+/// of each body for the preview line, and a first sync that brings the newest mail first.
+#[tokio::test]
+async fn gmail_over_the_wire() {
+    let caps = mail_core::imap::fake::FakeImap::gmail().caps;
+    let srv = server(caps, false).await;
+    srv.shared.with(|f| {
+        for i in 1..=30u32 {
+            let body = format!("Text der Nachricht {i}");
+            f.deliver_gmail(
+                &msg(&format!("g{i}@x"), &format!("Mail {i}"), &body),
+                1_792_135_800 + i as i64,
+                &["INBOX"],
+            );
+        }
+        f.deliver_gmail(&msg("n@x", "Seite geteilt", "Notion"), 1_792_136_800, &["INBOX", "[Notion]"]);
+    });
+    let (store, account) = store_with_account(plain(srv.imap), plain(srv.smtp));
+    let mut c = ImapSession::connect(&plain(srv.imap), USER, PW).await.unwrap();
+    let caps = c.capabilities().await.unwrap();
+    assert!(caps.gmail && caps.condstore && !caps.qresync);
+    let names: Vec<String> = c.list().await.unwrap().into_iter().map(|e| e.name).collect();
+    for name in ["[Gmail]/Entwürfe", "[Gmail]/Alle Nachrichten", "[Notion]", "Entwürfe"] {
+        assert!(names.contains(&name.to_string()), "{name}: {names:?}");
+    }
+    let h = c.select("INBOX", None).await.unwrap();
+    assert_eq!(h.info.exists, 31);
+    let headers = c.fetch_headers(UidRange { from: 31, to: Some(31) }).await.unwrap();
+    assert!(headers[0].gm_msgid.is_some(), "X-GM-MSGID");
+    let previews = c.fetch_previews(UidRange { from: 30, to: Some(31) }).await.unwrap();
+    assert_eq!(previews.len(), 2);
+    assert!(String::from_utf8_lossy(&previews[0].1).contains("Text der Nachricht 30"), "{previews:?}");
+
+    let reports = sync_account(&mut c, &store, account).await.unwrap();
+    assert!(!reports.is_empty());
+    let role = |r: Role| store.mailbox_by_role(account, r).unwrap().map(|m| m.name);
+    assert_eq!(role(Role::Drafts).as_deref(), Some("[Gmail]/Entwürfe"));
+    assert_eq!(role(Role::All).as_deref(), Some("[Gmail]/Alle Nachrichten"));
+    let drafts = store.mailboxes(account).unwrap().into_iter().filter(|m| m.role == Some(Role::Drafts)).count();
+    assert_eq!(drafts, 1, "the label „Entwürfe“ is no second drafts folder");
+    assert!(store.mailbox_by_name(account, "[Notion]").unwrap().is_some(), "the bracket stays");
+    let inbox = store.mailbox_by_role(account, Role::Inbox).unwrap().unwrap();
+    let list = store.messages(inbox.id, 50, 0).unwrap();
+    assert_eq!(list.len(), 31);
+    assert_eq!(list[0].subject, "Seite geteilt");
+    assert_eq!(list[1].snippet, "Text der Nachricht 30", "the preview line before any body");
+    let hits = mail_core::search::search(&store, "geteilt", Some(account), 10).unwrap();
+    assert_eq!(hits.len(), 1, "inbox, label and All Mail are one message: {hits:?}");
+    c.logout().await.unwrap();
+}
