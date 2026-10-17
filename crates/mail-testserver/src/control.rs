@@ -473,6 +473,16 @@ async fn handle(stream: TcpStream, shared: Arc<Shared>) -> std::io::Result<()> {
                 None => ("404 Not Found", "text/plain", b"no such message".to_vec()),
             }
         }
+        // A message of a folder as the server keeps it (the e2e test of encrypted drafts).
+        ("GET", "/raw") => {
+            let mailbox = q.get("mailbox").cloned().unwrap_or_else(|| "INBOX".into());
+            let uid: u32 = q.get("uid").and_then(|v| v.parse().ok()).unwrap_or(0);
+            let f = shared.fake.lock().unwrap();
+            match f.mailboxes.get(&mailbox).and_then(|m| m.messages.get(&uid)) {
+                Some(m) => ("200 OK", "message/rfc822", m.raw.clone()),
+                None => ("404 Not Found", "text/plain", b"no such message".to_vec()),
+            }
+        }
         ("POST", "/deliver") => {
             let mailbox = q.get("mailbox").cloned().unwrap_or_else(|| "INBOX".into());
             let date: i64 = q.get("date").and_then(|v| v.parse().ok()).unwrap_or_else(|| {

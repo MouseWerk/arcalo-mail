@@ -910,3 +910,128 @@ fn smime_oaep_with_sha256_opens() {
     let opened = smime::decrypt(&ci.to_der().unwrap(), &[id]).unwrap();
     assert_eq!(opened, content);
 }
+
+/// The draft of an encrypted message as the server gets it, and back in Drafts: queued
+/// ([`crate::actions::queue_draft_with`]), then stored as the sync brings it back.
+fn saved_draft(s: &Store, keys: &Vault, d: &Draft, files: &[crate::compose::FileAttachment]) -> (Vec<u8>, i64) {
+    use crate::imap::MailboxEntry;
+    use base64::Engine;
+    let drafts = s
+        .upsert_mailbox(
+            d.account_id,
+            &MailboxEntry { name: "Drafts".into(), delimiter: Some('/'), attributes: vec!["\\Drafts".into()] },
+        )
+        .unwrap();
+    let mid = crate::actions::queue_draft_with(s, d, files, keys).unwrap();
+    let payload: String = s
+        .conn()
+        .query_row("SELECT payload FROM outbox WHERE kind = 'save_draft' ORDER BY id DESC LIMIT 1", [], |r| r.get(0))
+        .unwrap();
+    let op: crate::outbox::Op = serde_json::from_str(&payload).unwrap();
+    let crate::outbox::Op::SaveDraft { raw_b64, message_id, .. } = op else { panic!() };
+    assert_eq!(message_id, mid);
+    let raw = base64::engine::general_purpose::STANDARD.decode(raw_b64).unwrap();
+    let p = crate::parse::parse(&raw).unwrap();
+    let uid = s.conn().query_row("SELECT count(*) + 1 FROM messages", [], |r| r.get::<_, u32>(0)).unwrap();
+    let mut h = crate::store::tests::header(uid, &raw);
+    h.flags.draft = true;
+    let id = s.insert_message(drafts, &h, &p).unwrap();
+    s.set_body_raw(id, &p, Some(&raw)).unwrap();
+    (raw, id)
+}
+
+#[test]
+fn drafts_of_encrypted_messages_are_encrypted_to_the_own_key_and_open_again() {
+    let (maria, mut maria_keys, maria_acc) = person("maria@example.org");
+    own_pgp_key(&maria, &mut maria_keys, "maria@example.org");
+    // Jonas's key is not needed for the draft: it is encrypted to Maria only.
+    let file = crate::compose::FileAttachment {
+        name: "zahlen.txt".into(),
+        mime_type: "text/plain".into(),
+        data: b"Umsatz 4711".to_vec(),
+    };
+    let d = Draft {
+        account_id: maria_acc.id,
+        to: vec!["jonas@example.org".into()],
+        bcc: vec!["lea@example.org".into()],
+        subject: "Vertrag".into(),
+        text: "Der geheime Entwurf".into(),
+        html: Some("<p>Der <b>geheime</b> Entwurf</p>".into()),
+        protect: Some(Protect { method: Method::Pgp, sign: true, encrypt: true }),
+        ..Draft::default()
+    };
+    let (raw, id) = saved_draft(&maria, &maria_keys, &d, std::slice::from_ref(&file));
+    let text = String::from_utf8_lossy(&raw);
+    assert!(text.contains("multipart/encrypted"), "{text}");
+    assert!(text.contains("X-Arcalo-Mail-Protect: pgp; sign=1; encrypt=1"), "{text}");
+    for secret in ["geheime", "Umsatz 4711", "zahlen.txt"] {
+        assert!(!text.contains(secret), "{secret} readable in the draft on the server");
+    }
+    // Readable with Maria's key only (also in the store: the synced copy is the encrypted one).
+    let (lea, lea_keys, _) = person("lea@example.org");
+    assert!(!open(&lea, &raw, Some("maria@example.org"), &lea_keys).unwrap().protection.decrypted);
+    let stored: Vec<u8> = maria.raw_message(id).unwrap().unwrap();
+    assert!(!String::from_utf8_lossy(&stored).contains("geheime"));
+
+    // Opened again: the text, the recipients with Bcc, the protection and the file inside.
+    let back = crate::actions::draft_of_with(&maria, id, &maria_keys).unwrap();
+    assert_eq!(back.subject, "Vertrag");
+    assert_eq!(back.to, ["jonas@example.org"]);
+    assert_eq!(back.bcc, ["lea@example.org"]);
+    assert!(back.html.as_deref().is_some_and(|h| h.contains("<b>geheime</b>")), "{:?}", back.html);
+    assert_eq!(back.protect, Some(Protect { method: Method::Pgp, sign: true, encrypt: true }));
+    assert_eq!(back.sealed_from, Some(id));
+    assert_eq!(back.sealed_files, ["zahlen.txt"]);
+    assert!(back.forwarded.is_empty(), "no wrapper parts as files");
+    let files = crate::actions::sealed_files_with(&maria, id, &maria_keys).unwrap();
+    assert_eq!(files.len(), 1);
+    assert_eq!((files[0].name.as_str(), files[0].data.as_slice()), ("zahlen.txt", &b"Umsatz 4711"[..]));
+    // Saved again with its files: still encrypted, the file still inside.
+    let again = Draft { message_id: back.message_id.clone(), ..back };
+    let (raw2, id2) = saved_draft(&maria, &maria_keys, &again, &files);
+    assert!(!String::from_utf8_lossy(&raw2).contains("Umsatz"));
+    assert_eq!(crate::actions::draft_of_with(&maria, id2, &maria_keys).unwrap().sealed_files, ["zahlen.txt"]);
+
+    // Without the key (another device, a locked key): a clear error, nothing shown.
+    let e = crate::actions::draft_of_with(&maria, id, &NoKeys).unwrap_err().to_string();
+    assert!(!e.is_empty());
+
+    // Signed only: kept readable, the wish to sign comes back.
+    let signed = Draft {
+        protect: Some(Protect { method: Method::Pgp, sign: true, encrypt: false }),
+        message_id: None,
+        ..d.clone()
+    };
+    let (raw3, id3) = saved_draft(&maria, &maria_keys, &signed, &[]);
+    assert!(String::from_utf8_lossy(&raw3).contains("geheime"));
+    let back = crate::actions::draft_of_with(&maria, id3, &maria_keys).unwrap();
+    assert_eq!(back.protect, Some(Protect { method: Method::Pgp, sign: true, encrypt: false }));
+    assert_eq!(back.sealed_from, None);
+    // A plain draft stays plain and asks for nothing.
+    let plain = Draft { protect: None, message_id: None, ..d };
+    let (raw4, id4) = saved_draft(&maria, &maria_keys, &plain, &[]);
+    assert!(!String::from_utf8_lossy(&raw4).contains("X-Arcalo-Mail-Protect"));
+    assert_eq!(crate::actions::draft_of_with(&maria, id4, &maria_keys).unwrap().protect, None);
+}
+
+#[test]
+fn smime_drafts_are_encrypted_to_the_own_certificate() {
+    let (maria, mut maria_keys, maria_acc) = person("maria@example.org");
+    let (_, p12) = self_signed("maria@example.org", None);
+    own_smime(&maria, &mut maria_keys, &p12);
+    let d = Draft {
+        account_id: maria_acc.id,
+        to: vec!["jonas@example.org".into()],
+        subject: "Angebot".into(),
+        text: "Vertraulicher Preis".into(),
+        protect: Some(Protect { method: Method::Smime, sign: false, encrypt: true }),
+        ..Draft::default()
+    };
+    let (raw, id) = saved_draft(&maria, &maria_keys, &d, &[]);
+    let text = String::from_utf8_lossy(&raw);
+    assert!(text.contains("application/pkcs7-mime"), "{text}");
+    assert!(!text.contains("Vertraulicher"));
+    let back = crate::actions::draft_of_with(&maria, id, &maria_keys).unwrap();
+    assert_eq!(back.text.trim(), "Vertraulicher Preis");
+    assert_eq!(back.protect, Some(Protect { method: Method::Smime, sign: false, encrypt: true }));
+}

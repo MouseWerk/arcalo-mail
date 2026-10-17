@@ -1,0 +1,11 @@
+X-Expect: none
+X-Context: known
+From: Anna Berger <anna@mueller-bau.de>
+Subject: Link
+Date: Mon, 6 Oct 2025 10:00:00 +0200
+Message-ID: <clean-forwarded-link@corpus.test>
+To: maria@example.org
+MIME-Version: 1.0
+Content-Type: text/html; charset=utf-8
+
+<p>Schau mal: <a href="https://www.example.com/artikel">www.example.com/artikel</a></p>

@@ -135,6 +135,12 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+      # SQLCipher's vendored OpenSSL is configured with Perl: Strawberry Perl of the runner (Git's
+      # perl lacks modules OpenSSL needs), as in Arcalo.
+      - name: Perl for OpenSSL (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: echo 'OPENSSL_SRC_PERL=C:\Strawberry\perl\bin\perl.exe' >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@1.94.1
       - uses: Swatinem/rust-cache@v2
       - uses: actions/setup-node@v4

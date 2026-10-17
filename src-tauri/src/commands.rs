@@ -683,6 +683,9 @@ pub struct Queued {
 pub async fn send_message(state: State<'_, AppState>, draft: Draft, followup_secs: Option<i64>) -> Res<Queued> {
     let mut files = read_files(&draft.attachments)?;
     files.extend(forwarded(&state, &draft.forwarded).await?);
+    if let Some(id) = draft.sealed_from {
+        files.extend(actions::sealed_files(&state.store(), id)?);
+    }
     let store = state.store();
     let delay = mail_core::settings::load(&store)?.undo_send_secs.min(30);
     let (outbox_id, message_id) = actions::queue_send(&store, &draft, &files, delay)?;
@@ -711,6 +714,9 @@ pub fn cancel_send(state: State<'_, AppState>, outbox_id: i64, message_id: Optio
 pub async fn send_later(state: State<'_, AppState>, draft: Draft, at: i64, followup_secs: Option<i64>) -> Res<i64> {
     let mut files = read_files(&draft.attachments)?;
     files.extend(forwarded(&state, &draft.forwarded).await?);
+    if let Some(id) = draft.sealed_from {
+        files.extend(actions::sealed_files(&state.store(), id)?);
+    }
     let (id, _) = later::schedule_send(&state.store(), &draft, &files, at, followup_secs.filter(|s| *s > 0))?;
     Ok(id)
 }
@@ -738,9 +744,19 @@ pub fn send_scheduled_now(state: State<'_, AppState>, id: i64) -> Res<()> {
 pub async fn save_draft(state: State<'_, AppState>, draft: Draft) -> Res<String> {
     let mut files = read_files(&draft.attachments)?;
     files.extend(forwarded(&state, &draft.forwarded).await?);
+    if let Some(id) = draft.sealed_from {
+        files.extend(actions::sealed_files(&state.store(), id)?);
+    }
     let mid = actions::queue_draft(&state.store(), &draft, &files)?;
     state.kick(&[draft.account_id]);
     Ok(mid)
+}
+
+/// „Das ist in Ordnung“ on a phishing warning: no warning for this sender any more (`ok: false`
+/// takes it back).
+#[tauri::command]
+pub fn phishing_ok(state: State<'_, AppState>, email: String, ok: bool) -> Res<()> {
+    mail_core::phishing::set_ok(&state.store(), &email, ok)
 }
 
 /// A draft from Drafts as it was written, to go on writing it.

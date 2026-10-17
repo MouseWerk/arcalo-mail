@@ -55,7 +55,7 @@ flate2 = "1"
 tar = "0.4"
 
 # Windows: the update's setup is started with ShellExecute; the default mail app is read from
-# the registry.
+# the registry. The app lock: Windows Hello (UserConsentVerifier, for the window), as in Arcalo.
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
   "Win32_Foundation",
@@ -63,6 +63,16 @@ windows-sys = { version = "0.61", features = [
   "Win32_UI_Shell",
   "Win32_UI_WindowsAndMessaging",
 ] }
+windows = { version = "0.61", features = ["Foundation", "Security_Credentials_UI", "Win32_Foundation", "Win32_System_WinRT"] }
+windows-future = "0.2"
+
+# The app lock: Touch ID and Face ID or the device's password (LocalAuthentication's LAContext),
+# as in Arcalo.
+[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
+block2 = "0.6.2"
+objc2 = "0.6.5"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSError"] }
+objc2-local-authentication = { version = "0.3", default-features = false, features = ["std", "block2", "LAContext", "LAError"] }
 
 # Buttons on the new-mail notification (archive, mark read, reply): the notification server's
 # actions on Linux, the toast's buttons on Windows.

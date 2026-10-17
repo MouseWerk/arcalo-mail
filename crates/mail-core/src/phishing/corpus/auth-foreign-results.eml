@@ -1,0 +1,12 @@
+X-Expect: none
+X-Context: known
+From: Verein <kontakt@verein-example.de>
+Authentication-Results: mx.attacker.example; dmarc=fail header.from=verein-example.de
+Subject: x
+Date: Mon, 6 Oct 2025 10:00:00 +0200
+Message-ID: <auth-foreign-results@corpus.test>
+To: maria@example.org
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+
+Ein Ergebnis eines fremden Servers zaehlt nicht.

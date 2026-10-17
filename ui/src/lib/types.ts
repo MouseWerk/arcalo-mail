@@ -223,7 +223,23 @@ export type MessageView = {
   invitation: InvitationCard | null;
   /** An online meeting's link in the message („Beitreten“). */
   meeting: { url: string; kind: string } | null;
+  /** Signs that the message is not from whom it claims to be (mail_core::phishing). */
+  phishing?: PhishingWarning | null;
 };
+
+// ---------------------------------------------------------------- the phishing warning
+
+export type ClaimKind = "bank" | "payment" | "parcel" | "company";
+/** One reason of a phishing warning (mail_core::phishing::Reason). */
+export type PhishingReason =
+  | { reason: "lookalike"; domain: string; like: string }
+  | { reason: "punycode"; domain: string; shown: string }
+  | { reason: "reply_to"; reply_to: string; from: string }
+  | { reason: "name_address"; shown: string; actual: string }
+  | { reason: "first_contact"; claim: string; kind: ClaimKind }
+  | { reason: "link"; shown: string; target: string; more: number }
+  | { reason: "auth_failed"; checks: string[] };
+export type PhishingWarning = { sender: string; reasons: PhishingReason[] };
 
 // ---------------------------------------------------------------- signed and encrypted mail
 
@@ -407,6 +423,10 @@ export type ComposeDraft = {
   forwarded: number[];
   /** Signed and/or encrypted with OpenPGP or S/MIME. */
   protect?: Protect | null;
+  /** The encrypted draft this one was opened from: its files stay in the backend and go along. */
+  sealed_from?: number | null;
+  /** The names of those files. */
+  sealed_files?: string[];
 };
 
 export type Queued = { outbox_id: number; message_id: string; delay: number };
@@ -494,6 +514,8 @@ export type Settings = {
   updates: UpdateMode;
   /** „Startanimation“: the mark draws itself while the app loads. */
   startup_animation: boolean;
+  /** The phishing warning above suspicious messages. */
+  phishing_warning: boolean;
 };
 
 export type UpdateMode = "auto" | "notify";

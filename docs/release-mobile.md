@@ -225,3 +225,9 @@ signs.) The secret `APPLE_DEVELOPMENT_TEAM` of milestone 1 is no longer read; it
   widget's count and its three rows after a background check, a tap on a row opening that message; on iOS, the
   `new-mail` category's buttons on a notification from the background check (long press), and notifications still
   shown while the app is in front (the app's delegate replaces the notification plugin's).
+- The app lock and the encryption on the device (1.1): BiometricPrompt (`BiometricGate.kt`) with a fingerprint, the
+  face and the screen lock (Android 11 and later), Face ID and Touch ID (the `NSFaceIDUsageDescription` string), the
+  lock when the app goes to the background and the app switcher showing the lock screen; with the lock on, the
+  notifications of the background check saying only how many and the widget showing the count only; an encrypted
+  database opened by the background check (the key from the Keystore, from the Keychain after the first unlock);
+  SQLCipher's OpenSSL built by the Android job and CommonCrypto on iOS.

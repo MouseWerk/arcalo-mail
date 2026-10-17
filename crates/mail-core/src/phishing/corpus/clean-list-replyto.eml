@@ -1,0 +1,13 @@
+X-Expect: none
+X-Context: known
+From: Max <max@uni-example.de>
+Reply-To: Liste <diskussion@lists.example.net>
+List-Id: Diskussion <diskussion.lists.example.net>
+Subject: Re: Frage
+Date: Mon, 6 Oct 2025 10:00:00 +0200
+Message-ID: <clean-list-replyto@corpus.test>
+To: maria@example.org
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+
+Antwort an die Liste.

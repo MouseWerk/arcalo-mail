@@ -165,6 +165,8 @@ export const api = {
   draftOf: (id: number) => call<ComposeDraft>("draft_of", { id }, () => demo.draftOf(id)),
   /** The open message was saved as a draft; the shell may quit now. */
   draftsSaved: () => call<void>("drafts_saved", {}, () => undefined),
+  /** „Das ist in Ordnung“ on a phishing warning (`ok: false` takes it back). */
+  phishingOk: (email: string, ok: boolean) => call<void>("phishing_ok", { email, ok }, () => undefined),
 
   openAttachment: (id: number, confirmed = false) => call<{ opened: boolean; risk: "none" | "macro" | "blocked" }>("open_attachment", { id, confirmed }, () => ({ opened: true, risk: "none" })),
   saveAttachment: (id: number, path: string) => call<void>("save_attachment", { id, path }, () => undefined),
@@ -382,10 +384,20 @@ export function onReminders(f: (r: Reminder[]) => void): () => void {
  * is the window event `arcalo-mail:save-drafts`. Returns the unsubscribe function.
  */
 export function onSaveDrafts(f: () => Promise<void>): () => void {
+  // Before the app locks (lib/security.ts, `flushDrafts`): the same save, answered through the
+  // event's `done`.
+  const flush = (e: Event) => {
+    e.preventDefault();
+    void f().finally(() => (e as CustomEvent<{ done?: () => void }>).detail?.done?.());
+  };
+  window.addEventListener(FLUSH_EVENT, flush);
   if (!inApp()) {
     const go = () => void f();
     window.addEventListener("arcalo-mail:save-drafts", go);
-    return () => window.removeEventListener("arcalo-mail:save-drafts", go);
+    return () => {
+      window.removeEventListener(FLUSH_EVENT, flush);
+      window.removeEventListener("arcalo-mail:save-drafts", go);
+    };
   }
   let stop: (() => void) | null = null;
   let cancelled = false;
@@ -401,7 +413,24 @@ export function onSaveDrafts(f: () => Promise<void>): () => void {
   return () => {
     cancelled = true;
     stop?.();
+    window.removeEventListener(FLUSH_EVENT, flush);
   };
+}
+
+const FLUSH_EVENT = "arcalo-mail:flush-drafts";
+
+/** Asks the open compose sheet to save its draft (before the app locks); resolves once it is
+ *  saved, at once when no sheet listens, or after `wait` ms. */
+export function flushDrafts(wait = 2500): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, wait);
+    const done = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    const heard = !window.dispatchEvent(new CustomEvent(FLUSH_EVENT, { detail: { done }, cancelable: true }));
+    if (!heard) done();
+  });
 }
 
 /** Calls `f` with the tray menu's actions (`compose`); returns the unsubscribe function. */

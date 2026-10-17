@@ -1,0 +1,13 @@
+X-Expect: none
+X-Context: known
+From: Shop News <news@shop-example.de>
+List-Id: <news.shop-example.de>
+List-Unsubscribe: <https://shop-example.de/u>
+Subject: Neu im Shop
+Date: Mon, 6 Oct 2025 10:00:00 +0200
+Message-ID: <clean-newsletter@corpus.test>
+To: maria@example.org
+MIME-Version: 1.0
+Content-Type: text/html; charset=utf-8
+
+<p><a href="https://click.shop-example.de/c/123">www.shop-example.de</a> und <a href="https://shop.us1.list-manage.com/track/click?u=1">shop-example.de/angebote</a></p>

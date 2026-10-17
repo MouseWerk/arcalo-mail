@@ -1,0 +1,11 @@
+X-Expect: punycode lookalike
+X-Context: first
+From: Service <noreply@xn--l-7sba6dbr.com>
+Subject: Zahlung
+Date: Mon, 6 Oct 2025 10:00:00 +0200
+Message-ID: <punycode-paypal@corpus.test>
+To: maria@example.org
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+
+Bitte bestaetigen.

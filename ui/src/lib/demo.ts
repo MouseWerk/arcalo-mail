@@ -164,6 +164,7 @@ let settings: Settings = {
   arcalo_target: "page",
   updates: "auto",
   startup_animation: true,
+  phishing_warning: true,
 };
 const listeners = new Set<(n: Notice) => void>();
 
