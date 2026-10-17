@@ -43,8 +43,9 @@ jobs:
           COMMITS: ${{ toJSON(github.event.commits) }}
         run: node scripts/commit-rules.mjs
       # The release's scripts: the automatic release's choice of version, the APK's signer, the
-      # update feed's check and the version stamp (docs/release.md); the release notes' shape.
-      - run: node --test scripts/release-pick.test.mjs scripts/apk-signer.test.mjs scripts/verify-update-feed.test.mjs scripts/set-version.test.mjs scripts/release-notes.test.mjs scripts/commit-rules.test.mjs
+      # update feed's check and the version stamp (docs/release.md); the release notes' shape, the
+      # commit rules and the e2e conventions.
+      - run: node --test scripts/release-pick.test.mjs scripts/apk-signer.test.mjs scripts/verify-update-feed.test.mjs scripts/set-version.test.mjs scripts/release-notes.test.mjs scripts/commit-rules.test.mjs scripts/e2e-conventions.test.mjs
       - run: npm ci --prefix ui
       - run: npm --prefix ui run typecheck
       - run: npm --prefix ui test
