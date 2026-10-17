@@ -61,15 +61,20 @@ type Props = {
 
 /**
  * Signing and encrypting: what the account's keys and the recipients' keys allow, asked again
- * when the recipients change; signing by default once it is known to be possible.
+ * when the recipients change; signing by default once it is known to be possible. The default goes
+ * on top of the sheet's latest state (`update`), so keys typed while the answer was on its way
+ * neither lose it nor are lost.
  */
-function useAbilities(draft: ComposeState, onChange: (d: ComposeState) => void, signByDefault: ProtectMethod | null | undefined) {
+function useAbilities(
+  draft: ComposeState,
+  current: () => ComposeState,
+  update: (patch: Partial<ComposeState>) => void,
+  signByDefault: ProtectMethod | null | undefined,
+) {
   const [abilities, setAbilities] = useState<Abilities | null>(null);
   const recipients = [...draft.to, ...draft.cc, ...draft.bcc];
   const key = `${draft.accountId}|${recipients.join(",")}`;
   const defaulted = useRef(false);
-  const latest = useRef(draft);
-  latest.current = draft;
   useEffect(() => {
     if (draft.accountId == null) return;
     let gone = false;
@@ -79,14 +84,14 @@ function useAbilities(draft: ComposeState, onChange: (d: ComposeState) => void, 
         .then((a) => {
           if (gone) return;
           setAbilities(a);
-          const d = latest.current;
+          const d = current();
           if (!defaulted.current && d.protect === undefined && a.pgp_prefer_encrypt) {
             // Every recipient asked for encrypted mail (Autocrypt), and the sender can.
             defaulted.current = true;
-            onChange({ ...d, protect: { method: "pgp", sign: signByDefault === "pgp", encrypt: true } });
+            update({ protect: { method: "pgp", sign: signByDefault === "pgp", encrypt: true } });
           } else if (!defaulted.current && d.protect === undefined && signByDefault && (signByDefault === "pgp" ? a.pgp_sign : a.smime_sign)) {
             defaulted.current = true;
-            onChange({ ...d, protect: { method: signByDefault, sign: true, encrypt: false } });
+            update({ protect: { method: signByDefault, sign: true, encrypt: false } });
           }
         })
         .catch(() => {});
@@ -393,7 +398,21 @@ function Editor({
 export function ComposeSheet({ draft, accounts, error, sending, saved, modal, onChange, onSend, onSendLater, onSaveDraft, onClose, onDiscard, aiOn, signByDefault }: Props) {
   const t = useT();
   const lang = currentLang();
-  const abilities = useAbilities(draft, onChange, signByDefault);
+  // The latest state of the sheet, also before the parent rendered it again: every change goes on
+  // top of it, so two changes in one go (a key typed while an answer arrives) both stay.
+  const latest = useRef(draft);
+  const shown = useRef(draft);
+  if (shown.current !== draft) {
+    shown.current = draft;
+    latest.current = draft;
+  }
+  const replace = (next: ComposeState) => {
+    latest.current = next;
+    onChange(next);
+  };
+  const update = (patch: Partial<ComposeState>) => replace({ ...latest.current, ...patch });
+  const set = update;
+  const abilities = useAbilities(draft, () => latest.current, update, signByDefault);
   const protect = draft.protect ?? null;
   /** The protection menu: per method signing and encrypting, as the keys allow. */
   const protectItems = (): MenuItem[] => {
@@ -405,18 +424,18 @@ export function ComposeSheet({ draft, accounts, error, sending, saved, modal, on
     ];
     for (const [method, name, canSign, canEncrypt, missing] of methods) {
       const on = protect?.method === method ? protect : null;
-      const set = (sign: boolean, encrypt: boolean) => onChange({ ...draft, protect: sign || encrypt ? { method, sign, encrypt } : null });
+      const choose = (sign: boolean, encrypt: boolean) => update({ protect: sign || encrypt ? { method, sign, encrypt } : null });
       items.push({ heading: name });
-      items.push({ label: t("protect.sign"), checked: !!on?.sign, disabled: !canSign, hint: canSign ? undefined : t("protect.noOwnKey"), onSelect: () => set(!on?.sign, !!on?.encrypt) });
+      items.push({ label: t("protect.sign"), checked: !!on?.sign, disabled: !canSign, hint: canSign ? undefined : t("protect.noOwnKey"), onSelect: () => choose(!on?.sign, !!on?.encrypt) });
       items.push({
         label: t("protect.encrypt"),
         checked: !!on?.encrypt,
         disabled: !canEncrypt,
         hint: canEncrypt ? undefined : missing.length ? t("protect.missingFor", { n: missing.length }) : t("protect.noRecipients"),
-        onSelect: () => set(on?.sign ?? canSign, !on?.encrypt),
+        onSelect: () => choose(on?.sign ?? canSign, !on?.encrypt),
       });
     }
-    if (protect) items.push("separator", { label: t("protect.none"), onSelect: () => onChange({ ...draft, protect: null }) });
+    if (protect) items.push("separator", { label: t("protect.none"), onSelect: () => update({ protect: null }) });
     return items;
   };
   const [dropping, setDropping] = useState(false);
@@ -431,14 +450,6 @@ export function ComposeSheet({ draft, accounts, error, sending, saved, modal, on
   const sheet = useRef<HTMLDivElement>(null);
   const subject = useRef<HTMLInputElement>(null);
   const body = useRef<HTMLTextAreaElement>(null);
-  const latest = useRef(draft);
-  latest.current = draft;
-  const set = (patch: Partial<ComposeState>) => onChange({ ...draft, ...patch });
-  /** A change on top of the latest one (two in one go, a chip and the cleared typing, both stay). */
-  const update = (patch: Partial<ComposeState>) => {
-    latest.current = { ...latest.current, ...patch };
-    onChange(latest.current);
-  };
   const typing = draft.typing ?? { to: "", cc: "", bcc: "" };
   const setTyping = (field: "to" | "cc" | "bcc", v: string) => update({ typing: { ...(latest.current.typing ?? { to: "", cc: "", bcc: "" }), [field]: v } });
   const [templates, setTemplates] = useState<Template[]>([]);
@@ -469,7 +480,7 @@ export function ComposeSheet({ draft, accounts, error, sending, saved, modal, on
     const body = sig && firstLine && (d.rich ? d.html : d.text).includes(firstLine) ? filled.replace(sig, "").trimEnd() : filled;
     const own = ownText(d);
     const text = own ? `${body}\n\n${own}` : body;
-    onChange({ ...replaceOwnText(d, text), subject: d.subject.trim() ? d.subject : subject });
+    replace({ ...replaceOwnText(d, text), subject: d.subject.trim() ? d.subject : subject });
   };
 
   /** Puts the chosen snippet in place of `;;query`. */
@@ -488,7 +499,7 @@ export function ComposeSheet({ draft, accounts, error, sending, saved, modal, on
         sel.addRange(r);
         document.execCommand("insertText", false, text);
         const ed = sheet.current?.querySelector<HTMLElement>(".editor");
-        if (ed) onChange({ ...latest.current, html: ed.innerHTML });
+        if (ed) update({ html: ed.innerHTML });
       }
       return;
     }
@@ -497,7 +508,7 @@ export function ComposeSheet({ draft, accounts, error, sending, saved, modal, on
     const pos = ta.selectionStart;
     const value = latest.current.text;
     const next = value.slice(0, pos - typed) + text + value.slice(pos);
-    onChange({ ...latest.current, text: next });
+    update({ text: next });
     requestAnimationFrame(() => {
       ta.focus();
       ta.setSelectionRange(pos - typed + text.length, pos - typed + text.length);
@@ -542,7 +553,7 @@ export function ComposeSheet({ draft, accounts, error, sending, saved, modal, on
     const infos = await api.fileInfos(paths);
     const cur = latest.current;
     const known = new Set(cur.attachments.map((a) => a.path));
-    onChange({ ...cur, attachments: [...cur.attachments, ...infos.filter((i) => !known.has(i.path))] });
+    replace({ ...cur, attachments: [...cur.attachments, ...infos.filter((i) => !known.has(i.path))] });
   };
 
   useEffect(() => onFileDrop((paths) => void attach(paths), setDropping), []);
@@ -778,7 +789,7 @@ export function ComposeSheet({ draft, accounts, error, sending, saved, modal, on
                   type="button"
                   className="btn btn-sm btn-primary"
                   onClick={() => {
-                    onChange(replaceOwnText(latest.current, help.state.text));
+                    replace(replaceOwnText(latest.current, help.state.text));
                     help.reset();
                     setHelpStyle(null);
                   }}

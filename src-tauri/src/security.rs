@@ -743,8 +743,10 @@ mod os {
         use windows::Win32::System::WinRT::IUserConsentVerifierInterop;
         use windows::core::{HSTRING, factory};
         let message = HSTRING::from(reason);
-        // For the main window, so the prompt comes up in front of it.
-        let hwnd = app.get_webview_window("main").and_then(|w| w.hwnd().ok());
+        // For the main window, so the prompt comes up in front of it. Tauri's handle comes from its
+        // own version of the `windows` crate: the raw handle is taken over.
+        let hwnd =
+            app.get_webview_window("main").and_then(|w| w.hwnd().ok()).map(|h| windows::Win32::Foundation::HWND(h.0));
         let result = match hwnd {
             Some(hwnd) => factory::<UserConsentVerifier, IUserConsentVerifierInterop>().and_then(|interop| {
                 let op: windows_future::IAsyncOperation<UserConsentVerificationResult> =
