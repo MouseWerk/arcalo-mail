@@ -79,7 +79,10 @@ one before committing it.
 
 ## Release
 
-Not set up yet. It will follow Arcalo (`docs/release/automatic.md` there): a `docs/releases/v<version>.md` for a
-version newer than every tag releases once CI is green on `main`; the desktop updater reads `latest.json` from the
-GitHub release, signed with the update key (`ARCALO_MAIL_UPDATER_PUBKEY` compiled in, the private key only in the
-repository secrets). Add the notes file only with the owner's go.
+As Arcalo's, described in `docs/release.md`: a `docs/releases/v<version>.md` for a version newer than every tag
+releases once CI is green on `main` (`auto-release.yml` → `release.yml`; the repository variable `AUTO_RELEASE=false`
+switches it off). The desktop updater reads `latest.json` from the GitHub release, signed with the update key: the
+public key in `plugins.updater.pubkey` of `src-tauri/tauri.conf.json` (compiled in as `ARCALO_MAIL_UPDATER_PUBKEY` by
+the release only), the private key only in the repository secrets. The release refuses to start while the public key
+is the placeholder. Add the notes file only with the owner's go, in the last push of a release. Store texts, the
+privacy policy text and the store screenshots (`cd e2e && npm run shots:store`) are in `docs/store/`.

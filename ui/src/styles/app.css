@@ -3703,3 +3703,10 @@ button.rule-text:hover {
 .update-notes ul { display: grid; gap: var(--sp-1); margin: 0; padding-left: var(--sp-5); }
 .app[data-touch] .update-layer { bottom: calc(var(--touch-bar-h) + var(--sp-4) + var(--safe-bottom)); }
 .app[data-layout="phone"] .update-layer { left: 50%; transform: translateX(-50%); }
+
+/* Phones: the compose sheet's footer keeps every button whole (the sender is in the From line). */
+.app[data-layout="phone"] .compose-account { display: none; }
+.app[data-layout="phone"] .compose-foot { flex-wrap: wrap; gap: 0; row-gap: var(--sp-1); }
+.app[data-layout="phone"] .compose-foot .btn { white-space: nowrap; }
+.app[data-layout="phone"] .compose-foot .toolbar-gap { flex-basis: 100%; height: 0; }
+.app[data-layout="phone"] .compose-foot .compose-account + .btn { margin-left: auto; }

@@ -28,7 +28,7 @@ the decisions that are still open. Versions stay 0.x until milestone 1 is done (
 
 Milestone 1 leftovers done in milestone 2: proxy profiles, reconnecting after sleep and network changes, the
 prefetch setting, subject threading, the tray icon, the command palette, the diagnostics export and the
-conformance job against Dovecot and GreenMail. Still open: the signed update feed.
+conformance job against Dovecot and GreenMail. The signed update feed came with the release setup (docs/release.md).
 
 ## Where we are (milestone 2, Microsoft, Gmail, JMAP)
 
@@ -66,9 +66,9 @@ conformance job against Dovecot and GreenMail. Still open: the signed update fee
   badge (the notification's number) and the iOS icon badge. IMAP IDLE and JMAP push while the app is in front.
 - **Builds**: the Android project is committed; CI builds a signed APK and AAB once the keystore secrets exist and an
   iOS IPA (TestFlight for a tag) once the Apple secrets exist. Owner steps: [release-mobile.md](release-mobile.md).
-- Open: a mail-specific app icon (Arcalo's icon is the placeholder), store screenshots at the stores' sizes, the
-  share sheet for attachments and opening attachments in other apps on the phones, the in-app update check for the
-  GitHub APK (Google Play updates the Play install), a Play service account for uploads from CI. To verify on
+- Done for 1.0.0: store screenshots at the stores' sizes (docs/store), the update notice of the GitHub APK (Google
+  Play updates the Play install). Open: a mail-specific app icon (Arcalo's icon is the placeholder), the share sheet
+  for attachments and opening attachments in other apps on the phones, a Play service account for uploads from CI. To verify on
   devices: everything native (see release-mobile.md, "What only a device or CI can show").
 
 ## Where we are (1.0.0 features: the sorted inbox and the time tools)
@@ -145,6 +145,20 @@ conformance job against Dovecot and GreenMail. Still open: the signed update fee
   result); S/MIME with RSA keys only (no ECDH key agreement yet); the Android and iOS parts (notification actions,
   the widget, the category delegate) are built in CI and need a check on devices (release-mobile.md); Graph
   calendars and invitations are tested against a fake Graph only.
+
+## Where we are (release setup for 1.0.0)
+
+- **Releases** as Arcalo's: `release.yml` (Windows setup and portable ZIP, macOS disk images for both
+  architectures, AppImage, .deb, .rpm, Android APK and AAB, iOS to TestFlight, `latest.json` and
+  `android-latest.json`), `auto-release.yml` (a new notes file and green CI release by themselves). Owner steps:
+  [release.md](release.md) (the update key) and [release-mobile.md](release-mobile.md).
+- **In-app updates** on the desktop: background download (pause, cancel, continue), the signature checked, install on
+  quit or „Jetzt neu starten“, „Automatisch“ or „Nur benachrichtigen“, clear reasons when a copy cannot update itself,
+  „Neu in Arcalo Mail“; on Android a notice for the GitHub APK.
+- **Default mail app**: `mailto:` links open the compose sheet; „Als Standard-Mail-App festlegen“ where the system
+  allows it (Windows' settings, macOS, Linux; Android asks at the first link; iOS needs Apple's entitlement).
+- **Store listings**: [store/](store/) (texts, privacy policy text, data safety answers, screenshots).
+- Open: the Microsoft Store (MSIX) and winget, as Arcalo; the mail client entitlement for iOS.
 
 ## Milestone 1 – desktop, one IMAP/SMTP account
 

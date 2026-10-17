@@ -450,16 +450,27 @@ Windows and Linux), and on Android a home-screen widget shows the unread count a
 
 | Platform | Status |
 |---|---|
-| Windows 10/11 | builds in CI (unsigned installer) |
-| macOS 11+ | builds in CI (ad hoc signed) |
-| Linux (deb, AppImage) | builds in CI; the end-to-end tests run here |
-| Android 7+ | builds in CI (APK, and the AAB for Google Play once the release key is set up) |
-| iOS 14+, iPadOS | the Rust part builds in CI; TestFlight and the App Store once the Apple account is set up |
+| Windows 10/11 | setup (per user, no administrator rights) and portable ZIP; updates itself |
+| macOS 11+ | disk images for Apple Silicon and Intel (ad hoc signed); updates itself from Applications |
+| Linux | AppImage (updates itself), .deb and .rpm; the end-to-end tests run here |
+| Android 7+ | Google Play, and the APK attached to each release (it tells about new versions) |
+| iOS 14+, iPadOS | TestFlight and the App Store once the Apple account is set up |
 
 ## Install
 
-There is no release yet. Installers for Windows, macOS and Linux will be attached to the
-[releases](https://github.com/MouseWerk/arcalo-mail/releases) with the first version; until then, build from source.
+Download the file for your system from the [latest release](https://github.com/MouseWerk/arcalo-mail/releases/latest):
+
+- **Windows:** `…_x64-setup.exe`, or `…_x64-portable.zip` to run from a folder or a USB stick. The installer is not
+  signed with a paid certificate: when SmartScreen warns, choose "More info" → "Run anyway".
+- **macOS:** `…_aarch64.dmg` (Apple Silicon) or `…_x64.dmg` (Intel). Drag Arcalo Mail to Applications and open it
+  once with a right click → "Open" (macOS 15: System Settings → Privacy & Security → "Open Anyway"); it is ad hoc
+  signed, not notarized. Started from Applications it updates itself.
+- **Linux:** `…_amd64.AppImage` (make it executable; it updates itself), `…_amd64.deb` or `…_x86_64.rpm`.
+
+The desktop app looks for a new version at the start and every few hours, downloads it in the background and
+installs it when you quit (Settings → About: "Automatically" or "Only notify me"). E-mail links of other apps open
+it once it is the default mail app (Settings → About → "Set as default mail app"). How releases are made:
+[docs/release.md](docs/release.md).
 
 ## Build from source
 

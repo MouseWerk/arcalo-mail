@@ -1,0 +1,162 @@
+name: Android
+
+# The Android app (docs/release-mobile.md): a universal APK for arm64, armv7 and x86_64 and, with
+# the release key, the AAB for Google Play. Called by CI on every push and by the release
+# (release.yml) with its tag; by hand under Actions → Android → Run workflow.
+#
+# Signed with the release key when the four ANDROID_* secrets exist; else with a debug key
+# (installable for a test, never an update of a release install) and without an AAB.
+#
+# A release with the update key (TAURI_SIGNING_PRIVATE_KEY) compiles the update check of the
+# GitHub APK in (ARCALO_MAIL_UPDATER_PUBKEY, from plugins.updater.pubkey in tauri.conf.json) and
+# signs the APK for it; the release turns that into android-latest.json. The same binary in the
+# AAB never checks: a copy installed from Google Play is recognized by its installer
+# (src-tauri/src/mobile/apknotice.rs).
+
+on:
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      tag:
+        description: "Release tag, e.g. v1.0.0 (empty: the commit of the calling run)"
+        required: false
+        type: string
+        default: ""
+
+env:
+  CARGO_TERM_COLOR: always
+  # The Microsoft (Entra) client id, compiled in (docs/microsoft.md); a variable, not a secret.
+  ARCALO_MAIL_MS_CLIENT_ID: ${{ vars.ARCALO_MAIL_MS_CLIENT_ID }}
+
+jobs:
+  android:
+    name: Android (APK and AAB)
+    runs-on: ubuntu-24.04
+    env:
+      TAG: ${{ inputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag && format('refs/tags/{0}', inputs.tag) || '' }}
+      # A release: the tag is the version. Tauri derives the versionName and the versionCode
+      # (major * 1000000 + minor * 1000 + patch) from it.
+      - name: Version from tag
+        if: inputs.tag != ''
+        run: |
+          VERSION="${TAG#v}"
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Tag $TAG is not vMAJOR.MINOR.PATCH"
+            exit 1
+          fi
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          VERSION="$VERSION" node scripts/set-version.mjs
+      - uses: dtolnay/rust-toolchain@1.94.1
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: android
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      # The runner brings the Android SDK and NDK (as in Arcalo's Android build). Newer NDKs ship
+      # only llvm-ar and llvm-ranlib; C builds that ask for <triple>-ar get them through shims.
+      - name: Android NDK (preinstalled on the runner)
+        run: |
+          echo "NDK_HOME=$ANDROID_NDK_LATEST_HOME" >> "$GITHUB_ENV"
+          echo "Using the NDK in $ANDROID_NDK_LATEST_HOME"
+          bin="$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          test -x "$bin/llvm-ar" && test -x "$bin/llvm-ranlib"
+          shim="$RUNNER_TEMP/ndk-shims"
+          mkdir -p "$shim"
+          for triple in aarch64-linux-android armv7-linux-androideabi armv7a-linux-androideabi arm-linux-androideabi x86_64-linux-android; do
+            ln -sf "$bin/llvm-ar" "$shim/$triple-ar"
+            ln -sf "$bin/llvm-ranlib" "$shim/$triple-ranlib"
+          done
+          echo "$shim" >> "$GITHUB_PATH"
+          echo "$bin" >> "$GITHUB_PATH"
+          for t in aarch64_linux_android armv7_linux_androideabi x86_64_linux_android; do
+            echo "AR_$t=$bin/llvm-ar" >> "$GITHUB_ENV"
+            echo "RANLIB_$t=$bin/llvm-ranlib" >> "$GITHUB_ENV"
+          done
+      - run: npm ci --prefix ui
+      - run: cargo install tauri-cli --version "^2" --locked
+      # The release key from the repository secrets (docs/release-mobile.md).
+      - name: Signing key
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [ -n "$ANDROID_KEYSTORE_BASE64" ] && [ -n "$ANDROID_KEYSTORE_PASSWORD" ] && [ -n "$ANDROID_KEY_ALIAS" ] && [ -n "$ANDROID_KEY_PASSWORD" ]; then
+            echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/arcalo-mail-release.jks"
+            {
+              echo "storeFile=$RUNNER_TEMP/arcalo-mail-release.jks"
+              echo "storePassword=$ANDROID_KEYSTORE_PASSWORD"
+              echo "keyAlias=$ANDROID_KEY_ALIAS"
+              echo "keyPassword=$ANDROID_KEY_PASSWORD"
+            } > src-tauri/gen/android/keystore.properties
+            echo "SIGNED=1" >> "$GITHUB_ENV"
+            echo "Signing with the release key."
+          elif [ -n "$TAG" ]; then
+            echo "::warning title=Debug-signed release APK::The ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS and ANDROID_KEY_PASSWORD secrets are not set: the release APK is signed with a debug key, no AAB is built and no android-latest.json is published (docs/release-mobile.md)."
+          else
+            echo "::notice title=Debug-signed Android build::The ANDROID_* secrets are not set: the APK is signed with a debug key and no AAB is built (docs/release-mobile.md)."
+          fi
+      # A release with the update key: the update check of the GitHub APK is compiled in and the
+      # APK is signed for it below. Other builds never check.
+      - name: Update key
+        if: inputs.tag != ''
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          KEY="$(node -p 'require("./src-tauri/tauri.conf.json").plugins.updater.pubkey')"
+          if [ -n "$TAURI_SIGNING_PRIVATE_KEY" ] && [[ "$KEY" != *REPLACE_WITH* ]]; then
+            echo "ARCALO_MAIL_UPDATER_PUBKEY=$KEY" >> "$GITHUB_ENV"
+            echo "UPDATER_SIGN=1" >> "$GITHUB_ENV"
+          else
+            echo "::notice::No update key: the APK is built without its update check and not signed for it."
+          fi
+      # The Android project is committed (src-tauri/gen/android); Tauri writes its generated parts
+      # (the Gradle settings, the assets, the Kotlin glue) on every build.
+      - name: Build (signed APK and AAB)
+        if: env.SIGNED == '1'
+        working-directory: src-tauri
+        run: cargo tauri android build --apk --aab --target aarch64 --target armv7 --target x86_64
+      - name: Build (debug-signed APK)
+        if: env.SIGNED != '1'
+        working-directory: src-tauri
+        run: cargo tauri android build --apk --target aarch64 --target armv7 --target x86_64
+      - name: Name the files
+        run: |
+          mkdir -p dist-android
+          name="ArcaloMail_${VERSION:-${GITHUB_SHA::8}}_android"
+          apk=$(find src-tauri/gen/android/app/build/outputs/apk -name '*.apk' | head -n 1)
+          test -n "$apk"
+          cp "$apk" "dist-android/$name.apk"
+          aab=$(find src-tauri/gen/android/app/build/outputs/bundle -name '*.aab' 2>/dev/null | head -n 1)
+          if [ -n "$aab" ]; then cp "$aab" "dist-android/$name.aab"; fi
+          ls -l dist-android
+      # The update signature (minisign, the desktop's key) with the version in its signed comment;
+      # the release's publish job turns it into android-latest.json.
+      - name: Sign the APK for the app's updates
+        if: env.UPDATER_SIGN == '1' && env.SIGNED == '1'
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          cargo tauri signer sign --app-version "$VERSION" "dist-android/ArcaloMail_${VERSION}_android.apk"
+          test -s "dist-android/ArcaloMail_${VERSION}_android.apk.sig"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: arcalo-mail-android
+          path: dist-android/*
+          if-no-files-found: error
+      - name: Remove the key file
+        if: always()
+        run: rm -f "$RUNNER_TEMP/arcalo-mail-release.jks" src-tauri/gen/android/keystore.properties

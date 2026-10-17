@@ -5,7 +5,8 @@
   "scripts": {
     "test": "node --test --test-concurrency=1 --test-reporter=spec tests/*.test.js",
     "shots": "node --test --test-concurrency=1 --test-reporter=spec shots/readme-shots.test.js",
-    "shots:mobile": "node --test --test-concurrency=1 --test-reporter=spec shots/mobile-shots.test.js"
+    "shots:mobile": "node --test --test-concurrency=1 --test-reporter=spec shots/mobile-shots.test.js",
+    "shots:store": "node --test --test-concurrency=1 --test-reporter=spec shots/store-shots.test.js"
   },
   "dependencies": {
     "webdriverio": "^9.32.0"

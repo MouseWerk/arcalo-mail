@@ -1,0 +1,415 @@
+name: Release
+
+# Builds a release of Arcalo Mail and publishes it on GitHub, as Arcalo's release.yml
+# (docs/release.md):
+#
+# - Windows: the per-user NSIS setup (no admin rights, the WebView2 bootstrapper inside, the C
+#   runtime linked statically) and the portable ZIP (the program with the marker file, data next
+#   to it).
+# - macOS: disk images for Apple Silicon and Intel, ad-hoc signed (no paid certificate, not
+#   notarized), and the .app.tar.gz of each for the updater.
+# - Linux: AppImage (updates itself), .deb and .rpm (updated through the release page or the
+#   package manager).
+# - Android: the APK (release key) attached to the release, the AAB for Google Play kept as the
+#   run's artifact `arcalo-mail-android`; iOS: the IPA uploaded to TestFlight. Both only with
+#   their secrets (docs/release-mobile.md).
+# - latest.json (the desktop's update feed, every file signed with the update key and checked
+#   before it is published) and android-latest.json (the GitHub APK's feed).
+#
+# Prerequisites, checked before anything is tagged: the public update key in
+# src-tauri/tauri.conf.json (plugins.updater.pubkey, not the placeholder) and the secrets
+# TAURI_SIGNING_PRIVATE_KEY and TAURI_SIGNING_PRIVATE_KEY_PASSWORD. Normal CI does not need them.
+#
+# Started by pushing a tag `v1.2.3`, by „Run workflow“ with a version (the tag `v<version>` is
+# created on the selected branch, with docs/releases/v<version>.md as its message; an existing tag
+# is built again to repair a failed release), or by the automatic release (auto-release.yml,
+# docs/release.md), which passes the commit CI tested.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version without v, e.g. 1.0.0"
+        required: true
+  workflow_call:
+    inputs:
+      version:
+        description: "Version without v, e.g. 1.0.0"
+        required: true
+        type: string
+      ref:
+        description: "The commit to tag (the one CI tested)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+# One run per version: a manual run and the automatic one never build the same release at once.
+concurrency:
+  group: release-${{ inputs.version == '' && github.ref_name || (startsWith(inputs.version, 'v') && inputs.version || format('v{0}', inputs.version)) }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  # The Microsoft (Entra) client id, compiled in (docs/microsoft.md); a variable, not a secret.
+  ARCALO_MAIL_MS_CLIENT_ID: ${{ vars.ARCALO_MAIL_MS_CLIENT_ID }}
+
+jobs:
+  # The update key must be set up before a release: without it nobody could ever be updated.
+  prerequisites:
+    name: Update key
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || '' }}
+      - name: Public key in tauri.conf.json, private key in the secrets
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          KEY="$(node -p 'require("./src-tauri/tauri.conf.json").plugins.updater.pubkey')"
+          if [[ "$KEY" == *REPLACE_WITH* ]] || [ -z "$KEY" ]; then
+            echo "::error title=Update key missing::src-tauri/tauri.conf.json still has the placeholder in plugins.updater.pubkey. Create the update key pair and put its public key there (docs/release.md, „The update key“)."
+            exit 1
+          fi
+          if ! echo "$KEY" | base64 --decode 2>/dev/null | head -n 1 | grep -q '^untrusted comment: minisign public key'; then
+            echo "::error title=Update key invalid::plugins.updater.pubkey is not the content of the .key.pub file that \`cargo tauri signer generate\` wrote (one line of base64)."
+            exit 1
+          fi
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            echo "::error title=Signing secret missing::Add the repository secret TAURI_SIGNING_PRIVATE_KEY (and TAURI_SIGNING_PRIVATE_KEY_PASSWORD) as docs/release.md describes."
+            exit 1
+          fi
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" ]; then
+            echo "::warning::TAURI_SIGNING_PRIVATE_KEY_PASSWORD is empty: fine only for a key made without a password."
+          fi
+          echo "Update key found."
+
+  tag:
+    name: Tag
+    needs: prerequisites
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      # A version is given by „Run workflow“ and by the automatic release (with the commit to tag);
+      # a pushed tag has none.
+      - uses: actions/checkout@v4
+        if: inputs.version != ''
+        with:
+          ref: ${{ inputs.ref || '' }}
+      - id: tag
+        shell: bash
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_REF: ${{ inputs.ref }}
+        run: |
+          if [ -z "$INPUT_VERSION" ]; then
+            echo "tag=$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          VERSION="${INPUT_VERSION#v}"
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Version $INPUT_VERSION is not MAJOR.MINOR.PATCH"
+            exit 1
+          fi
+          TAG="v$VERSION"
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null; then
+            if [ -n "$INPUT_REF" ]; then
+              echo "::error::Tag $TAG exists: the automatic release never releases a version twice."
+              exit 1
+            fi
+            echo "::notice::Tag $TAG exists, building it again."
+            echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          NOTES="docs/releases/$TAG.md"
+          [ -f "$NOTES" ] || { echo "Arcalo Mail $VERSION" > /tmp/notes.md; NOTES=/tmp/notes.md; }
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a --cleanup=verbatim "$TAG" -F "$NOTES"  # keep "## …" headings: # is not a comment here
+          git push origin "refs/tags/$TAG"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build (${{ matrix.name }})
+    needs: tag
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows
+            os: windows-latest
+            bundles: nsis
+          # 22.04: the AppImage and the packages run on older distributions too (glibc).
+          - name: Linux
+            os: ubuntu-22.04
+            bundles: deb,rpm,appimage
+          - name: macOS (Apple Silicon)
+            os: macos-14
+            bundles: app,dmg
+            target: aarch64-apple-darwin
+            arch: aarch64
+          # Cross-compiled on the Apple Silicon runner (GitHub is retiring the Intel runners).
+          - name: macOS (Intel)
+            os: macos-14
+            bundles: app,dmg
+            target: x86_64-apple-darwin
+            arch: x64
+    env:
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      TAG: ${{ needs.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ needs.tag.outputs.tag }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # The tag is the version (tauri.conf.json is what the updater compares); the updater is
+      # switched on with the public key and the bundles get their signed update files.
+      - name: Version from tag
+        shell: bash
+        run: |
+          VERSION="${TAG#v}"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          VERSION="$VERSION" node scripts/set-version.mjs
+          KEY="$(node -p 'require("./src-tauri/tauri.conf.json").plugins.updater.pubkey')"
+          echo "ARCALO_MAIL_UPDATER_PUBKEY=$KEY" >> "$GITHUB_ENV"
+          node -e '
+            const fs = require("fs");
+            const p = "src-tauri/tauri.conf.json";
+            const c = JSON.parse(fs.readFileSync(p, "utf8"));
+            c.bundle.createUpdaterArtifacts = true;
+            fs.writeFileSync(p, JSON.stringify(c, null, 2));
+          '
+
+      - uses: dtolnay/rust-toolchain@1.94.1
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+
+      - name: System packages
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libdbus-1-dev patchelf libfuse2 xdg-utils
+
+      - run: npm ci --prefix ui
+      - run: cargo install tauri-cli --version "^2" --locked
+
+      - name: Build
+        shell: bash
+        working-directory: src-tauri
+        run: |
+          ARGS=(--bundles "${{ matrix.bundles }}")
+          if [ -n "${{ matrix.target }}" ]; then ARGS+=(--target "${{ matrix.target }}"); fi
+          if [ "${{ runner.os }}" = "Linux" ]; then
+            # linuxdeploy is an AppImage itself: extract instead of mounting (no FUSE on the
+            # runners), and log its output so a failing AppImage step shows why.
+            export APPIMAGE_EXTRACT_AND_RUN=1
+            ARGS+=(--verbose)
+          fi
+          # macOS: ad-hoc signature (bundle.macOS.signingIdentity "-"); no Developer ID.
+          cargo tauri build "${ARGS[@]}"
+
+      # The setup and the portable ZIP start on a Windows without the Visual C++ Redistributable
+      # (static C runtime, .cargo/config.toml).
+      - name: No Visual C++ runtime DLLs
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/check-windows-runtime.ps1 target/release/arcalo-mail.exe
+
+      - name: Collect files
+        shell: bash
+        run: |
+          mkdir -p dist
+          N="ArcaloMail_${VERSION}"
+          B=target/release/bundle
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            B="target/${{ matrix.target }}/release/bundle"
+            ARCH="${{ matrix.arch }}"
+            cp "$B"/dmg/*.dmg "dist/${N}_${ARCH}.dmg"
+            TGZ="$(ls "$B"/macos/*.app.tar.gz | head -1)"
+            cp "$TGZ" "dist/${N}_${ARCH}.app.tar.gz"
+            cp "$TGZ.sig" "dist/${N}_${ARCH}.app.tar.gz.sig"
+          elif [ "${{ runner.os }}" = "Windows" ]; then
+            SETUP="$(ls "$B"/nsis/*-setup.exe | head -1)"
+            cp "$SETUP" "dist/${N}_x64-setup.exe"
+            cp "$SETUP.sig" "dist/${N}_x64-setup.exe.sig"
+            # Portable ZIP: the same program with the marker file next to it (all data then lives
+            # in data\ beside it). Not in latest.json: portable copies are updated by hand.
+            P="$RUNNER_TEMP/ArcaloMail-portable"
+            rm -rf "$P" && mkdir -p "$P"
+            cp target/release/arcalo-mail.exe "$P/Arcalo Mail.exe"
+            printf 'Arcalo Mail portable\r\n' > "$P/arcalo-mail-portable"
+            {
+              printf 'Arcalo Mail %s – portable Version / portable version\r\n\r\n' "$VERSION"
+              printf 'Den Ordner an einen beliebigen Ort entpacken (z. B. auf einen USB-Stick) und „Arcalo Mail.exe“ starten.\r\n'
+              printf 'Die Datei „arcalo-mail-portable“ schaltet den portablen Modus ein: Datenbank, Einstellungen und\r\n'
+              printf 'WebView-Daten liegen im Ordner „data“ neben dem Programm. Passwörter und Anmeldungen bleiben in der\r\n'
+              printf 'Windows-Anmeldeinformationsverwaltung des jeweiligen Rechners; auf einem anderen Rechner meldest du\r\n'
+              printf 'dich neu an.\r\n'
+              printf 'Update: die neue ZIP-Datei von der Release-Seite laden und über diesen Ordner entpacken; „data“ bleibt.\r\n\r\n'
+              printf 'Unpack the folder anywhere (a USB stick, for example) and start "Arcalo Mail.exe".\r\n'
+              printf 'The file "arcalo-mail-portable" switches the portable mode on: the database, the settings and the\r\n'
+              printf 'WebView data live in the folder "data" next to the program. Passwords and sign-ins stay in the\r\n'
+              printf 'Windows Credential Manager of each computer; on another computer you sign in again.\r\n'
+              printf 'Update: download the new ZIP file from the release page and unpack it over this folder; "data" stays.\r\n\r\n'
+              printf 'Microsoft Edge WebView2 Runtime (part of Windows 10 and 11).\r\n'
+            } > "$P/LIESMICH.txt"
+            (cd "$P" && 7z a -tzip -mx=9 "$GITHUB_WORKSPACE/dist/${N}_x64-portable.zip" "Arcalo Mail.exe" arcalo-mail-portable LIESMICH.txt >/dev/null)
+          else
+            cp "$B"/deb/*.deb "dist/${N}_amd64.deb"
+            cp "$B"/rpm/*.rpm "dist/${N}_x86_64.rpm"
+            APPIMAGE="$(ls "$B"/appimage/*.AppImage | head -1)"
+            cp "$APPIMAGE" "dist/${N}_amd64.AppImage"
+            cp "$APPIMAGE.sig" "dist/${N}_amd64.AppImage.sig"
+          fi
+          ls -la dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.name }}
+          path: dist/*
+
+  # The phones: the APK for the release (and the AAB for Google Play as the run's artifact), and
+  # the IPA to TestFlight. Neither holds up the desktop release.
+  android:
+    name: Android
+    needs: tag
+    uses: ./.github/workflows/android.yml
+    with:
+      tag: ${{ needs.tag.outputs.tag }}
+    secrets: inherit
+
+  ios:
+    name: iOS
+    needs: tag
+    uses: ./.github/workflows/ios.yml
+    with:
+      tag: ${{ needs.tag.outputs.tag }}
+    secrets: inherit
+
+  publish:
+    name: Publish release
+    needs: [tag, build, android]
+    # A failed APK does not hold up the release (it is attached when it was built).
+    if: ${{ !cancelled() && needs.tag.result == 'success' && needs.build.result == 'success' }}
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ needs.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ needs.tag.outputs.tag }}
+          fetch-depth: 0
+      # The checkout may leave the tag lightweight; fetch the annotated tag object for its message.
+      - run: git fetch --force origin "refs/tags/$TAG:refs/tags/$TAG"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: arcalo-mail-android
+          path: dist-android
+
+      - name: Release notes and update feeds
+        shell: bash
+        run: |
+          VERSION="${TAG#v}"
+          NOTES="$(git for-each-ref "refs/tags/$TAG" --format='%(contents)' | sed '/-----BEGIN PGP SIGNATURE-----/,$d')"
+          if [ "$(git cat-file -t "$TAG")" != "tag" ] || [ -z "$(echo "$NOTES" | tr -d '[:space:]')" ]; then
+            NOTES="Arcalo Mail $VERSION"
+          fi
+          printf '%s\n' "$NOTES" > notes.md
+          # The desktop's update feed: every platform's update file and its signature.
+          BASE="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}" node -e '
+            const fs = require("fs");
+            const version = process.argv[1];
+            const n = `ArcaloMail_${version}`;
+            const files = {
+              "windows-x86_64": `${n}_x64-setup.exe`,
+              "darwin-aarch64": `${n}_aarch64.app.tar.gz`,
+              "darwin-x86_64": `${n}_x64.app.tar.gz`,
+              // AppImage only: a .deb or .rpm install finds this entry too but offers the release page.
+              "linux-x86_64": `${n}_amd64.AppImage`,
+            };
+            const platforms = {};
+            for (const [platform, file] of Object.entries(files)) {
+              const sig = `dist/${file}.sig`;
+              if (!fs.existsSync(sig)) { console.error(`missing ${sig}`); process.exit(1); }
+              platforms[platform] = { signature: fs.readFileSync(sig, "utf8").trim(), url: `${process.env.BASE}/${file}` };
+            }
+            const feed = { version, notes: fs.readFileSync("notes.md", "utf8"), pub_date: new Date().toISOString(), platforms };
+            fs.writeFileSync("dist/latest.json", JSON.stringify(feed, null, 2));
+            console.log("latest.json:", Object.keys(platforms).join(", "));
+          ' "$VERSION"
+          # Every signature checked against the public key the apps carry, before anything is
+          # published (scripts/verify-update-feed.mjs).
+          KEY="$(node -p 'require("./src-tauri/tauri.conf.json").plugins.updater.pubkey')"
+          node scripts/verify-update-feed.mjs dist "$KEY" "$VERSION"
+
+          # The GitHub APK's own feed (src-tauri/src/mobile/apknotice.rs). Package, version code and
+          # signing certificate are read from the APK itself. A debug-signed APK gets no feed and is
+          # not attached: phones with the release-signed app could not install it.
+          APK="dist-android/ArcaloMail_${VERSION}_android.apk"
+          if [ -f "$APK" ] && [ -f "$APK.sig" ]; then
+            BT="$(ls -d "$ANDROID_HOME"/build-tools/* 2>/dev/null | sort -V | tail -n 1 || true)"
+            BADGING="$("$BT/aapt2" dump badging "$APK" 2>&1 | head -n 1 || true)"
+            export APK_PACKAGE="$(echo "$BADGING" | sed -n "s/^package: name='\([^']*\)'.*/\1/p")"
+            export APK_CODE="$(echo "$BADGING" | sed -n "s/.* versionCode='\([0-9]*\)'.*/\1/p")"
+            [ -n "$APK_PACKAGE" ] || echo "aapt2: $BADGING"
+            export APK_SIGNER="$(node scripts/apk-signer.mjs "$APK" 2>/dev/null || true)"
+            SUBJECT="$(node scripts/apk-signer.mjs --subject "$APK" 2>/dev/null || true)"
+            if node -e 'import("./scripts/apk-signer.mjs").then((m) => process.exit(m.isDebugSubject(process.argv[1]) ? 0 : 1))' "$SUBJECT"; then
+              echo "::warning::The APK is signed with a debug key: not attached, no android-latest.json."
+            elif [ "$APK_PACKAGE" = "de.mousewerk.arcalo.mail" ] && [ -n "$APK_CODE" ] && [ -n "$APK_SIGNER" ]; then
+              cp "$APK" "$APK.sig" dist/
+              BASE="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}" node -e '
+                const fs = require("fs");
+                const version = process.argv[1];
+                const apk = `ArcaloMail_${version}_android.apk`;
+                const feed = {
+                  version,
+                  version_code: Number(process.env.APK_CODE),
+                  notes: fs.readFileSync("notes.md", "utf8"),
+                  pub_date: new Date().toISOString(),
+                  package: process.env.APK_PACKAGE,
+                  url: `${process.env.BASE}/${apk}`,
+                  signature: fs.readFileSync(`dist/${apk}.sig`, "utf8").trim(),
+                  size: fs.statSync(`dist/${apk}`).size,
+                  signer: process.env.APK_SIGNER,
+                };
+                fs.writeFileSync("dist/android-latest.json", JSON.stringify(feed, null, 2));
+                console.log("android-latest.json:", feed.version_code);
+              ' "$VERSION"
+            else
+              echo "::warning::The APK could not be read (package $APK_PACKAGE, version code $APK_CODE, signer $APK_SIGNER): not attached."
+            fi
+          else
+            echo "::warning::No release-signed APK in this run (docs/release-mobile.md): the release has no Android file."
+          fi
+          ls -la dist
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.tag.outputs.tag }}
+          name: Arcalo Mail ${{ needs.tag.outputs.tag }}
+          body_path: notes.md
+          files: dist/*

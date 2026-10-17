@@ -7,7 +7,7 @@ an issue or a commit: they go into the GitHub secrets and an offline backup only
 
 ## What CI does
 
-`.github/workflows/ci.yml`, on every push:
+`.github/workflows/ci.yml` on every push (through `android.yml` and `ios.yml`, which the release calls too):
 
 | Job | Without the secrets | With the secrets |
 |---|---|---|
@@ -19,9 +19,11 @@ A tag `vMAJOR.MINOR.PATCH` is the version: the Android versionName is `1.0.0` an
 number as the build number. The files are the run's artifacts `arcalo-mail-android` (`ArcaloMail_<version>_android.apk`
 and `.aab`) and `arcalo-mail-ios`.
 
-The release workflow of the desktop (as Arcalo's `release.yml`) does not exist yet; when it does, it attaches the
-APK of the tag to the GitHub release. Google Play gets the AAB by hand until a Play service account is set up (see
-the end of this page).
+The release (`release.yml`, [release.md](release.md)) builds the APK and the AAB of its tag, attaches the release-signed
+APK with `android-latest.json` to the GitHub release (the app installed from there tells about newer versions; a copy
+from Google Play never checks), keeps the AAB as the run's artifact `arcalo-mail-android`, and uploads the iOS build
+to TestFlight. Google Play gets the AAB by hand until a Play service account is set up (see the end of this page).
+The listing texts, the privacy policy text and the data safety answers are in [store/](store/).
 
 ## Android: Google Play
 
@@ -63,13 +65,12 @@ Losing the key means the GitHub APK can never be updated again, and Play needs a
      `arcalo-mail-release.jks` as the page shows, upload the encrypted key. Play and the GitHub APK then share the
      signature and update each other. Optionally register a separate upload key afterwards.
 3. **Store listing** (Grow → Store presence → Main store listing):
-   - Short description (80 characters), full description (local-first, IMAP/SMTP, Microsoft 365, JMAP, no telemetry).
+   - Short description and full description: [store/google-play.md](store/google-play.md).
    - App icon 512 × 512 (`src-tauri/icons/icon.png` until the mail icon exists – it is a placeholder: Arcalo's
      icon), feature graphic 1024 × 500.
-   - Phone screenshots: 2 to 8, each side 320–3840 px and the long side at most twice the short side. The pictures
-     in `docs/screenshots/mobile` (390 × 844) are too tall for that rule; take them on a phone or an emulator
-     (1080 × 1920 or 1080 × 2160) or crop to 9:16. 7- and 10-inch tablet screenshots are optional (the tablet pictures
-     there can serve after scaling).
+   - Phone screenshots: 2 to 8, each side 320–3840 px and the long side at most twice the short side:
+     `docs/store/screenshots/play-phone` (1080 × 1920, made by `cd e2e && npm run shots:store`). Tablet screenshots
+     are optional (`docs/store/screenshots/ipad-13`).
    - Category *Communication*; contact email; website <https://arcalo.mousewerk.de>.
 4. **Privacy policy** (Policy → App content → Privacy policy): a public web page (not a PDF), for example
    `https://arcalo.mousewerk.de/mail/privacy`. The same page serves the Microsoft Entra app (docs/microsoft.md)
@@ -177,9 +178,9 @@ At <https://developer.apple.com/account> → Certificates, Identifiers & Profile
    only the standard TLS of the system and rustls); no question per build.
 6. **Privacy manifest**: `src-tauri/ios/PrivacyInfo.xcprivacy` is copied into the project by CI (no tracking, no
    collected data, the reasons for file dates, the system's uptime, the app's preferences and disk space).
-7. Screenshots: 6.9-inch iPhone (1320 × 2868 or 1290 × 2796) and, as the app runs on iPad, 13-inch iPad (2064 × 2752).
-   Take them in the iOS simulator (Xcode → the app → File → Save Screen) with the sample mailboxes; the pictures in
-   `docs/screenshots/mobile` show the layouts but not at these sizes.
+7. Screenshots: 6.9-inch iPhone (1320 × 2868), 6.5-inch iPhone (1284 × 2778) and, as the app runs on iPad, 13-inch
+   iPad (2064 × 2752): `docs/store/screenshots/` (`cd e2e && npm run shots:store`, the touch layout at the store's
+   size and pixel ratio with the sample mailboxes). Texts: [store/app-store.md](store/app-store.md).
 
 ### 4. GitHub secrets for iOS
 

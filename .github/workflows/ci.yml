@@ -35,6 +35,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libdbus-1-dev
       - run: cargo fmt --all --check
+      # The release's scripts: the automatic release's choice of version, the APK's signer, the
+      # update feed's check and the version stamp (docs/release.md).
+      - run: node --test scripts/release-pick.test.mjs scripts/apk-signer.test.mjs scripts/verify-update-feed.test.mjs scripts/set-version.test.mjs
       - run: npm ci --prefix ui
       - run: npm --prefix ui run typecheck
       - run: npm --prefix ui test
@@ -56,7 +59,7 @@ jobs:
       - name: System packages (WebKitGTK, WebDriver, Xvfb)
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libdbus-1-dev webkit2gtk-driver xvfb x11-utils dbus
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libdbus-1-dev webkit2gtk-driver xvfb x11-utils dbus xdg-utils
       - run: npm ci --prefix ui
       - run: cargo install tauri-driver --locked
       # The app against the IMAP/SMTP test server on the runner (crates/mail-testserver); no
@@ -128,7 +131,7 @@ jobs:
             bundles: app,dmg
           - name: Linux
             os: ubuntu-24.04
-            bundles: deb,appimage
+            bundles: deb,rpm,appimage
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -145,8 +148,16 @@ jobs:
       - run: npm ci --prefix ui
       - run: cargo install tauri-cli --version "^2" --locked
       # Unsigned: no code signing certificate (docs/plan.md, owner decisions). macOS is signed ad hoc.
+      # Without the update key (only the release has it) the updater stays off.
       - run: cargo tauri build --bundles ${{ matrix.bundles }}
         working-directory: src-tauri
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+      # The setup and the program start on a Windows without the Visual C++ Redistributable.
+      - name: No Visual C++ runtime DLLs
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/check-windows-runtime.ps1 target/release/arcalo-mail.exe
       - uses: actions/upload-artifact@v4
         with:
           name: arcalo-mail-${{ runner.os }}
@@ -154,221 +165,19 @@ jobs:
             target/release/bundle/nsis/*.exe
             target/release/bundle/dmg/*.dmg
             target/release/bundle/deb/*.deb
+            target/release/bundle/rpm/*.rpm
             target/release/bundle/appimage/*.AppImage
           if-no-files-found: error
 
+  # The phones' builds are workflows of their own, also called by the release (release.yml).
   android:
-    name: Android build (APK and AAB)
+    name: Android
     needs: checks
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-      # A tag (vMAJOR.MINOR.PATCH) is the version: Tauri derives the versionName and the
-      # versionCode (major * 1000000 + minor * 1000 + patch) from it.
-      - name: Version from tag
-        if: github.ref_type == 'tag'
-        run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::error::Tag $GITHUB_REF_NAME is not vMAJOR.MINOR.PATCH"
-            exit 1
-          fi
-          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
-          VERSION="$VERSION" node -e '
-            const fs = require("fs");
-            const p = "src-tauri/tauri.conf.json";
-            const c = JSON.parse(fs.readFileSync(p, "utf8"));
-            c.version = process.env.VERSION;
-            fs.writeFileSync(p, JSON.stringify(c, null, 2));
-            const t = "Cargo.toml";
-            fs.writeFileSync(t, fs.readFileSync(t, "utf8").replace(/^version = "[^"]*"/m, `version = "${process.env.VERSION}"`));
-          '
-      - uses: dtolnay/rust-toolchain@1.94.1
-        with:
-          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: android
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: 17
-      # The runner brings the Android SDK and NDK (as in Arcalo's Android build). Newer NDKs ship
-      # only llvm-ar and llvm-ranlib; C builds that ask for <triple>-ar get them through shims.
-      - name: Android NDK (preinstalled on the runner)
-        run: |
-          echo "NDK_HOME=$ANDROID_NDK_LATEST_HOME" >> "$GITHUB_ENV"
-          echo "Using the NDK in $ANDROID_NDK_LATEST_HOME"
-          bin="$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
-          shim="$RUNNER_TEMP/ndk-shims"
-          mkdir -p "$shim"
-          for triple in aarch64-linux-android armv7-linux-androideabi armv7a-linux-androideabi arm-linux-androideabi x86_64-linux-android; do
-            ln -sf "$bin/llvm-ar" "$shim/$triple-ar"
-            ln -sf "$bin/llvm-ranlib" "$shim/$triple-ranlib"
-          done
-          echo "$shim" >> "$GITHUB_PATH"
-          echo "$bin" >> "$GITHUB_PATH"
-          for t in aarch64_linux_android armv7_linux_androideabi x86_64_linux_android; do
-            echo "AR_$t=$bin/llvm-ar" >> "$GITHUB_ENV"
-            echo "RANLIB_$t=$bin/llvm-ranlib" >> "$GITHUB_ENV"
-          done
-      - run: npm ci --prefix ui
-      - run: cargo install tauri-cli --version "^2" --locked
-      # The release key from the repository secrets (docs/release-mobile.md); without them the
-      # build is signed with a debug key: installable for a test, not for Google Play and not as
-      # an update of a release install.
-      - name: Signing key
-        env:
-          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-        run: |
-          if [ -n "$ANDROID_KEYSTORE_BASE64" ] && [ -n "$ANDROID_KEYSTORE_PASSWORD" ] && [ -n "$ANDROID_KEY_ALIAS" ] && [ -n "$ANDROID_KEY_PASSWORD" ]; then
-            echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/arcalo-mail-release.jks"
-            {
-              echo "storeFile=$RUNNER_TEMP/arcalo-mail-release.jks"
-              echo "storePassword=$ANDROID_KEYSTORE_PASSWORD"
-              echo "keyAlias=$ANDROID_KEY_ALIAS"
-              echo "keyPassword=$ANDROID_KEY_PASSWORD"
-            } > src-tauri/gen/android/keystore.properties
-            echo "SIGNED=1" >> "$GITHUB_ENV"
-            echo "Signing with the release key."
-          else
-            echo "::notice title=Debug-signed Android build::The ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS and ANDROID_KEY_PASSWORD secrets are not set: the APK is signed with a debug key and no AAB is built (docs/release-mobile.md)."
-          fi
-      # The Android project is committed (src-tauri/gen/android); Tauri writes its generated
-      # parts (the Gradle settings, the assets, the Kotlin glue) on every build.
-      - name: Build (signed APK and AAB)
-        if: env.SIGNED == '1'
-        working-directory: src-tauri
-        run: cargo tauri android build --apk --aab --target aarch64 --target armv7 --target x86_64
-      - name: Build (debug-signed APK)
-        if: env.SIGNED != '1'
-        working-directory: src-tauri
-        run: cargo tauri android build --apk --target aarch64 --target armv7 --target x86_64
-      - name: Name the files
-        run: |
-          mkdir -p dist-android
-          name="ArcaloMail_${VERSION:-${GITHUB_SHA::8}}_android"
-          apk=$(find src-tauri/gen/android/app/build/outputs/apk -name '*.apk' | head -n 1)
-          test -n "$apk"
-          cp "$apk" "dist-android/$name.apk"
-          aab=$(find src-tauri/gen/android/app/build/outputs/bundle -name '*.aab' 2>/dev/null | head -n 1)
-          if [ -n "$aab" ]; then cp "$aab" "dist-android/$name.aab"; fi
-          ls -l dist-android
-      - uses: actions/upload-artifact@v4
-        with:
-          name: arcalo-mail-android
-          path: dist-android/*
-          if-no-files-found: error
-      - name: Remove the key file
-        if: always()
-        run: rm -f "$RUNNER_TEMP/arcalo-mail-release.jks" src-tauri/gen/android/keystore.properties
+    uses: ./.github/workflows/android.yml
+    secrets: inherit
 
   ios:
-    name: iOS build
+    name: iOS
     needs: checks
-    runs-on: macos-latest
-    env:
-      # Set as repository secrets once the Apple Developer Program membership exists
-      # (docs/release-mobile.md). The team id is not secret but lives with the others.
-      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-      IOS_CERTIFICATE_BASE64: ${{ secrets.IOS_CERTIFICATE_BASE64 }}
-      IOS_CERTIFICATE_PASSWORD: ${{ secrets.IOS_CERTIFICATE_PASSWORD }}
-      IOS_PROVISIONING_PROFILE_BASE64: ${{ secrets.IOS_PROVISIONING_PROFILE_BASE64 }}
-      APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
-      APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
-      APP_STORE_CONNECT_API_KEY_BASE64: ${{ secrets.APP_STORE_CONNECT_API_KEY_BASE64 }}
-    steps:
-      - uses: actions/checkout@v4
-      - name: Version from tag
-        if: github.ref_type == 'tag'
-        run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::error::Tag $GITHUB_REF_NAME is not vMAJOR.MINOR.PATCH"
-            exit 1
-          fi
-          VERSION="$VERSION" node -e '
-            const fs = require("fs");
-            const p = "src-tauri/tauri.conf.json";
-            const c = JSON.parse(fs.readFileSync(p, "utf8"));
-            c.version = process.env.VERSION;
-            fs.writeFileSync(p, JSON.stringify(c, null, 2));
-            const t = "Cargo.toml";
-            fs.writeFileSync(t, fs.readFileSync(t, "utf8").replace(/^version = "[^"]*"/m, `version = "${process.env.VERSION}"`));
-          '
-      - uses: dtolnay/rust-toolchain@1.94.1
-        with:
-          targets: aarch64-apple-ios,aarch64-apple-ios-sim
-      - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - run: npm ci --prefix ui && npm --prefix ui run build
-      # Without signing: the Rust library for the device and the simulator must compile, so iOS
-      # code paths cannot rot while there is no Apple developer account.
-      - name: Rust library for iOS (no signing needed)
-        run: |
-          cargo build -p arcalo-mail --lib --target aarch64-apple-ios
-          cargo build -p arcalo-mail --lib --target aarch64-apple-ios-sim
-      - name: Signing set up?
-        run: |
-          if [ -n "$APPLE_TEAM_ID" ] && [ -n "$IOS_CERTIFICATE_BASE64" ] && [ -n "$IOS_CERTIFICATE_PASSWORD" ] && [ -n "$IOS_PROVISIONING_PROFILE_BASE64" ]; then
-            echo "SIGNED=1" >> "$GITHUB_ENV"
-          else
-            echo "::notice::No iOS app built: the APPLE_TEAM_ID, IOS_CERTIFICATE_BASE64, IOS_CERTIFICATE_PASSWORD and IOS_PROVISIONING_PROFILE_BASE64 secrets are not set (docs/release-mobile.md)."
-          fi
-      # The Xcode project is made here (src-tauri/Info.ios.plist and tauri.conf.json hold what
-      # Arcalo Mail changes in it), with the app icons and the privacy manifest.
-      - name: Xcode project
-        if: env.SIGNED == '1'
-        working-directory: src-tauri
-        env:
-          APPLE_DEVELOPMENT_TEAM: ${{ secrets.APPLE_TEAM_ID }}
-        run: |
-          cargo install tauri-cli --version "^2" --locked
-          command -v xcodegen || brew install xcodegen
-          cargo tauri ios init --ci
-          cargo tauri icon icons/icon.png
-          git checkout -- icons
-          app_dir=$(find gen/apple -maxdepth 1 -type d -name '*_iOS' | head -n 1)
-          test -n "$app_dir"
-          cp ios/PrivacyInfo.xcprivacy "$app_dir/"
-          (cd gen/apple && xcodegen generate --spec project.yml)
-      # Signed with the distribution certificate and the App Store profile (Tauri reads
-      # IOS_CERTIFICATE, IOS_CERTIFICATE_PASSWORD and IOS_MOBILE_PROVISION); the run number is
-      # the build number App Store Connect needs to grow.
-      - name: Build the IPA
-        if: env.SIGNED == '1'
-        working-directory: src-tauri
-        env:
-          APPLE_DEVELOPMENT_TEAM: ${{ secrets.APPLE_TEAM_ID }}
-          IOS_CERTIFICATE: ${{ secrets.IOS_CERTIFICATE_BASE64 }}
-          IOS_MOBILE_PROVISION: ${{ secrets.IOS_PROVISIONING_PROFILE_BASE64 }}
-        run: |
-          cargo tauri ios build --export-method app-store-connect --build-number "$GITHUB_RUN_NUMBER"
-          mkdir -p ../dist-ios
-          find gen/apple/build -name '*.ipa' -exec cp {} ../dist-ios/ \;
-          ls -l ../dist-ios
-      - uses: actions/upload-artifact@v4
-        if: env.SIGNED == '1'
-        with:
-          name: arcalo-mail-ios
-          path: dist-ios/*.ipa
-          if-no-files-found: error
-      # A release tag goes to TestFlight with the App Store Connect API key.
-      - name: Upload to TestFlight
-        if: env.SIGNED == '1' && github.ref_type == 'tag' && env.APP_STORE_CONNECT_API_KEY_ID != ''
-        run: |
-          mkdir -p ~/.appstoreconnect/private_keys
-          echo "$APP_STORE_CONNECT_API_KEY_BASE64" | base64 --decode > ~/.appstoreconnect/private_keys/AuthKey_${APP_STORE_CONNECT_API_KEY_ID}.p8
-          ipa=$(ls dist-ios/*.ipa | head -n 1)
-          xcrun altool --upload-app --type ios --file "$ipa" --apiKey "$APP_STORE_CONNECT_API_KEY_ID" --apiIssuer "$APP_STORE_CONNECT_ISSUER_ID"
-      - name: Remove the API key
-        if: always()
-        run: rm -rf ~/.appstoreconnect/private_keys
+    uses: ./.github/workflows/ios.yml
+    secrets: inherit

@@ -66,6 +66,9 @@ Identifier: `de.mousewerk.arcalo.mail`.
 | `crypto` | OpenPGP (`pgp`, rPGP: Ed25519 and Curve25519 keys made here, imported armored keys, PGP/MIME sign, encrypt, decrypt, verify, inline cleartext, Autocrypt headers in and out, `wkd`: the Web Key Directory's advanced and direct addresses) and S/MIME (`smime`: PKCS#12 import, CMS SignedData and EnvelopedData with RSA and AES-256-CBC, chains checked against the system's roots with `rustls-webpki`, e-mail protection usage). `protect` wraps a finished message before it is queued; `open` gives the reading pane the inner message and its `Protection`; secrets come through the shell's `Keys` (the credential store); decrypted content is never stored | done |
 | `arcalo` | „An Arcalo senden“: a message as Markdown with a `mid:` link back, the page title or task text, Arcalo's command line found on the PATH | done |
 | `widget` | What the Android home-screen widget shows: the unread count and the newest three mails of People (`widget.json`, written by the shell) | done |
+| `update`, `update_feed` | Desktop updates without the shell (as Arcalo's): which version is newer, a skipped version and „Später erinnern“, why a copy cannot replace itself (`Manual`: portable, package, macOS translocated or read-only, AppImage not writable), the restart marker and the notes for „Neu in Arcalo Mail“; `latest.json`, the platform entry, a download through `network::client_for(Service::UpdateFeed)` that pauses and continues with `Range`, the minisign check with the version in the trusted comment | done |
+| `update_android` | `android-latest.json` of the GitHub APK: whether a release is an update for the installed app (package, version code, signing certificate), never for a store install (`from_store`), the daily check, „Neu in Arcalo Mail“ once | done |
+| `mailto` | `mailto:` addresses (RFC 6068) of other apps: recipients, subject and text only | done |
 | `settings`, `settings_migrate` | One JSON object with a `version`; ordered, idempotent steps on the raw JSON, unknown keys kept (Arcalo's scheme) | done |
 | `i18n` | `tr!`/`trf!` pairs for backend texts in German and English | done |
 
@@ -163,6 +166,15 @@ Entry names: service `de.mousewerk.arcalo.mail`, account `account-<id>-password`
 password or the full address of an ICS subscription), `pgp-<fingerprint>-secret` (an armored secret key) and
 `smime-<fingerprint>-p12` (the PKCS#12 file and its password).
 OAuth access tokens are kept in memory only. The vault logic is tested with a fake cipher.
+
+## Updates and the default mail app (`src-tauri/src/updates.rs`, `installer.rs`, `portable.rs`, `defaultmail.rs`)
+
+`updates.rs` checks the feed at the start and every few hours (release builds with the update key only), downloads
+in the background, verifies, and installs on quit or with „Jetzt neu starten“ after messages being sent went out
+(`outbox::sending`); `installer.rs` is Arcalo's install without the plugin's own fetch (NSIS passive, the `.app`
+bundle, the AppImage in place). `portable.rs`: the marker `arcalo-mail-portable` next to the program keeps the data in
+`data\`. `defaultmail.rs` hands `mailto:` addresses to the UI (command line, single instance, macOS open event,
+Android intent) and sets the default mail app where the system allows. Releases: [release.md](release.md).
 
 ## Phones (`src-tauri/src/mobile`, `src-tauri/gen/android`, `src-tauri/Info.ios.plist`)
 
