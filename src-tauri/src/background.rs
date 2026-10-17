@@ -142,6 +142,7 @@ pub fn run(data_dir: &Path, budget: Duration) -> Report {
                     match connection {
                         crate::Connection::Net(c) => mail_core::engine::check_once(id, own, c).await,
                         crate::Connection::Jmap(c) => mail_core::engine::check_once(id, own, c).await,
+                        crate::Connection::Pop3(c) => mail_core::engine::check_once(id, own, c).await,
                     }
                 };
                 let found = match rt.block_on(async { tokio::time::timeout(budget, check).await }) {

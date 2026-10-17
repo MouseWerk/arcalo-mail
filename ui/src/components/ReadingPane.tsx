@@ -30,12 +30,14 @@ import {
 } from "lucide-react";
 import { useState } from "react";
 import { currentLang, useT } from "../lib/i18n";
-import { addressLine, displayName, fileSize, fullDate, initials, now, shortDate } from "../lib/format";
+import { addressLine, displayName, fileSize, fullDate, now, shortDate } from "../lib/format";
 import { whenLabel } from "../lib/when";
 import type { Theme } from "../lib/theme";
 import type { Attachment, MessageSummary, MessageView } from "../lib/types";
 import { MailFrame } from "./MailFrame";
 import { Spinner } from "./ui";
+import { Avatar } from "./Avatar";
+import type { Address } from "../lib/types";
 
 export type Loaded = MessageView | "loading" | { error: string };
 
@@ -70,6 +72,10 @@ type Props = {
   banner?: React.ReactNode;
   onUnsubscribe: (view: MessageView) => void;
   onMark: (a: MarkAction, view: MessageView) => void;
+  /** The AI assistant above the conversation. */
+  assistant?: React.ReactNode;
+  /** A sender or recipient was clicked: the contact card. */
+  onContact?: (a: Address) => void;
 };
 
 function attachmentIcon(mime: string) {
@@ -181,12 +187,22 @@ function MessageCard({ view, theme, p, onCollapse }: { view: MessageView; theme:
           if (onCollapse && !(e.target as HTMLElement).closest("button")) onCollapse();
         }}
       >
-        <span className="avatar" aria-hidden>
-          {initials(from)}
-        </span>
+        {from && p.onContact ? (
+          <button type="button" className="avatar-btn" onClick={() => p.onContact?.(from)} aria-label={t("contact.open", { name: displayName(from, lang) })} title={t("contact.open", { name: displayName(from, lang) })}>
+            <Avatar who={from} />
+          </button>
+        ) : (
+          <Avatar who={from} />
+        )}
         <div className="message-who">
           <div className="message-from">
-            <strong>{displayName(from, lang)}</strong>
+            {from && p.onContact ? (
+              <button type="button" className="link-btn sender-btn" onClick={() => p.onContact?.(from)}>
+                <strong>{displayName(from, lang)}</strong>
+              </button>
+            ) : (
+              <strong>{displayName(from, lang)}</strong>
+            )}
             {from?.name && <span className="muted"> &lt;{from.email}&gt;</span>}
           </div>
           <div className="message-to muted" title={addressLine(recipients)}>
@@ -378,7 +394,9 @@ export function ReadingPane(p: Props) {
             <h1 className="message-subject">{(ready?.summary.subject ?? focus.subject) || t("list.noSubject")}</h1>
           )}
           {p.thread.length > 1 && !p.stream && <p className="muted thread-note">{t("read.thread", { n: p.thread.length })}</p>}
+          {p.thread.some((m) => m.important) && !p.stream && <span className="important-badge important-head">{t("list.important")}</span>}
         </header>
+        {p.assistant}
         <div className="conversation">
           {p.thread.map((m) => {
             const v = p.views[m.id];
@@ -386,9 +404,7 @@ export function ReadingPane(p: Props) {
             if (!open)
               return (
                 <button key={m.id} type="button" className="message-collapsed" onClick={() => p.onToggle(m.id)} aria-expanded={false}>
-                  <span className="avatar avatar-sm" aria-hidden>
-                    {initials(m.from)}
-                  </span>
+                  <Avatar who={m.from} size="sm" />
                   <span className={`collapsed-from${m.seen ? "" : " unread"}`}>{displayName(m.from, lang)}</span>
                   <span className="collapsed-snippet">{m.snippet}</span>
                   <span className="collapsed-date">{shortDate(m.date, now(), lang)}</span>

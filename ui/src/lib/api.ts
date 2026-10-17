@@ -35,6 +35,23 @@ import type {
   TimeCounts,
   Unsubscribed,
   WaitingSender,
+  AddressBook,
+  AiOutcome,
+  AiProvider,
+  AiRequest,
+  ContactCard,
+  Destination,
+  HubFilter,
+  HubItem,
+  HubSender,
+  Rule,
+  RuleReport,
+  RuleServer,
+  Server,
+  Template,
+  Tone,
+  AiItem,
+  Pop3Transport,
 } from "./types";
 
 export const inApp = (): boolean => typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -61,6 +78,17 @@ export const api = {
   addMicrosoftAccount: (session: string, name: string) =>
     call<Account>("add_microsoft_account", { session, name }, () => demo.addMicrosoftAccount(session, name)),
   microsoftReauth: (id: number) => call<MicrosoftSignIn>("microsoft_reauth", { id }, () => demo.microsoftSignIn("")),
+  /** The POP3 settings of an address (a preset or a guess). */
+  pop3Preset: (email: string) =>
+    call<Pop3Transport | null>("pop3_preset", { email }, () => ({
+      kind: "pop3",
+      pop3: { host: `pop.${email.split("@")[1] ?? "example.org"}`, port: 995, security: "tls" },
+      smtp: { host: `smtp.${email.split("@")[1] ?? "example.org"}`, port: 465, security: "tls" },
+      username: email,
+      auth: { kind: "password" },
+      leave_on_server: true,
+      delete_after_days: null,
+    })),
   checkJmap: (sessionUrl: string, username: string, password: string, token: boolean) =>
     call<CheckResult>("check_jmap", { sessionUrl, username, password, token }, () => demo.check(password)),
   setProxyPassword: (profile: string, password: string) => call<void>("set_proxy_password", { profile, password }, () => undefined),
@@ -139,6 +167,67 @@ export const api = {
   timeCounts: () => call<TimeCounts>("time_counts", {}, () => demo.timeCounts()),
   tick: () => call<void>("tick", {}, () => undefined),
 
+  // The AI assistant (src-tauri/src/assistant.rs).
+  aiRun: (id: string, request: AiRequest, offset: number) => call<AiOutcome>("ai_run", { id, request, offset }, () => demo.aiRun(request)),
+  aiCancel: (id: string) => call<void>("ai_cancel", { id }, () => undefined),
+  aiDestination: (accountId: number) => call<Destination>("ai_destination", { accountId }, () => demo.destination()),
+  aiAskProviders: () => call<Destination[]>("ai_ask_providers", {}, () => (demo.destination().provider ? [demo.destination()] : [])),
+  aiThread: (messageId: number) => call<{ summary: string | null; long: boolean }>("ai_thread", { messageId }, () => ({ summary: null, long: false })),
+  aiModels: (provider: AiProvider, key: string | null) => call<string[]>("ai_models", { provider, key }, () => ["llama3.2", "qwen3:8b"]),
+  aiSetKey: (providerId: string, key: string) => call<void>("ai_set_key", { providerId, key }, () => undefined),
+  aiHasKey: (providerId: string) => call<boolean>("ai_has_key", { providerId }, () => false),
+  aiTone: (accountId: number) => call<Tone | null>("ai_tone", { accountId }, () => null),
+  aiLearnTone: (accountId: number) => call<Tone | null>("ai_learn_tone", { accountId }, () => null),
+  aiForgetTone: (accountId: number) => call<void>("ai_forget_tone", { accountId }, () => undefined),
+  aiForgetResults: () => call<void>("ai_forget_results", {}, () => undefined),
+  setImportant: (ids: number[], important: boolean) => call<void>("set_important", { ids, important }, () => undefined),
+  aiRemind: (messageId: number, due: number, note: string) => call<void>("ai_remind", { messageId, due, note }, () => undefined),
+  aiCalendar: (messageId: number, item: AiItem) => call<string>("ai_calendar", { messageId, item }, () => ""),
+
+  // Rules.
+  rules: () => call<Rule[]>("rules_list", {}, () => demo.rules),
+  rulesServer: (accountId: number, server: Server | null) =>
+    call<RuleServer>("rules_server", { accountId, server }, () => ({ kind: "none", server: null, error: null, checked: true })),
+  ruleUnsupported: (rule: Rule) => call<string | null>("rule_unsupported", { rule }, () => null),
+  ruleSave: (rule: Rule) =>
+    call<{ id: number; server_error: string | null }>("rule_save", { rule }, () => {
+      const id = rule.id || demo.rules.length + 1;
+      demo.rules = [...demo.rules.filter((r) => r.id !== id), { ...rule, id }];
+      return { id, server_error: null };
+    }),
+  ruleDelete: (id: number) => call<string | null>("rule_delete", { id }, () => ((demo.rules = demo.rules.filter((r) => r.id !== id)), null)),
+  ruleEnable: (id: number, enabled: boolean) => call<string | null>("rule_enable", { id, enabled }, () => null),
+  rulesReorder: (ids: number[]) => call<string | null>("rules_reorder", { ids }, () => null),
+  rulePreview: (rule: Rule) => call<{ total: number; items: MessageSummary[] }>("rule_preview", { rule }, () => ({ total: 0, items: [] })),
+  ruleRun: (rule: Rule, mailboxId: number) => call<RuleReport>("rule_run", { rule, mailboxId }, () => ({ matched: 0, removed: [], accounts: [] })),
+
+  // Templates and snippets.
+  templates: () => call<Template[]>("templates_list", {}, () => demo.templates),
+  templateSave: (template: Template) =>
+    call<number>("template_save", { template }, () => {
+      const id = template.id || demo.templates.length + 1;
+      demo.templates = [...demo.templates.filter((x) => x.id !== id), { ...template, id }];
+      return id;
+    }),
+  templateDelete: (id: number) => call<void>("template_delete", { id }, () => void (demo.templates = demo.templates.filter((x) => x.id !== id))),
+  /** The texts with their variables filled ({name}, {date}, …). */
+  templateRender: (texts: string[], accountId: number | null, to: string[], subject: string, date: string, time: string) =>
+    call<string[]>("template_render", { texts, accountId, to, subject, date, time }, () => texts.map((x) => x.replace(/\{(datum|date)\}/gi, date).replace(/\{(uhrzeit|time)\}/gi, time))),
+
+  // Contacts and pictures.
+  contactCard: (email: string) => call<ContactCard>("contact_card", { email }, () => demo.contactCard(email)),
+  addressBooks: () => call<AddressBook[]>("address_books", {}, () => []),
+  carddavAdd: (name: string, url: string, username: string, password: string) => call<number>("carddav_add", { name, url, username, password }, () => 0),
+  addressBookSync: (id: number) => call<void>("address_book_sync", { id }, () => undefined),
+  addressBookRemove: (id: number) => call<void>("address_book_remove", { id }, () => undefined),
+  microsoftContacts: (accountId: number, on: boolean) => call<void>("microsoft_contacts", { accountId, on }, () => undefined),
+  picture: (email: string) => call<string | null>("picture", { email }, () => null),
+  forgetPictures: (prefix: string) => call<void>("forget_pictures", { prefix }, () => undefined),
+
+  // The attachment hub.
+  hub: (filter: HubFilter, offset: number, limit: number) => call<{ total: number; offset: number; items: HubItem[] }>("hub_list", { filter, offset, limit }, () => demo.hub(filter)),
+  hubSenders: (accountId: number | null) => call<HubSender[]>("hub_senders", { accountId }, () => []),
+
   outbox: () => call<OutboxEntry[]>("outbox_entries", {}, () => []),
   retryOutbox: (id: number) => call<void>("retry_outbox", { id }, () => undefined),
   discardOutbox: (id: number) => call<boolean>("discard_outbox", { id }, () => true),
@@ -151,6 +240,23 @@ export function onNotice(f: (n: Notice) => void): () => void {
   let cancelled = false;
   void import("@tauri-apps/api/event").then(({ listen }) =>
     listen<Notice>("mail-notice", (e) => f(e.payload)).then((un) => {
+      if (cancelled) un();
+      else stop = un;
+    }),
+  );
+  return () => {
+    cancelled = true;
+    stop?.();
+  };
+}
+
+/** Calls `f` with every piece of a streamed AI answer; returns the unsubscribe function. */
+export function onAiDelta(f: (d: { id: string; text: string }) => void): () => void {
+  if (!inApp()) return () => {};
+  let stop: (() => void) | null = null;
+  let cancelled = false;
+  void import("@tauri-apps/api/event").then(({ listen }) =>
+    listen<{ id: string; text: string }>("ai-delta", (e) => f(e.payload)).then((un) => {
       if (cancelled) un();
       else stop = un;
     }),

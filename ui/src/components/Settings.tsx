@@ -1,15 +1,30 @@
-import { Bell, ChevronLeft, ChevronRight, Inbox, Info, Keyboard, LogIn, Network, Palette, PenLine, Shield, Trash2, UserRound, X, Plus } from "lucide-react";
+import { Bell, BookUser, ChevronLeft, ChevronRight, FileText, Inbox, Info, Keyboard, LogIn, Network, Palette, PenLine, Shield, Sparkles, Trash2, UserRound, Workflow, X, Plus } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 import { useT, type TKey } from "../lib/i18n";
 import { api, pickSavePath } from "../lib/api";
 import { showToast } from "../lib/toasts";
-import type { AccountInfo, AppInfo, ImapTransport, LanguageChoice, MicrosoftSignIn, NetworkSettings, Prefetch, ProxyMode, ProxyProfile, RouteGroup, Security, Server, Settings as SettingsT, SwipeAction, SystemProxy, ThemeChoice } from "../lib/types";
+import type { AccountInfo, AppInfo, ImapTransport, LanguageChoice, MicrosoftSignIn, NetworkSettings, Pop3Transport, Prefetch, ProxyMode, ProxyProfile, RouteGroup, Security, Server, Settings as SettingsT, SwipeAction, SystemProxy, ThemeChoice } from "../lib/types";
+import { AiSection, ContactsSection, RulesSection, TemplatesSection } from "./PowerSettings";
 import { explain } from "../lib/problems";
 import { ConfirmDialog, Segmented, Spinner, Switch, trapFocus } from "./ui";
 import { ProblemCard, Setup } from "./Setup";
 import { useRef } from "react";
 
-export type SettingsSection = "accounts" | "appearance" | "reading" | "inbox" | "writing" | "notifications" | "privacy" | "network" | "shortcuts" | "about";
+export type SettingsSection =
+  | "accounts"
+  | "appearance"
+  | "reading"
+  | "inbox"
+  | "writing"
+  | "templates"
+  | "rules"
+  | "contacts"
+  | "ai"
+  | "notifications"
+  | "privacy"
+  | "network"
+  | "shortcuts"
+  | "about";
 
 const SECTIONS: [SettingsSection, TKey, typeof Bell][] = [
   ["accounts", "settings.accounts", UserRound],
@@ -17,6 +32,10 @@ const SECTIONS: [SettingsSection, TKey, typeof Bell][] = [
   ["reading", "settings.reading", Info],
   ["inbox", "settings.inbox", Inbox],
   ["writing", "settings.writing", PenLine],
+  ["templates", "settings.templates", FileText],
+  ["rules", "settings.rules", Workflow],
+  ["contacts", "settings.contacts", BookUser],
+  ["ai", "settings.ai", Sparkles],
   ["notifications", "settings.notifications", Bell],
   ["privacy", "settings.privacy", Shield],
   ["network", "settings.network", Network],
@@ -102,6 +121,7 @@ function AccountEditor({ a, onChanged, onRemoved }: { a: AccountInfo; onChanged:
   const [sender, setSender] = useState(a.sender_name);
   const [signature, setSignature] = useState(a.signature);
   const [transport, setTransport] = useState<ImapTransport | null>(a.transport.kind === "imap" ? a.transport : null);
+  const [pop3, setPop3] = useState<Pop3Transport | null>(a.transport.kind === "pop3" ? a.transport : null);
   const [password, setPassword] = useState("");
   const [state, setState] = useState<{ busy: boolean; message: string | null; ok: boolean }>({ busy: false, message: null, ok: false });
   const [confirm, setConfirm] = useState(false);
@@ -111,6 +131,7 @@ function AccountEditor({ a, onChanged, onRemoved }: { a: AccountInfo; onChanged:
     setSender(a.sender_name);
     setSignature(a.signature);
     setTransport(a.transport.kind === "imap" ? a.transport : null);
+    setPop3(a.transport.kind === "pop3" ? a.transport : null);
   }, [a.id]);
 
   const saveProfile = async () => {
@@ -119,11 +140,12 @@ function AccountEditor({ a, onChanged, onRemoved }: { a: AccountInfo; onChanged:
   };
 
   const saveServers = async () => {
-    if (!transport) return;
+    const current: ImapTransport | Pop3Transport | null = pop3 ?? transport;
+    if (!current) return;
     setState({ busy: true, message: null, ok: false });
     try {
       if (password) {
-        const r = await api.check(transport, password);
+        const r = await api.check(current, password);
         const p = r.imap ?? r.smtp;
         if (p || r.error) {
           const e = p ? explain(p) : null;
@@ -131,7 +153,7 @@ function AccountEditor({ a, onChanged, onRemoved }: { a: AccountInfo; onChanged:
           return;
         }
       }
-      await api.updateServers(a.id, transport, password || null);
+      await api.updateServers(a.id, current, password || null);
       setPassword("");
       setState({ busy: false, message: t("settings.serversSaved"), ok: true });
       onChanged();
@@ -168,6 +190,52 @@ function AccountEditor({ a, onChanged, onRemoved }: { a: AccountInfo; onChanged:
           </label>
           <ServerEdit label={t("setup.incoming")} server={transport.imap} onChange={(imap) => setTransport({ ...transport, imap })} />
           <ServerEdit label={t("setup.outgoing")} server={transport.smtp} onChange={(smtp) => setTransport({ ...transport, smtp })} />
+          <label className="stack-field">
+            <span className="field-label">{t("settings.newPassword")}</span>
+            <input className="input" type="password" value={password} placeholder={t("settings.newPasswordHint")} onChange={(e) => setPassword(e.target.value)} />
+          </label>
+          {state.message && (
+            <p className={state.ok ? "field-ok" : "field-error"} role={state.ok ? "status" : "alert"}>
+              {state.message}
+            </p>
+          )}
+          <div className="set-actions">
+            <button type="button" className="btn btn-primary" disabled={state.busy} onClick={() => void saveServers()}>
+              {state.busy && <Spinner />}
+              <span>{password ? t("settings.checkAndSave") : t("settings.save")}</span>
+            </button>
+          </div>
+        </div>
+      )}
+      {pop3 && (
+        <div className="set-card">
+          <div className="set-card-title">{t("settings.servers")}</div>
+          <label className="stack-field">
+            <span className="field-label">{t("setup.username")}</span>
+            <input className="input" value={pop3.username} spellCheck={false} onChange={(e) => setPop3({ ...pop3, username: e.target.value })} />
+          </label>
+          <ServerEdit label={t("setup.incomingPop3")} server={pop3.pop3} onChange={(s) => setPop3({ ...pop3, pop3: s })} />
+          <ServerEdit label={t("setup.outgoing")} server={pop3.smtp} onChange={(smtp) => setPop3({ ...pop3, smtp })} />
+          <Row label={t("setup.leaveOnServer")} description={t("setup.leaveOnServerHint")}>
+            <Switch label={t("setup.leaveOnServer")} checked={pop3.leave_on_server} onChange={(leave_on_server) => setPop3({ ...pop3, leave_on_server })} />
+          </Row>
+          {pop3.leave_on_server && (
+            <Row label={t("setup.deleteAfter")} description={t("setup.deleteAfterHint")}>
+              <select
+                className="select"
+                aria-label={t("setup.deleteAfter")}
+                value={pop3.delete_after_days ?? 0}
+                onChange={(e) => setPop3({ ...pop3, delete_after_days: Number(e.target.value) || null })}
+              >
+                <option value={0}>{t("setup.keepForever")}</option>
+                {[7, 14, 30, 90].map((n) => (
+                  <option key={n} value={n}>
+                    {t("setup.afterDays", { n })}
+                  </option>
+                ))}
+              </select>
+            </Row>
+          )}
           <label className="stack-field">
             <span className="field-label">{t("settings.newPassword")}</span>
             <input className="input" type="password" value={password} placeholder={t("settings.newPasswordHint")} onChange={(e) => setPassword(e.target.value)} />
@@ -289,6 +357,7 @@ const ROUTES: [RouteGroup, TKey][] = [
   ["sign_in", "net.routeSignIn"],
   ["setup", "net.routeSetup"],
   ["updates", "net.routeUpdates"],
+  ["ai", "net.routeAi"],
 ];
 
 /** Settings → Netzwerk: proxy profiles as in Arcalo, and which connection uses which. */
@@ -722,6 +791,10 @@ export function SettingsView({ settings, accounts, info, section, onSection, onC
               </>
             )}
             {section === "network" && <NetworkSection net={settings.network} onChange={(network) => onChange({ network })} />}
+            {section === "ai" && <AiSection settings={settings} accounts={accounts} onChange={onChange} />}
+            {section === "rules" && <RulesSection accounts={accounts} />}
+            {section === "templates" && <TemplatesSection accounts={accounts} />}
+            {section === "contacts" && <ContactsSection settings={settings} accounts={accounts} onChange={onChange} />}
             {section === "writing" && (
               <div className="set-card">
                 <Row label={t("settings.richText")} description={t("settings.richTextHint")}>
@@ -797,6 +870,11 @@ export function SettingsView({ settings, accounts, info, section, onSection, onC
                   </Row>
                   <Row label={t("settings.localFirst")} description={t("settings.localFirstHint")}>
                     <span />
+                  </Row>
+                  <Row label={t("settings.aiPrivacy")} description={settings.ai.providers.length ? t("settings.aiPrivacyOn") : t("settings.aiPrivacyOff")}>
+                    <button type="button" className="btn btn-sm" onClick={() => onSection("ai")}>
+                      {t("settings.aiOpen")}
+                    </button>
                   </Row>
                 </div>
               </>

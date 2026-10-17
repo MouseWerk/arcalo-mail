@@ -6,11 +6,13 @@
 //! in front, a background check of its own otherwise, the browser session of the sign-in). A
 //! clock thread does what the time tools have due (`run_clock`).
 
+mod assistant;
 mod background;
 mod commands;
 #[cfg(mobile)]
 mod mobile;
 mod secrets;
+mod tools;
 #[cfg(desktop)]
 mod tray;
 
@@ -35,6 +37,10 @@ pub struct AppState {
     statuses: Mutex<HashMap<i64, Notice>>,
     /// Tokens of a Microsoft sign-in until the account is added (memory only).
     pending_oauth: Mutex<HashMap<String, mail_core::oauth::Tokens>>,
+    /// Answers of the AI assistant on their way, by request id: set to cancel.
+    ai_jobs: Mutex<HashMap<String, Arc<std::sync::atomic::AtomicBool>>>,
+    /// Pictures being fetched (a BIMI domain, a Gravatar address), each once at a time.
+    pictures: Mutex<std::collections::HashSet<String>>,
 }
 
 impl AppState {
@@ -206,6 +212,7 @@ fn run_clock(app: AppHandle) {
 pub(crate) enum Connection {
     Net(NetConnector),
     Jmap(JmapConnector),
+    Pop3(mail_core::pop3::Pop3Connector),
 }
 
 /// Why an account has no [`Connection`].
@@ -243,6 +250,12 @@ pub(crate) fn connection_for(account: &Account, db: &Path) -> Result<Connection,
                 .map(Connection::Jmap)
                 .map_err(|e| NoConnection::Unusable(e.to_string()))
         }
+        Transport::Pop3 { .. } => {
+            let Some(password) = password() else { return Err(NoConnection::SignIn) };
+            mail_core::pop3::Pop3Connector::new(account, password, db.to_path_buf())
+                .map(Connection::Pop3)
+                .map_err(|e| NoConnection::Unusable(e.to_string()))
+        }
         _ => {
             let Some(password) = password() else { return Err(NoConnection::SignIn) };
             NetConnector::new(account, password).map(Connection::Net).map_err(|e| NoConnection::Unusable(e.to_string()))
@@ -262,7 +275,10 @@ pub fn start_worker(app: &AppHandle, account: &Account) {
                     s.statuses.lock().unwrap_or_else(|e| e.into_inner()).insert(*account_id, notice.clone());
                 }
             }
-            Notice::NewMail { account_id, messages } => notify_new_mail(&sink_app, *account_id, messages),
+            Notice::NewMail { account_id, messages } => {
+                notify_new_mail(&sink_app, *account_id, messages);
+                assistant::judge_new_mail(&sink_app, *account_id, messages);
+            }
             _ => {}
         }
         if matches!(notice, Notice::Changed { .. } | Notice::NewMail { .. }) {
@@ -278,6 +294,7 @@ pub fn start_worker(app: &AppHandle, account: &Account) {
     let spawned = match connection_for(account, &state.db) {
         Ok(Connection::Net(c)) => Worker::spawn(account.id, state.db.clone(), c, sink),
         Ok(Connection::Jmap(c)) => Worker::spawn(account.id, state.db.clone(), c, sink),
+        Ok(Connection::Pop3(c)) => Worker::spawn(account.id, state.db.clone(), c, sink),
         Err(NoConnection::SignIn) => return tell(Status::SignIn, None),
         Err(NoConnection::Unusable(e)) => return tell(Status::Stopped, Some(e)),
     };
@@ -393,6 +410,8 @@ pub fn run() {
                 workers: Mutex::default(),
                 statuses: Mutex::default(),
                 pending_oauth: Mutex::default(),
+                ai_jobs: Mutex::default(),
+                pictures: Mutex::default(),
             });
             // A phone launched in the background for its check starts no workers.
             #[cfg(mobile)]
@@ -404,6 +423,7 @@ pub fn run() {
                 apply_network(&settings.network);
                 if in_front {
                     start_workers(&handle);
+                    tools::sync_all_books(&handle);
                 }
                 update_badge(&handle);
                 watch_network(handle);
@@ -461,7 +481,7 @@ pub fn run() {
             commands::undo,
             commands::search,
             commands::server_search,
-            commands::suggest_contacts,
+            tools::suggest_contacts,
             commands::send_message,
             commands::cancel_send,
             commands::save_draft,
@@ -505,6 +525,45 @@ pub fn run() {
             commands::followups,
             commands::time_counts,
             commands::tick,
+            assistant::ai_run,
+            assistant::ai_cancel,
+            assistant::ai_destination,
+            assistant::ai_ask_providers,
+            assistant::ai_thread,
+            assistant::ai_models,
+            assistant::ai_set_key,
+            assistant::ai_has_key,
+            assistant::ai_tone,
+            assistant::ai_learn_tone,
+            assistant::ai_forget_tone,
+            assistant::ai_forget_results,
+            assistant::set_important,
+            assistant::ai_remind,
+            assistant::ai_calendar,
+            tools::rules_list,
+            tools::rules_server,
+            tools::rule_unsupported,
+            tools::rule_save,
+            tools::rule_delete,
+            tools::rule_enable,
+            tools::rules_reorder,
+            tools::rule_preview,
+            tools::rule_run,
+            tools::templates_list,
+            tools::template_save,
+            tools::template_delete,
+            tools::template_render,
+            tools::contact_card,
+            tools::address_books,
+            tools::carddav_add,
+            tools::address_book_sync,
+            tools::address_book_remove,
+            tools::microsoft_contacts,
+            tools::picture,
+            tools::forget_pictures,
+            tools::pop3_preset,
+            tools::hub_list,
+            tools::hub_senders,
         ])
         .run(tauri::generate_context!())
         .expect("Arcalo Mail failed to start");

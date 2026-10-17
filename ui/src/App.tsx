@@ -12,7 +12,11 @@ import {
   Layers,
   LogIn,
   MailMinus,
+  MessagesSquare,
   Newspaper,
+  Paperclip,
+  Star,
+  StarOff,
   Palette as PaletteIcon,
   PenSquare,
   Pin,
@@ -30,7 +34,7 @@ import {
 import { api, inApp, onNotice, onReminders, onTrayAction, openExternal, pickSavePath } from "./lib/api";
 import { applyTheme, onSystemThemeChange, type Theme } from "./lib/theme";
 import { currentLang, langFromLocale, setLang, useT } from "./lib/i18n";
-import { draftFromMessage, emptyDraft, fromComposeDraft, isEmpty, isValidAddress, replyDraft, toDraft, type ComposeState } from "./lib/compose";
+import { draftFromMessage, emptyDraft, fromComposeDraft, isEmpty, isValidAddress, replaceOwnText, replyDraft, toDraft, type ComposeState } from "./lib/compose";
 import { clickSelect, isTyping, keyAction, pagesFor, type Selection } from "./lib/listing";
 import { closeToast, runUndo, setUndo, showToast } from "./lib/toasts";
 import { displayName, now as clockNow, setClock } from "./lib/format";
@@ -66,6 +70,10 @@ import { CATEGORIES, CATEGORY_ICON, CATEGORY_LABEL, InboxHead, InboxZero } from 
 import { ScheduledView, ScreenerView, SubscriptionsView } from "./components/SmartViews";
 import { WhenDialog, followupItems, snoozeItems } from "./components/TimeMenus";
 import { ComposeSheet } from "./components/ComposeSheet";
+import { AssistantBar } from "./components/Assistant";
+import { AskView } from "./components/AskView";
+import { AttachmentHub } from "./components/AttachmentHub";
+import { ContactCardDialog } from "./components/ContactCard";
 import { MAILTO_EVENT } from "./components/MailFrame";
 import { Setup } from "./components/Setup";
 import { SettingsView, exportDiagnostics, type SettingsSection } from "./components/Settings";
@@ -95,7 +103,9 @@ type Place =
   | { kind: "later" }
   | { kind: "followups" }
   | { kind: "scheduled" }
-  | { kind: "subscriptions" };
+  | { kind: "subscriptions" }
+  | { kind: "ask" }
+  | { kind: "files" };
 
 /** A source of list pages, `key` names it (a new key starts the list afresh). */
 type Source = { key: string; page: (offset: number, limit: number) => Promise<Page> };
@@ -158,7 +168,8 @@ export function App() {
   const [signIn, setSignIn] = useState<AccountInfo | null>(null);
   const [menu, setMenu] = useState<{ items: MenuItem[]; at: { x: number; y: number } } | null>(null);
   const [palette, setPalette] = useState(false);
-  const [preview, setPreview] = useState<{ name: string; url: string } | null>(null);
+  const [preview, setPreview] = useState<{ name: string; url: string; text?: string } | null>(null);
+  const [contact, setContact] = useState<{ email: string; name: string | null } | null>(null);
   const [width, setWidth] = useState(() => (typeof window === "undefined" ? 1280 : window.innerWidth));
   // Phones: the settings' list of sections, before a section opens.
   const [settingsNav, setSettingsNav] = useState(true);
@@ -176,6 +187,8 @@ export function App() {
   const bundles = settings?.bundles ?? true;
   const inboxIds = useMemo(() => new Set(Object.values(mailboxes).flat().filter((m) => m.role === "inbox").map((m) => m.id)), [mailboxes]);
   const multi = (accounts?.length ?? 0) > 1;
+  /** The AI assistant is set up (Settings → KI). */
+  const aiOn = (settings?.ai?.providers.length ?? 0) > 0;
 
   const source = useMemo((): Source | null => {
     switch (place.kind) {
@@ -694,7 +707,16 @@ export function App() {
     const row = current != null ? rowAt(order.indexOf(current)) : undefined;
     const pinned = latest.marks.pinned;
     const later = latest.marks.later;
+    const important = thread.some((m) => ids.includes(m.id) && m.important) || !!row?.important;
     const items: MenuItem[] = [
+      {
+        label: important ? t("read.notImportant") : t("read.important"),
+        icon: important ? <StarOff size={14} aria-hidden /> : <Star size={14} aria-hidden />,
+        onSelect: () =>
+          void api.setImportant(ids, !important).then(() => {
+            patchRows(ids, { important: !important });
+          }),
+      },
       { label: pinned ? t("read.unpin") : t("read.pin"), icon: pinned ? <PinOff size={14} aria-hidden /> : <Pin size={14} aria-hidden />, onSelect: () => void setPinned(ids, !pinned) },
       {
         label: later ? t("read.notLater") : t("read.later"),
@@ -950,7 +972,10 @@ export function App() {
     try {
       if (how === "preview") {
         const p = await api.previewAttachment(a.id);
-        setPreview({ name, url: `data:${p.mime_type};base64,${p.data_b64}` });
+        if (p.mime_type.startsWith("text/")) {
+          const bytes = Uint8Array.from(atob(p.data_b64), (c) => c.charCodeAt(0));
+          setPreview({ name, url: "", text: new TextDecoder().decode(bytes) });
+        } else setPreview({ name, url: `data:${p.mime_type};base64,${p.data_b64}` });
       } else if (how === "open") {
         await api.openAttachment(a.id);
       } else {
@@ -1192,6 +1217,8 @@ export function App() {
     add("followups", t("folder.followups"), BellRing, times.followups, times.followups > 0);
     add("scheduled", t("folder.scheduled"), Send, times.scheduled, times.scheduled > 0);
     add("subscriptions", t("folder.subscriptions"), Newspaper, 0, false);
+    add("files", t("folder.files"), Paperclip, 0, true);
+    add("ask", t("folder.ask"), MessagesSquare, 0, aiOn);
     return out;
   };
 
@@ -1225,6 +1252,10 @@ export function App() {
       ["reading", "settings.reading"],
       ["inbox", "settings.inbox"],
       ["writing", "settings.writing"],
+      ["templates", "settings.templates"],
+      ["rules", "settings.rules"],
+      ["contacts", "settings.contacts"],
+      ["ai", "settings.ai"],
       ["notifications", "settings.notifications"],
       ["privacy", "settings.privacy"],
       ["network", "settings.network"],
@@ -1381,6 +1412,21 @@ export function App() {
     void open(m);
   };
 
+  /** Opens a message known only by its id (an answer's source, a file of the hub). */
+  const openById = (id: number, subject = "") =>
+    openMessages({ id, mailbox_id: 0, uid: 0, thread_id: 0, subject, from: null, date: 0, snippet: "", seen: true, flagged: false, answered: false, has_attachments: false, thread_count: 1, account_id: 0 });
+
+  /** The assistant's reply draft in a reply to the newest message of the conversation. */
+  const replyWith = (text: string) => {
+    const v = latestView();
+    if (!v) return;
+    const d = replyDraft(v, "reply", accountById(v.account_id), currentLang(), rich);
+    void startCompose(replaceOwnText(d, text));
+  };
+
+  const hubAttachment = (it: { id: number; message_id: number; filename: string | null; mime_type: string; size: number }, how: "open" | "save" | "preview") =>
+    attachment({ id: it.id, message_id: it.message_id, part_index: 0, filename: it.filename, mime_type: it.mime_type, size: it.size, content_id: null, inline: false, section: null }, how);
+
   return (
     <div className="app" data-view={view} data-layout={layout} data-touch={touch ? "" : undefined} data-composing={compose ? "" : undefined}>
       {!inApp() && <div className="demo-bar">{t("app.demo")}</div>}
@@ -1457,6 +1503,18 @@ export function App() {
             busy={unsubBusy}
             onOpen={(s) => openMessages({ id: s.message_id, mailbox_id: 0, uid: 0, thread_id: 0, subject: "", from: { name: s.name, email: s.sender }, date: s.last, snippet: "", seen: true, flagged: false, answered: false, has_attachments: false, thread_count: 1, account_id: 0 })}
             onUnsubscribe={(s) => unsubscribe(s.sender, s.name || s.sender, s.method)}
+            onShowFolders={() => setView("folders")}
+          />
+        ) : !results && place.kind === "ask" ? (
+          <AskView on={aiOn} onOpen={(s) => openById(s.message_id, s.subject)} onShowFolders={() => setView("folders")} onSettings={() => setSettingsOpen("ai")} />
+        ) : !results && place.kind === "files" ? (
+          <AttachmentHub
+            accountId={null}
+            revision={searchRev}
+            onPreview={(it) => void hubAttachment(it, "preview")}
+            onSave={(it) => void hubAttachment(it, "save")}
+            onOpenFile={(it) => void hubAttachment(it, "open")}
+            onOpenMessage={(it) => openById(it.message_id, it.subject)}
             onShowFolders={() => setView("folders")}
           />
         ) : !results && place.kind === "scheduled" ? (
@@ -1599,6 +1657,21 @@ export function App() {
           }
           onUnsubscribe={(v) => v.summary.from && unsubscribe(v.summary.from.email, displayName(v.summary.from, currentLang()), methodOf(v))}
           onMark={onMark}
+          onContact={(a) => setContact({ email: a.email, name: a.name })}
+          assistant={
+            thread.length && aiOn && !stream ? (
+              <AssistantBar
+                key={`${thread[thread.length - 1].id}-${current ?? 0}`}
+                messageId={current ?? thread[thread.length - 1].id}
+                latestId={thread[thread.length - 1].id}
+                accountId={(thread.find((m) => m.id === current) ?? thread[thread.length - 1]).account_id || (latestView()?.account_id ?? 0)}
+                on={aiOn}
+                autoSummary={settings.ai.auto_summary}
+                onDraft={replyWith}
+                onSettings={() => setSettingsOpen("ai")}
+              />
+            ) : undefined
+          }
         />
       </div>
       {compose && (
@@ -1613,6 +1686,7 @@ export function App() {
           onSaveDraft={() => void (compose && saveDraft(compose, false).then((d) => setCompose((c) => (c ? { ...c, messageId: d.messageId } : c))))}
           onClose={() => void closeCompose()}
           onDiscard={() => void discardCompose()}
+          aiOn={aiOn}
         />
       )}
       {settingsOpen && (
@@ -1708,9 +1782,19 @@ export function App() {
                 <X size={16} strokeWidth={1.75} aria-hidden />
               </button>
             </figcaption>
-            <img src={preview.url} alt={preview.name} />
+            {preview.text != null ? <pre className="preview-text">{preview.text}</pre> : <img src={preview.url} alt={preview.name} />}
           </figure>
         </div>
+      )}
+      {contact && (
+        <ContactCardDialog
+          email={contact.email}
+          name={contact.name}
+          onClose={() => setContact(null)}
+          onCompose={(to) => newMessage([to])}
+          onOpen={(m) => ("subject" in m ? openMessages(m as MessageSummary) : openById(m.id))}
+          onSave={(f) => void hubAttachment(f, "save")}
+        />
       )}
       <Toasts />
     </div>

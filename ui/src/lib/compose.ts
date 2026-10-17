@@ -239,3 +239,49 @@ export function splitAddresses(field: string): string[] {
   if (cur.trim()) out.push(cur.trim());
   return out;
 }
+
+/** Where the user's own text ends in the body: at the signature (`-- `), the quote of the
+ *  message answered (its intro line, `>` lines, a blockquote) or the header of a forward. */
+function ownEnd(lines: string[]): number {
+  const i = lines.findIndex((l) => {
+    const s = l.trim();
+    return l === "-- " || s === "--" || s.startsWith("--------") || l.startsWith(">") || /(schrieb|wrote)[^:]*:$/.test(s);
+  });
+  return i < 0 ? lines.length : i;
+}
+
+/** The text the user wrote, without signature and quote (what the writing help works on). */
+export function ownText(s: ComposeState): string {
+  if (s.rich) {
+    const { own } = splitHtml(s.html);
+    return editorHtmlToText(own).trim();
+  }
+  const lines = s.text.replace(/\r\n/g, "\n").split("\n");
+  return lines.slice(0, ownEnd(lines)).join("\n").trim();
+}
+
+/** The editor HTML split where the signature, the quote or a forward begins. */
+function splitHtml(html: string): { own: string; rest: string } {
+  const markers = [/<p>--\s?<\/p>/i, /<p>-- (?=<br|<\/p>)/i, /<blockquote/i, /<p>--------/i, /<p>[^<]*(schrieb|wrote)[^<]*:<\/p>/i];
+  let at = html.length;
+  for (const m of markers) {
+    const hit = m.exec(html);
+    if (hit && hit.index < at) at = hit.index;
+  }
+  // The intro line of a quote sits right before its blockquote.
+  const before = html.slice(0, at);
+  const intro = /<p>[^<]*<\/p>$/.exec(before);
+  if (intro && /^<blockquote/i.test(html.slice(at)) && /(schrieb|wrote)/.test(intro[0])) at = intro.index;
+  return { own: html.slice(0, at), rest: html.slice(at) };
+}
+
+/** The body with the user's own text replaced (signature and quote stay). */
+export function replaceOwnText(s: ComposeState, text: string): ComposeState {
+  if (s.rich) {
+    const { rest } = splitHtml(s.html);
+    return { ...s, html: `${textToEditorHtml(text.trim())}<p><br></p>${rest}`, revision: s.revision + 1 };
+  }
+  const lines = s.text.replace(/\r\n/g, "\n").split("\n");
+  const rest = lines.slice(ownEnd(lines)).join("\n");
+  return { ...s, text: rest ? `${text.trim()}\n\n${rest}` : text.trim(), revision: s.revision + 1 };
+}

@@ -27,6 +27,14 @@ import type {
   TimeCounts,
   Unsubscribed,
   WaitingSender,
+  AiOutcome,
+  AiRequest,
+  ContactCard,
+  Destination,
+  HubFilter,
+  HubItem,
+  Rule,
+  Template,
 } from "./types";
 
 const now = Math.floor(Date.now() / 1000);
@@ -145,6 +153,9 @@ let settings: Settings = {
   focus: false,
   unified_inbox: true,
   bundles: true,
+  ai: { providers: [], default_provider: "", accounts: {}, auto_summary: true, priority: true, tone: true },
+  bimi: true,
+  gravatar: false,
 };
 const listeners = new Set<(n: Notice) => void>();
 
@@ -377,4 +388,32 @@ export const demo = {
     listeners.add(f);
     return () => listeners.delete(f);
   },
+  // The AI assistant answers with a fixed text in the browser preview, „on this device“.
+  destination: (): Destination => {
+    const p = settings.ai.providers[0];
+    return p ? { provider: p.id, name: p.name, host: "localhost", local: true } : { provider: null, name: "", host: "", local: true };
+  },
+  aiRun: (request: AiRequest): AiOutcome => ({
+    task: request.task,
+    text:
+      request.task === "summary"
+        ? "- Jonas schickt das Angebot für den Relaunch.\n- Offen: deine Rückmeldung bis Freitag."
+        : request.task === "rewrite"
+          ? request.text
+          : "Hallo Jonas,\n\ndanke, ich schaue es mir bis Freitag an.\n\nViele Grüße",
+    cancelled: false,
+    cached: false,
+    destination: demo.destination(),
+    sources: [],
+    items: [],
+    important: null,
+    reason: null,
+  }),
+  rules: [] as Rule[],
+  templates: [] as Template[],
+  contactCard: (email: string): ContactCard => {
+    const list = visible().filter((x) => x.from?.email === email).map(summary);
+    return { email, name: list[0]?.from?.name ?? null, org: null, phones: [], emails: [], book: null, received: list.length, sent: 0, recent: list.slice(0, 8), files: [] };
+  },
+  hub: (_f: HubFilter): { total: number; offset: number; items: HubItem[] } => ({ total: 0, offset: 0, items: [] }),
 };

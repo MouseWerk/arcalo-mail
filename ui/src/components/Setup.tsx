@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import { useT, type TKey } from "../lib/i18n";
 import { api, openExternal } from "../lib/api";
 import { explain, hintKey } from "../lib/problems";
-import type { Account, AccountDraft, CheckResult, Discovered, ImapTransport, MicrosoftSignIn, Problem, Security, Server } from "../lib/types";
+import type { Account, AccountDraft, CheckResult, Discovered, ImapTransport, MicrosoftSignIn, Pop3Transport, Problem, Security, Server } from "../lib/types";
 import { Segmented, Spinner, Switch } from "./ui";
 
 type Step =
@@ -32,14 +32,15 @@ export const GOOGLE_APP_PASSWORDS = "https://myaccount.google.com/apppasswords";
 
 const domainOf = (email: string) => email.trim().toLowerCase().split("@")[1] ?? "";
 
-const defaultPort = (kind: "imap" | "smtp", s: Security) => (kind === "imap" ? (s === "tls" ? 993 : 143) : s === "tls" ? 465 : 587);
+const defaultPort = (kind: "imap" | "smtp" | "pop3", s: Security) =>
+  kind === "imap" ? (s === "tls" ? 993 : 143) : kind === "pop3" ? (s === "tls" ? 995 : 110) : s === "tls" ? 465 : 587;
 
-function ServerFields({ kind, server, onChange }: { kind: "imap" | "smtp"; server: Server; onChange: (s: Server) => void }) {
+function ServerFields({ kind, server, onChange }: { kind: "imap" | "smtp" | "pop3"; server: Server; onChange: (s: Server) => void }) {
   const t = useT();
   const id = `setup-${kind}`;
   return (
     <fieldset className="server-fields">
-      <legend>{kind === "imap" ? t("setup.incoming") : t("setup.outgoing")}</legend>
+      <legend>{kind === "imap" ? t("setup.incoming") : kind === "pop3" ? t("setup.incomingPop3") : t("setup.outgoing")}</legend>
       <label className="stack-field server-host">
         <span className="field-label">{t("setup.host")}</span>
         <input id={`${id}-host`} className="input" value={server.host} spellCheck={false} onChange={(e) => onChange({ ...server, host: e.target.value.trim(), trusted_cert: null })} />
@@ -171,7 +172,8 @@ export function Setup({ welcome, onDone, onCancel }: { welcome: boolean; onDone:
   const [found, setFound] = useState<Discovered | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [manual, setManual] = useState(false);
-  const [protocol, setProtocol] = useState<"imap" | "jmap">("imap");
+  const [protocol, setProtocol] = useState<"imap" | "pop3" | "jmap">("imap");
+  const [pop3, setPop3] = useState<Pop3Transport | null>(null);
   const [jmapManual, setJmapManual] = useState<JmapManual>({ session_url: "", username: "", token: false });
   const [microsoftBuilt, setMicrosoftBuilt] = useState(true);
 
@@ -188,8 +190,8 @@ export function Setup({ welcome, onDone, onCancel }: { welcome: boolean; onDone:
     setStep({ kind: "done", account });
   };
 
-  const check = async (tr: ImapTransport, d: Discovered | null) => {
-    setTransport(tr);
+  const check = async (tr: ImapTransport | Pop3Transport, d: Discovered | null) => {
+    if (tr.kind === "imap") setTransport(tr);
     setStep({ kind: "checking", found: d, jmap: false });
     setError(null);
     try {
@@ -284,7 +286,15 @@ export function Setup({ welcome, onDone, onCancel }: { welcome: boolean; onDone:
   };
 
   const trust = (which: "imap" | "smtp", p: Problem) => {
-    if (!transport || p.kind !== "certificate") return;
+    if (p.kind !== "certificate") return;
+    if (manual && protocol === "pop3" && pop3) {
+      const field = which === "imap" ? "pop3" : "smtp";
+      const next = { ...pop3, [field]: { ...pop3[field], trusted_cert: p.fingerprint } };
+      setPop3(next);
+      void check(next, found);
+      return;
+    }
+    if (!transport) return;
     const next = { ...transport, [which]: { ...transport[which], trusted_cert: p.fingerprint } };
     void check(next, found);
   };
@@ -555,19 +565,57 @@ export function Setup({ welcome, onDone, onCancel }: { welcome: boolean; onDone:
               onSubmit={(e) => {
                 e.preventDefault();
                 if (protocol === "jmap") void checkJmap(jmapManual.session_url.trim(), jmapManual.username.trim(), jmapManual.token, found);
+                else if (protocol === "pop3") pop3 && void check(pop3, found);
                 else void check(transport, found);
               }}
             >
-              <Segmented<"imap" | "jmap">
+              <Segmented<"imap" | "pop3" | "jmap">
                 label={t("setup.protocol")}
                 value={protocol}
-                onChange={setProtocol}
+                onChange={(p) => {
+                  setProtocol(p);
+                  if (p === "pop3" && !pop3) void api.pop3Preset(email.trim()).then((tr) => tr && setPop3(tr));
+                }}
                 options={[
                   ["imap", t("setup.protocolImap")],
+                  ["pop3", t("setup.protocolPop3")],
                   ["jmap", t("setup.protocolJmap")],
                 ]}
               />
-              {protocol === "imap" ? (
+              {protocol === "pop3" ? (
+                pop3 && (
+                  <>
+                    <p className="muted setup-note">{t("setup.pop3Note")}</p>
+                    <label className="stack-field">
+                      <span className="field-label">{t("setup.username")}</span>
+                      <input className="input" value={pop3.username} spellCheck={false} onChange={(e) => setPop3({ ...pop3, username: e.target.value })} />
+                    </label>
+                    <label className="stack-field">
+                      <span className="field-label">{t("setup.password")}</span>
+                      <input className="input" type="password" value={password} onChange={(e) => setPassword(e.target.value)} readOnly={busy} />
+                    </label>
+                    <ServerFields kind="pop3" server={pop3.pop3} onChange={(s) => setPop3({ ...pop3, pop3: s })} />
+                    <ServerFields kind="smtp" server={pop3.smtp} onChange={(smtp) => setPop3({ ...pop3, smtp })} />
+                    <div className="setup-switch">
+                      <Switch label={t("setup.leaveOnServer")} checked={pop3.leave_on_server} onChange={(leave_on_server) => setPop3({ ...pop3, leave_on_server })} />
+                      <span>{t("setup.leaveOnServer")}</span>
+                    </div>
+                    {pop3.leave_on_server && (
+                      <label className="stack-field">
+                        <span className="field-label">{t("setup.deleteAfter")}</span>
+                        <select className="select" value={pop3.delete_after_days ?? 0} onChange={(e) => setPop3({ ...pop3, delete_after_days: Number(e.target.value) || null })}>
+                          <option value={0}>{t("setup.keepForever")}</option>
+                          {[7, 14, 30, 90].map((n) => (
+                            <option key={n} value={n}>
+                              {t("setup.afterDays", { n })}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    )}
+                  </>
+                )
+              ) : protocol === "imap" ? (
                 <>
                   <label className="stack-field">
                     <span className="field-label">{t("setup.username")}</span>
@@ -619,7 +667,11 @@ export function Setup({ welcome, onDone, onCancel }: { welcome: boolean; onDone:
                 <button
                   type="submit"
                   className="btn btn-primary"
-                  disabled={busy || !password || (protocol === "imap" ? !transport.imap.host || !transport.smtp.host : !jmapManual.session_url.trim())}
+                  disabled={
+                    busy ||
+                    !password ||
+                    (protocol === "imap" ? !transport.imap.host || !transport.smtp.host : protocol === "pop3" ? !pop3?.pop3.host || !pop3.smtp.host : !jmapManual.session_url.trim())
+                  }
                 >
                   {t("setup.check")}
                 </button>

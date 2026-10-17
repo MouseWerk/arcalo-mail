@@ -13,9 +13,11 @@ export type Auth = { kind: "password" } | { kind: "o_auth2"; provider: "microsof
 export type Transport =
   | { kind: "imap"; imap: Server; smtp: Server; username: string; auth: Auth }
   | { kind: "graph" }
-  | { kind: "jmap"; session_url: string; username: string; auth: Auth };
+  | { kind: "jmap"; session_url: string; username: string; auth: Auth }
+  | { kind: "pop3"; pop3: Server; smtp: Server; username: string; auth: Auth; leave_on_server: boolean; delete_after_days: number | null };
 
 export type ImapTransport = Extract<Transport, { kind: "imap" }>;
+export type Pop3Transport = Extract<Transport, { kind: "pop3" }>;
 
 export type Account = {
   id: number;
@@ -122,6 +124,8 @@ export type MessageSummary = {
   bundle?: number;
   /** The time tools' lists: when it comes back, is due, or was put on the list. */
   due?: number | null;
+  /** „Wichtig“ (local heuristics or the AI model). */
+  important?: boolean;
 };
 
 /** The tabs of the sorted inbox (mail_core::triage::Category). */
@@ -257,7 +261,7 @@ export type ProxyProfile = {
   proxy_user: string;
 };
 
-export type RouteGroup = "mail" | "sign_in" | "setup" | "updates";
+export type RouteGroup = "mail" | "sign_in" | "setup" | "updates" | "ai";
 
 export type NetworkSettings = { profiles: ProxyProfile[]; routes: Partial<Record<RouteGroup, string>> };
 
@@ -294,7 +298,133 @@ export type Settings = {
   unified_inbox: boolean;
   /** Newsletters as one row per sender. */
   bundles: boolean;
+  ai: AiSettings;
+  /** Profile pictures from BIMI (on) and Gravatar (off by default). */
+  bimi: boolean;
+  gravatar: boolean;
 };
+
+// ---------------------------------------------------------------- the AI assistant
+
+export type AiKind = "ollama" | "lm_studio" | "openai" | "anthropic" | "mistral" | "azure" | "compatible";
+
+export type AiProvider = { id: string; name: string; kind: AiKind; base_url: string; model: string; api_version: string };
+
+export type AiSettings = {
+  providers: AiProvider[];
+  default_provider: string;
+  /** Per account id: the provider that may see its mail, or "off". */
+  accounts: Record<string, string>;
+  auto_summary: boolean;
+  priority: boolean;
+  tone: boolean;
+};
+
+/** Where an account's text goes (the privacy line). */
+export type Destination = { provider: string | null; name: string; host: string; local: boolean };
+
+export type WritingStyle = "shorter" | "friendlier" | "formal" | "grammar";
+
+export type AiRequest =
+  | { task: "summary"; message_id: number }
+  | { task: "reply"; message_id: number; instructions: string }
+  | { task: "rewrite"; account_id: number; text: string; style: WritingStyle }
+  | { task: "translate"; message_id: number; target: string }
+  | { task: "extract"; message_id: number }
+  | { task: "priority"; message_id: number }
+  | { task: "ask"; question: string; provider: string | null };
+
+export type AiSource = { n: number; message_id: number; subject: string; from: string; date: number };
+
+export type AiItem = { kind: "task" | "event"; title: string; date: string | null; time: string | null; end: string | null; place: string | null; at: number | null };
+
+export type AiOutcome = {
+  task: AiRequest["task"];
+  text: string;
+  cancelled: boolean;
+  cached: boolean;
+  destination: Destination;
+  sources: AiSource[];
+  items: AiItem[];
+  important: boolean | null;
+  reason: string | null;
+};
+
+export type Tone = {
+  greeting: string | null;
+  closing: string | null;
+  informal: boolean | null;
+  words_per_sentence: number;
+  samples: string[];
+  learned_from: number;
+  learned_at: number;
+};
+
+// ---------------------------------------------------------------- rules
+
+export type RuleField = "from" | "to" | "cc" | "subject" | "list" | "has_attachment" | "size" | "age" | "category";
+export type RuleOp = "contains" | "not_contains" | "is" | "starts_with" | "over" | "under";
+export type RuleCondition = { field: RuleField; op: RuleOp; value: string };
+export type RuleAction =
+  | { kind: "move"; folder: string }
+  | { kind: "label"; keyword: string }
+  | { kind: "mark_read" }
+  | { kind: "flag" }
+  | { kind: "pin" }
+  | { kind: "forward"; to: string }
+  | { kind: "delete" }
+  | { kind: "skip_inbox" }
+  | { kind: "category"; category: string };
+
+export type Rule = {
+  id: number;
+  account_id: number | null;
+  name: string;
+  place: "local" | "server";
+  enabled: boolean;
+  position: number;
+  body: { match_all: boolean; conditions: RuleCondition[]; actions: RuleAction[]; stop: boolean };
+  server_ref: string | null;
+};
+
+export type RuleServer = { kind: "sieve" | "graph" | "none"; server: Server | null; error: string | null; checked: boolean };
+
+export type RuleReport = { matched: number; removed: number[]; accounts: number[] };
+
+// ---------------------------------------------------------------- templates
+
+export type Template = { id: number; kind: "template" | "snippet"; name: string; trigger: string | null; subject: string; body: string; account_id: number | null };
+
+export type TemplateVars = { name: string; my_name: string; date: string; time: string; subject: string; signature: string };
+
+// ---------------------------------------------------------------- contacts
+
+export type AddressBook = { id: number; kind: "carddav" | "graph"; name: string; url: string; username: string; account_id: number | null; cards: number; last_sync: number | null; error: string | null };
+
+export type CardFile = { id: number; message_id: number; filename: string | null; mime_type: string; size: number; date: number };
+
+export type ContactCard = {
+  email: string;
+  name: string | null;
+  org: string | null;
+  phones: string[];
+  emails: string[];
+  book: string | null;
+  received: number;
+  sent: number;
+  recent: MessageSummary[];
+  files: CardFile[];
+};
+
+// ---------------------------------------------------------------- the attachment hub
+
+export type FileKind = "images" | "pdf" | "documents" | "spreadsheets" | "presentations" | "archives" | "calendar" | "other";
+
+export type HubFilter = { kind: FileKind | null; sender: string | null; since: number | null; until: number | null; query: string; account_id: number | null };
+
+export type HubItem = { id: number; message_id: number; filename: string | null; mime_type: string; size: number; kind: FileKind; date: number; from: Address | null; subject: string; account_id: number };
+
+export type HubSender = { email: string; name: string | null; files: number };
 
 export type AppInfo = {
   version: string;

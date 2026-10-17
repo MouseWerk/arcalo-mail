@@ -88,6 +88,12 @@
   /* The sender's circle in the reading pane, and the small one of collapsed messages. */
   --avatar: 32px;
   --avatar-sm: 22px;
+  /* The picture on the contact card. */
+  --avatar-lg: 56px;
+  /* The assistant's answer and the ask view keep a readable line length. */
+  --ai-max-w: 720px;
+  /* The text preview of attachments. */
+  --preview-text-w: 760px;
   /* Dialogs, the settings panel, the setup card. */
   --dialog-w: 440px;
   --dialog-w-wide: 640px;

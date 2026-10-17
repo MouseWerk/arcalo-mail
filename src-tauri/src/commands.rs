@@ -13,7 +13,7 @@ use mail_core::engine::{CheckResult, Command, Notice};
 use mail_core::later;
 use mail_core::outbox;
 use mail_core::settings::Settings;
-use mail_core::store::{Contact, Mailbox, MessageSummary};
+use mail_core::store::{Mailbox, MessageSummary};
 use mail_core::triage::{self, Category, InboxQuery};
 use mail_core::unsubscribe::Method;
 use serde::Serialize;
@@ -75,6 +75,7 @@ pub fn get_settings(state: State<'_, AppState>) -> Res<Settings> {
 #[tauri::command]
 pub fn set_settings(app: AppHandle, state: State<'_, AppState>, mut settings: Settings) -> Res<()> {
     settings.network.validate()?;
+    settings.ai.normalize()?;
     settings.mark_screener(mail_core::store::now());
     let before = mail_core::settings::load(&state.store())?;
     mail_core::settings::save(&state.store(), &settings)?;
@@ -86,6 +87,10 @@ pub fn set_settings(app: AppHandle, state: State<'_, AppState>, mut settings: Se
     if before.network != settings.network {
         crate::apply_network(&settings.network);
         crate::reconnect_all(&app);
+    }
+    // Gravatar switched off: what it said is forgotten.
+    if before.gravatar && !settings.gravatar {
+        mail_core::avatars::forget(&state.store(), "gravatar:")?;
     }
     if before.prefetch != settings.prefetch || before.subject_threads != settings.subject_threads {
         state.all_workers().iter().for_each(|w| w.send(Command::SyncNow));
@@ -147,9 +152,12 @@ pub async fn discover(email: String) -> Res<Discovered> {
 /// Signs in to both servers with the settings of the setup form.
 #[tauri::command]
 pub async fn check_account(transport: Transport, password: String) -> Res<CheckResult> {
-    if let Transport::Imap { imap, smtp, .. } = &transport {
-        mail_core::network::check_server(imap)?;
-        mail_core::network::check_server(smtp)?;
+    match &transport {
+        Transport::Imap { imap: incoming, smtp, .. } | Transport::Pop3 { pop3: incoming, smtp, .. } => {
+            mail_core::network::check_server(incoming)?;
+            mail_core::network::check_server(smtp)?;
+        }
+        _ => {}
     }
     Ok(mail_core::engine::check_account(&transport, &password).await)
 }
@@ -187,7 +195,9 @@ pub fn add_account(app: AppHandle, state: State<'_, AppState>, draft: AccountDra
         let id = store.add_account(&draft)?;
         let wants_password = matches!(
             draft.transport,
-            Transport::Imap { auth: Auth::Password, .. } | Transport::Jmap { auth: Auth::Password | Auth::Token, .. }
+            Transport::Imap { auth: Auth::Password, .. }
+                | Transport::Pop3 { .. }
+                | Transport::Jmap { auth: Auth::Password | Auth::Token, .. }
         );
         if wants_password
             && !password.is_empty()
@@ -454,14 +464,18 @@ pub struct Page {
 pub fn list_messages(state: State<'_, AppState>, mailbox_id: i64, offset: u32, limit: u32, threads: bool) -> Res<Page> {
     let store = state.store();
     let limit = limit.min(500);
-    let items =
+    let mut items =
         if threads { store.threads(mailbox_id, limit, offset)? } else { store.messages(mailbox_id, limit, offset)? };
+    crate::tools::annotate(&store, &mut items);
     Ok(Page { total: store.list_len(mailbox_id, threads)?, offset, items })
 }
 
 #[tauri::command]
 pub fn list_thread(state: State<'_, AppState>, thread_id: i64) -> Res<Vec<MessageSummary>> {
-    state.store().thread(thread_id)
+    let store = state.store();
+    let mut items = store.thread(thread_id)?;
+    crate::tools::annotate(&store, &mut items);
+    Ok(items)
 }
 
 #[derive(Serialize)]
@@ -601,7 +615,10 @@ pub fn delete_folder(state: State<'_, AppState>, mailbox_id: i64) -> Res<()> {
 
 #[tauri::command]
 pub fn search(state: State<'_, AppState>, query: String, account_id: Option<i64>) -> Res<Vec<MessageSummary>> {
-    mail_core::search::search(&state.store(), &query, account_id, 200)
+    let store = state.store();
+    let mut items = mail_core::search::search(&store, &query, account_id, 200)?;
+    crate::tools::annotate(&store, &mut items);
+    Ok(items)
 }
 
 /// „Auf dem Server suchen“: the folders of an account (or the ones given) on the server.
@@ -623,11 +640,6 @@ pub async fn server_search(
     })?;
     let hits = w.server_search(ids, query).await?;
     state.store().summaries(&hits)
-}
-
-#[tauri::command]
-pub fn suggest_contacts(state: State<'_, AppState>, prefix: String) -> Res<Vec<Contact>> {
-    state.store().suggest_contacts(&prefix, 8)
 }
 
 // ---------------------------------------------------------------------------- compose
@@ -818,11 +830,14 @@ pub struct Preview {
 #[tauri::command]
 pub async fn attachment_preview(state: State<'_, AppState>, id: i64) -> Res<Preview> {
     let (a, data) = attachment_bytes(&state, id).await?;
-    if !a.mime_type.starts_with("image/") || a.mime_type.contains("svg") || data.len() > 25 * 1024 * 1024 {
+    let text = a.mime_type.starts_with("text/plain") || a.mime_type == "text/csv";
+    if (!a.mime_type.starts_with("image/") && !text) || a.mime_type.contains("svg") || data.len() > 25 * 1024 * 1024 {
         return Err(Error::Invalid(
             mail_core::tr!("Keine Vorschau für diesen Anhang.", "No preview for this attachment.").into(),
         ));
     }
+    // Text: the start is enough for a look.
+    let data = if text { data.into_iter().take(64 * 1024).collect() } else { data };
     Ok(Preview { mime_type: a.mime_type, data_b64: base64::engine::general_purpose::STANDARD.encode(data) })
 }
 
@@ -831,7 +846,9 @@ pub async fn attachment_preview(state: State<'_, AppState>, id: i64) -> Res<Prev
 /// A page of the sorted inbox (one account, or all of them).
 #[tauri::command]
 pub fn inbox_list(state: State<'_, AppState>, query: InboxQuery, offset: u32, limit: u32) -> Res<Page> {
-    let (total, items) = triage::inbox(&state.store(), &query, limit.min(500), offset)?;
+    let store = state.store();
+    let (total, mut items) = triage::inbox(&store, &query, limit.min(500), offset)?;
+    crate::tools::annotate(&store, &mut items);
     Ok(Page { total, offset, items })
 }
 

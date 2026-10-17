@@ -1,8 +1,13 @@
 import {
   AlarmClock,
   Bold,
+  Check,
   ChevronDown,
   File,
+  FileText,
+  Sparkles,
+  Square,
+  TriangleAlert,
   Italic,
   Link,
   List,
@@ -18,12 +23,15 @@ import {
 } from "lucide-react";
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { currentLang, useT, type TKey } from "../lib/i18n";
-import { editorHtmlToText, isValidAddress, splitAddresses, textToEditorHtml, type ComposeState } from "../lib/compose";
+import { editorHtmlToText, isValidAddress, ownText, replaceOwnText, splitAddresses, textToEditorHtml, type ComposeState } from "../lib/compose";
 import { api, onFileDrop, pickFiles } from "../lib/api";
 import { fileSize } from "../lib/format";
-import type { Account, Contact } from "../lib/types";
-import { Menu, PromptDialog, trapFocus, type MenuItem } from "./ui";
+import { useAi } from "../lib/ai";
+import { matchSnippets, snippetQuery, today } from "../lib/snippets";
+import type { Account, Contact, Destination, Template, WritingStyle } from "../lib/types";
+import { Menu, PromptDialog, Spinner, trapFocus, type MenuItem } from "./ui";
 import { followupItems, sendLaterItems } from "./TimeMenus";
+import { AiText, PrivacyLine } from "./Assistant";
 
 type Props = {
   draft: ComposeState;
@@ -38,6 +46,18 @@ type Props = {
   onSaveDraft: () => void;
   onClose: () => void;
   onDiscard: () => void;
+  /** The AI assistant is set up (the writing help). */
+  aiOn?: boolean;
+};
+
+/** The snippet chooser: what was typed after `;;`, where the caret is. */
+type SnippetPick = { query: string; list: Template[]; active: number };
+
+const STYLE: Record<WritingStyle, TKey> = {
+  shorter: "compose.helpShorter",
+  friendlier: "compose.helpFriendlier",
+  formal: "compose.helpFormal",
+  grammar: "compose.helpGrammar",
 };
 
 const TITLE: Record<ComposeState["mode"], TKey> = {
@@ -180,8 +200,23 @@ function AddressField({
   );
 }
 
-/** The rich text editor: a content-editable area with a few formats. */
-function Editor({ html, revision, onChange, label }: { html: string; revision: number; onChange: (h: string) => void; label: string }) {
+/** The rich text editor: a content-editable area with a few formats. `onTyped` gets the text
+ *  before the caret after each input (snippets); `onKey` sees the keys first. */
+function Editor({
+  html,
+  revision,
+  onChange,
+  label,
+  onTyped,
+  onKey,
+}: {
+  html: string;
+  revision: number;
+  onChange: (h: string) => void;
+  label: string;
+  onTyped?: (before: string) => void;
+  onKey?: (e: KeyboardEvent<HTMLElement>) => boolean;
+}) {
   const t = useT();
   const ref = useRef<HTMLDivElement>(null);
   const [linking, setLinking] = useState(false);
@@ -224,7 +259,17 @@ function Editor({ html, revision, onChange, label }: { html: string; revision: n
         aria-multiline="true"
         aria-label={label}
         suppressContentEditableWarning
-        onInput={() => ref.current && onChange(ref.current.innerHTML)}
+        onInput={() => {
+          if (!ref.current) return;
+          onChange(ref.current.innerHTML);
+          const sel = window.getSelection();
+          const node = sel?.anchorNode;
+          if (onTyped && node && node.nodeType === Node.TEXT_NODE) onTyped((node.textContent ?? "").slice(0, sel.anchorOffset));
+          else onTyped?.("");
+        }}
+        onKeyDown={(e) => {
+          if (onKey?.(e)) e.preventDefault();
+        }}
         onPaste={(e) => {
           // Pasted text comes as text; formatting from other programs stays out.
           const text = e.clipboardData.getData("text/plain");
@@ -261,7 +306,7 @@ function Editor({ html, revision, onChange, label }: { html: string; revision: n
 
 /** The compose sheet: bottom right on a wide window, full screen on a phone. Esc closes it (and
  *  keeps the draft), Ctrl+Enter sends. Files dropped on the window are attached. */
-export function ComposeSheet({ draft, accounts, error, sending, onChange, onSend, onSendLater, onSaveDraft, onClose, onDiscard }: Props) {
+export function ComposeSheet({ draft, accounts, error, sending, onChange, onSend, onSendLater, onSaveDraft, onClose, onDiscard, aiOn }: Props) {
   const t = useT();
   const lang = currentLang();
   const [dropping, setDropping] = useState(false);
@@ -279,6 +324,98 @@ export function ComposeSheet({ draft, accounts, error, sending, onChange, onSend
   const set = (patch: Partial<ComposeState>) => onChange({ ...draft, ...patch });
   const latest = useRef(draft);
   latest.current = draft;
+  const [templates, setTemplates] = useState<Template[]>([]);
+  const [snip, setSnip] = useState<SnippetPick | null>(null);
+  const help = useAi();
+  const [helpStyle, setHelpStyle] = useState<WritingStyle | null>(null);
+  const [dest, setDest] = useState<Destination | null>(null);
+  useEffect(() => {
+    void api.templates().then(setTemplates);
+  }, []);
+  useEffect(() => {
+    if (aiOn && draft.accountId != null) void api.aiDestination(draft.accountId).then(setDest);
+  }, [aiOn, draft.accountId]);
+
+  /** Fills a template's or snippet's variables for this message. */
+  const render = async (texts: string[]) => {
+    const d = latest.current;
+    const now = today(lang);
+    return api.templateRender(texts, d.accountId, d.to, d.subject, now.date, now.time);
+  };
+
+  const insertTemplate = async (tpl: Template) => {
+    const [subject, body] = await render([tpl.subject, tpl.body]);
+    const d = latest.current;
+    const own = ownText(d);
+    const text = own ? `${body}\n\n${own}` : body;
+    onChange({ ...replaceOwnText(d, text), subject: d.subject.trim() ? d.subject : subject });
+  };
+
+  /** Puts the chosen snippet in place of `;;query`. */
+  const insertSnippet = async (tpl: Template, query: string) => {
+    setSnip(null);
+    const [text] = await render([tpl.body]);
+    const typed = query.length + 2;
+    if (latest.current.rich) {
+      const sel = window.getSelection();
+      const node = sel?.anchorNode;
+      if (sel && node && node.nodeType === Node.TEXT_NODE) {
+        const r = document.createRange();
+        r.setStart(node, Math.max(0, sel.anchorOffset - typed));
+        r.setEnd(node, sel.anchorOffset);
+        sel.removeAllRanges();
+        sel.addRange(r);
+        document.execCommand("insertText", false, text);
+        const ed = sheet.current?.querySelector<HTMLElement>(".editor");
+        if (ed) onChange({ ...latest.current, html: ed.innerHTML });
+      }
+      return;
+    }
+    const ta = body.current;
+    if (!ta) return;
+    const pos = ta.selectionStart;
+    const value = latest.current.text;
+    const next = value.slice(0, pos - typed) + text + value.slice(pos);
+    onChange({ ...latest.current, text: next });
+    requestAnimationFrame(() => {
+      ta.focus();
+      ta.setSelectionRange(pos - typed + text.length, pos - typed + text.length);
+    });
+  };
+
+  const typed = (before: string) => {
+    const q = snippetQuery(before);
+    if (q == null) return setSnip(null);
+    const list = matchSnippets(templates, q, latest.current.accountId);
+    setSnip(list.length ? { query: q, list, active: 0 } : null);
+  };
+
+  /** Arrow keys, Enter and Tab in the snippet chooser. */
+  const snippetKey = (e: KeyboardEvent<HTMLElement>): boolean => {
+    if (!snip) return false;
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      setSnip({ ...snip, active: (snip.active + (e.key === "ArrowDown" ? 1 : -1) + snip.list.length) % snip.list.length });
+      return true;
+    }
+    if (e.key === "Enter" || e.key === "Tab") {
+      e.stopPropagation();
+      void insertSnippet(snip.list[snip.active], snip.query);
+      return true;
+    }
+    if (e.key === "Escape") {
+      e.stopPropagation();
+      setSnip(null);
+      return true;
+    }
+    return false;
+  };
+
+  const writingHelp = (style: WritingStyle) => {
+    const text = ownText(latest.current);
+    setHelpStyle(style);
+    if (draft.accountId == null) return;
+    void help.run({ task: "rewrite", account_id: draft.accountId, text, style });
+  };
 
   const attach = async (paths: string[]) => {
     const infos = await api.fileInfos(paths);
@@ -388,9 +525,41 @@ export function ComposeSheet({ draft, accounts, error, sending, onChange, onSend
       </div>
       <div className="compose-body-wrap">
         {draft.rich ? (
-          <Editor html={draft.html} revision={draft.revision} label={t("compose.body")} onChange={(html) => set({ html })} />
+          <Editor html={draft.html} revision={draft.revision} label={t("compose.body")} onChange={(html) => set({ html })} onTyped={typed} onKey={snippetKey} />
         ) : (
-          <textarea ref={body} className="compose-body" aria-label={t("compose.body")} value={draft.text} onChange={(e) => set({ text: e.target.value })} />
+          <textarea
+            ref={body}
+            className="compose-body"
+            aria-label={t("compose.body")}
+            value={draft.text}
+            onChange={(e) => {
+              set({ text: e.target.value });
+              typed(e.target.value.slice(0, e.target.selectionStart));
+            }}
+            onKeyDown={(e) => {
+              if (snippetKey(e)) e.preventDefault();
+            }}
+          />
+        )}
+        {snip && (
+          <ul className="snippet-pick" role="listbox" aria-label={t("tpl.snippets")}>
+            {snip.list.map((s, i) => (
+              <li
+                key={s.id}
+                role="option"
+                aria-selected={i === snip.active}
+                className="suggestion"
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  void insertSnippet(s, snip.query);
+                }}
+              >
+                <code className="snippet-trigger">;;{s.trigger}</code>
+                <span className="suggestion-name">{s.name}</span>
+                <span className="suggestion-email">{s.body.replace(/\s+/g, " ").slice(0, 60)}</span>
+              </li>
+            ))}
+          </ul>
         )}
         {(draft.attachments.length > 0 || draft.forwarded.length > 0) && (
           <ul className="compose-attachments" aria-label={t("compose.attachments")}>
@@ -436,6 +605,61 @@ export function ComposeSheet({ draft, accounts, error, sending, onChange, onSend
           </div>
         )}
       </div>
+      {helpStyle && (help.state.busy || help.state.text || help.state.error) && (
+        <div className="writing-help" aria-label={t("compose.writingHelp")}>
+          <header className="assistant-out-head">
+            <span className="assistant-out-title">{t(STYLE[helpStyle])}</span>
+            <PrivacyLine dest={dest} />
+            <span className="toolbar-gap" />
+            {help.state.busy && (
+              <button type="button" className="btn btn-sm btn-quiet" onClick={help.cancel}>
+                <Square size={12} strokeWidth={2} aria-hidden />
+                <span>{t("ai.stop")}</span>
+              </button>
+            )}
+          </header>
+          {help.state.busy && !help.state.text && (
+            <p className="muted assistant-wait">
+              <Spinner /> {dest?.local ? t("ai.thinkingLocal") : t("ai.thinking")}
+            </p>
+          )}
+          {help.state.text && <AiText text={help.state.text} busy={help.state.busy} />}
+          {help.state.error && (
+            <div className="notice notice-warning" role="alert">
+              <TriangleAlert size={16} strokeWidth={1.75} aria-hidden />
+              <span>{help.state.error}</span>
+            </div>
+          )}
+          {!help.state.busy && (
+            <div className="assistant-out-foot">
+              {help.state.text && !help.state.error && (
+                <button
+                  type="button"
+                  className="btn btn-sm btn-primary"
+                  onClick={() => {
+                    onChange(replaceOwnText(latest.current, help.state.text));
+                    help.reset();
+                    setHelpStyle(null);
+                  }}
+                >
+                  <Check size={14} strokeWidth={1.75} aria-hidden />
+                  <span>{t("compose.helpApply")}</span>
+                </button>
+              )}
+              <button
+                type="button"
+                className="btn btn-sm btn-quiet"
+                onClick={() => {
+                  help.reset();
+                  setHelpStyle(null);
+                }}
+              >
+                {t("compose.helpDiscard")}
+              </button>
+            </div>
+          )}
+        </div>
+      )}
       {error && (
         <div className="notice notice-danger compose-error" role="alert">
           <strong>{t("compose.sendFailed")}</strong>
@@ -483,6 +707,46 @@ export function ComposeSheet({ draft, accounts, error, sending, onChange, onSend
         <button type="button" className="icon-btn" aria-pressed={draft.rich} onClick={toggleRich} aria-label={draft.rich ? t("compose.toPlain") : t("compose.toRich")} title={draft.rich ? t("compose.toPlain") : t("compose.toRich")}>
           <Type size={16} strokeWidth={1.75} aria-hidden />
         </button>
+        <button
+          type="button"
+          className="icon-btn"
+          data-compose="templates"
+          aria-haspopup="menu"
+          aria-label={t("compose.templates")}
+          title={t("compose.templates")}
+          onClick={(e) => {
+            const list = templates.filter((x) => x.kind === "template" && (x.account_id == null || x.account_id === draft.accountId));
+            const snippets = templates.filter((x) => x.kind === "snippet");
+            setMenu({
+              items: [
+                ...(list.length ? list.map((x) => ({ label: x.name, onSelect: () => void insertTemplate(x) })) : [{ label: t("compose.noTemplates"), onSelect: () => {}, disabled: true }]),
+                ...(snippets.length ? ["separator" as const, { heading: t("compose.snippetHint") }] : []),
+              ],
+              at: above(e.currentTarget),
+            });
+          }}
+        >
+          <FileText size={16} strokeWidth={1.75} aria-hidden />
+        </button>
+        {aiOn && (
+          <button
+            type="button"
+            className="btn btn-quiet compose-help-btn"
+            data-compose="help"
+            aria-haspopup="menu"
+            disabled={!dest?.provider}
+            title={dest?.provider ? t("compose.writingHelp") : t("ai.notAllowed")}
+            onClick={(e) =>
+              setMenu({
+                items: (Object.keys(STYLE) as WritingStyle[]).map((s) => ({ label: t(STYLE[s]), onSelect: () => writingHelp(s) })),
+                at: above(e.currentTarget),
+              })
+            }
+          >
+            <Sparkles size={15} strokeWidth={1.75} aria-hidden />
+            <span>{t("compose.writingHelp")}</span>
+          </button>
+        )}
         <span className="toolbar-gap" />
         <span className="muted compose-account">{account?.email}</span>
         <button type="button" className="btn btn-quiet" onClick={onSaveDraft}>

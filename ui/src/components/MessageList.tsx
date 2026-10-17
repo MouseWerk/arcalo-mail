@@ -273,7 +273,10 @@ export function MessageList(p: Props) {
               <span className="row-date">{listDate(m.date, today, lang)}</span>
             )}
           </span>
-          <span className="row-subject">{m.subject || t("list.noSubject")}</span>
+          <span className="row-subject">
+            {m.important && <span className="important-badge">{t("list.important")}</span>}
+            {m.subject || t("list.noSubject")}
+          </span>
           {p.showSnippets && <span className="row-snippet">{m.snippet || " "}</span>}
         </span>
       </div>,
