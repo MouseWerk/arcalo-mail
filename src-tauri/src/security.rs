@@ -367,7 +367,8 @@ pub fn private(store: &Store) -> bool {
 /// Commands the lock screen and the recovery screen use; everything else waits. Changing the lock
 /// itself (a new PIN, switching it off) needs the unlocked app.
 fn allowed(cmd: &str, gated: bool) -> bool {
-    let shared = matches!(cmd, "app_info" | "get_settings" | "set_in_front" | "drafts_listen" | "drafts_saved");
+    let shared =
+        matches!(cmd, "app_info" | "get_settings" | "set_in_front" | "drafts_listen" | "drafts_saved" | "keygate_quit");
     if gated {
         return shared || cmd.starts_with("keygate_") || cmd == "security_state";
     }
@@ -818,7 +819,15 @@ mod tests {
 
     #[test]
     fn the_lock_screens_keep_only_their_own_commands() {
-        for ok in ["applock_unlock", "applock_status", "applock_unlock_biometric", "security_state", "get_settings"] {
+        // „Beenden“ works on both screens.
+        for ok in [
+            "applock_unlock",
+            "applock_status",
+            "applock_unlock_biometric",
+            "security_state",
+            "get_settings",
+            "keygate_quit",
+        ] {
             assert!(allowed(ok, false), "{ok}");
         }
         for no in [
