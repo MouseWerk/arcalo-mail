@@ -85,3 +85,43 @@ it("opens Jonas's encrypted answer with its lock and check", async () => {
   await app.browser.switchFrame(null);
   await app.shot("read-encrypted");
 });
+
+it("imports an own key protected with a passphrase and signs with it", async () => {
+  const armored = await (await control("/pgp/protected?email=maria@example.org")).text();
+  assert.match(armored, /BEGIN PGP PRIVATE KEY BLOCK/);
+  await openSettings(app, "Verschlüsselung");
+  await clickText(app, ".set-section .btn span", "OpenPGP-Schlüssel importieren");
+  await app.fill(".dialog textarea", armored);
+  await clickText(app, ".dialog .btn-primary", "Importieren");
+  // The dialog asks for the passphrase and checks it.
+  await app.waitFor('.dialog input[type="password"]', 10000);
+  await app.fill('.dialog input[type="password"]', "falsch");
+  await clickText(app, ".dialog .btn-primary", "Importieren");
+  await app.waitText(".dialog .field-error", /Passphrase stimmt nicht/, 10000);
+  await app.fill('.dialog input[type="password"]', "geheim");
+  await clickText(app, ".dialog .btn-primary", "Importieren");
+  await app.waitUntil(async () => (await app.$$(".dialog")).length === 0, 10000, "imported");
+  const own = (await app.invoke("crypto_keys")).filter((k) => k.own && k.email === "maria@example.org");
+  assert.equal(own.length, 2, JSON.stringify(own));
+  await app.keys("Escape");
+  await app.waitUntil(async () => (await app.$$(".settings")).length === 0, 5000, "settings closed");
+  // Given a moment ago, the passphrase is still in memory: a signed message goes out with the new key.
+  await (await app.$(".list-title")).click();
+  await app.keys("c");
+  await app.waitFor(".compose");
+  await app.click(".compose .address-field .chip-input");
+  await app.type("jonas@example.org");
+  await app.keys("Enter");
+  await app.fill("#compose-subject", "Signiert");
+  await app.browser.execute(() => document.querySelector(".compose .editor, .compose .compose-body").focus());
+  await app.type("Mit dem neuen Schlüssel.");
+  await app.waitFor('.compose-foot [data-compose="protect"]', 8000);
+  await app.click('.compose-foot [data-compose="protect"]');
+  await menuItem(app, "Signieren");
+  await app.waitText('.compose-foot [data-compose="protect"]', /Signiert \(OpenPGP\)/);
+  const before = (await server.sent()).length;
+  await clickText(app, ".compose-foot .btn-primary", "Senden");
+  await app.waitUntil(async () => (await server.sent()).length === before + 1, 25000, "sent over SMTP");
+  const read = await (await control(`/pgp/sent?i=${before}`)).json();
+  assert.equal(read.signature, "valid", JSON.stringify(read));
+});

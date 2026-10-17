@@ -110,7 +110,7 @@ fn redacted_settings(settings: &crate::settings::Settings) -> Result<serde_json:
                 p["proxy_user"] = "<user>".into();
             }
             for key in ["http_proxy", "socks_proxy"] {
-                if let Some(url) = p[key].as_str().map(|u| redact_proxy(u)) {
+                if let Some(url) = p[key].as_str().map(redact_proxy) {
                     p[key] = url.into();
                 }
             }

@@ -38,6 +38,8 @@
 //! * `/graph/v1.0/…`: Microsoft Graph's calendar endpoints (`calendar::graph::fake`) for an
 //!   account signed in through the identity provider; `POST /graph-event?calendar=C1` (Graph's
 //!   event JSON) puts one
+//! * `GET /pgp/protected?email=…`: a new secret key for that address, protected with the
+//!   passphrase `geheim` (as GnuPG exports keys)
 //! * `GET /pgp/public`: Jonas's OpenPGP key; `GET /pgp/sent?i=0`: what Jonas reads in sent
 //!   message 0; `POST /pgp/deliver?subject=…&date=…` (text as the body): a signed and encrypted
 //!   message from Jonas into the inbox
@@ -369,6 +371,13 @@ async fn handle(stream: TcpStream, shared: Arc<Shared>) -> std::io::Result<()> {
             }
         }
         ("GET", "/pgp/public") => ("200 OK", "text/plain", shared.peer.lock().unwrap().public().as_bytes().to_vec()),
+        ("GET", "/pgp/protected") => {
+            let email = q.get("email").cloned().unwrap_or_else(|| shared.user.clone());
+            match mail_core::crypto::pgp::generate_with("", &email, Some("geheim")) {
+                Ok((secret, _)) => ("200 OK", "text/plain", secret.into_bytes()),
+                Err(e) => ("500 Internal Server Error", "text/plain", e.to_string().into_bytes()),
+            }
+        }
         ("GET", "/pgp/sent") => {
             let i: usize = q.get("i").and_then(|v| v.parse().ok()).unwrap_or(0);
             let sent = shared.sent.lock().unwrap().get(i).cloned();

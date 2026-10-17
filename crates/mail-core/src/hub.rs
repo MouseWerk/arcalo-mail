@@ -128,7 +128,8 @@ pub fn list(store: &Store, f: &Filter, limit: u32, offset: u32) -> Result<(u32, 
     let words: Vec<String> = f.query.split_whitespace().map(|w| crate::search::fold(&w.to_lowercase())).collect();
     let rows = st.query_map(params![f.account_id, f.sender.as_deref().map(str::trim), f.since, f.until], |r| {
         let email: Option<String> = r.get(7)?;
-        let filename: Option<String> = r.get(2)?;
+        // Shown without bidirectional controls, so the real extension is what the user reads.
+        let filename: Option<String> = r.get::<_, Option<String>>(2)?.as_deref().map(crate::files::display_name);
         let mime: String = r.get(3)?;
         Ok(Item {
             id: r.get(0)?,

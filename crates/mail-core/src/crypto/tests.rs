@@ -737,7 +737,11 @@ fn an_untrusted_certificate_from_a_mail_is_used_only_once_the_user_trusts_it() {
     .unwrap();
     let o = open(&maria, &signed, Some("boss@corp.example"), &maria_keys).unwrap();
     assert_eq!(o.protection.signature.as_deref(), Some("untrusted"));
-    assert_eq!(certs_for(&maria, "boss@corp.example").unwrap(), [real.clone()], "the forged one is not used");
+    assert_eq!(
+        certs_for(&maria, "boss@corp.example").unwrap(),
+        std::slice::from_ref(&real),
+        "the forged one is not used"
+    );
     // The user checked it and trusts it: from now on it is a certificate of the address.
     let info = trust_signer(&maria, &signed, "boss@corp.example", &maria_keys).unwrap();
     assert_eq!(info.emails, ["boss@corp.example"]);
@@ -880,7 +884,7 @@ fn smime_oaep_with_sha256_opens() {
     let content = b"Content-Type: text/plain\r\n\r\nGeheim\r\n";
     // Encrypted as usual (RSA PKCS#1 v1.5), then the key transport rewritten as RSAES-OAEP with
     // SHA-256 and MGF1-SHA-256, as Outlook and OpenSSL `-keyopt rsa_padding_mode:oaep` write it.
-    let der_bytes = smime::encrypt(content, &[id.cert.clone()]).unwrap();
+    let der_bytes = smime::encrypt(content, std::slice::from_ref(&id.cert)).unwrap();
     let ci = cms::content_info::ContentInfo::from_der(&der_bytes).unwrap();
     let mut ed = cms::enveloped_data::EnvelopedData::from_der(&ci.content.to_der().unwrap()).unwrap();
     let mut infos = ed.recip_infos.0.clone().into_vec();

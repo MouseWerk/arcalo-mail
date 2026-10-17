@@ -425,7 +425,7 @@ pub fn prepare_send_with(
             .iter()
             .map(|b| {
                 Ok(crate::outbox::Copy {
-                    raw_b64: b64(&finish(built.clone(), &[b.clone()])?),
+                    raw_b64: b64(&finish(built.clone(), std::slice::from_ref(b))?),
                     recipients: vec![b.clone()],
                 })
             })

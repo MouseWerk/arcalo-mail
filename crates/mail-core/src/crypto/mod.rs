@@ -584,7 +584,7 @@ pub fn protect(
             let secret = if how.sign { Some(own_pgp_secret(store, from, keys)?) } else { None };
             if !how.encrypt {
                 let secret = secret.as_ref().expect("signing");
-                let sig = pgp::sign_detached(&secret, &entity)?;
+                let sig = pgp::sign_detached(secret, &entity)?;
                 let (b, body) = signed_body(
                     &entity,
                     "application/pgp-signature; name=\"signature.asc\"",

@@ -136,6 +136,12 @@ pub fn info(key: &SignedPublicKey) -> KeyInfo {
 
 /// Makes a key for `name <email>`; returns the armored secret key and its public part.
 pub fn generate(name: &str, email: &str) -> Result<(String, SignedPublicKey)> {
+    generate_with(name, email, None)
+}
+
+/// [`generate`], the secret key protected with `passphrase` when one is given (as GnuPG
+/// exports keys; the e2e tests import one).
+pub fn generate_with(name: &str, email: &str, passphrase: Option<&str>) -> Result<(String, SignedPublicKey)> {
     let uid = if name.trim().is_empty() {
         format!("<{}>", email.trim())
     } else {
@@ -145,13 +151,15 @@ pub fn generate(name: &str, email: &str) -> Result<(String, SignedPublicKey)> {
     enc.key_type(KeyType::ECDH(ECCCurve::Curve25519Legacy))
         .can_sign(false)
         .can_encrypt(EncryptionCaps::All)
-        .can_authenticate(false);
+        .can_authenticate(false)
+        .passphrase(passphrase.map(str::to_owned));
     let mut params = SecretKeyParamsBuilder::default();
     params
         .key_type(KeyType::Ed25519Legacy)
         .can_certify(true)
         .can_sign(true)
         .can_encrypt(EncryptionCaps::None)
+        .passphrase(passphrase.map(str::to_owned))
         .primary_user_id(uid)
         // Without these, GnuPG falls back to SHA-1, which Ed25519 signatures must not use.
         .preferred_symmetric_algorithms(vec![SymmetricKeyAlgorithm::AES256, SymmetricKeyAlgorithm::AES128].into())
