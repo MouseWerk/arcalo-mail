@@ -132,7 +132,7 @@ fn host_in(host: &str, list: &[&str]) -> bool {
 /// Whether an image is there to report the opening of the message: one pixel by its size
 /// attributes or style, hidden, or from a tracking host or path.
 pub fn is_tracking_image(src: &str, width: Option<&str>, height: Option<&str>, style: Option<&str>) -> bool {
-    let src = src.trim();
+    let src = &browser_url(src);
     let lower = src.to_ascii_lowercase();
     if !(lower.starts_with("http:") || lower.starts_with("https:") || lower.starts_with("//")) {
         return false;
@@ -225,6 +225,48 @@ fn redirect_target(url: &Url) -> Option<Url> {
     })
 }
 
+/// A URL as a browser reads it (WHATWG URL parsing): without the C0 controls and spaces around
+/// it and without tabs and line breaks anywhere in it.
+pub fn browser_url(value: &str) -> String {
+    value.trim_matches(|c: char| c <= ' ').chars().filter(|c| !matches!(c, '\t' | '\n' | '\r')).collect()
+}
+
+/// The addresses of the tracking pixels in an HTML message, found on its `<img>` tags as the
+/// HTML tokenizer reads them (attributes decoded, whatever the quoting): the sanitizer drops
+/// every picture with one of these addresses.
+pub fn pixel_sources(html: &str) -> std::collections::HashSet<String> {
+    use html5ever::tendril::{SliceExt, StrTendril};
+    use html5ever::tokenizer::{BufferQueue, TagKind, Token, TokenSink, TokenSinkResult, Tokenizer};
+    use std::cell::RefCell;
+    use std::collections::HashSet;
+
+    struct Pixels(RefCell<HashSet<String>>);
+    impl TokenSink for Pixels {
+        type Handle = ();
+        fn process_token(&self, token: Token, _line: u64) -> TokenSinkResult<()> {
+            if let Token::TagToken(tag) = token
+                && tag.kind == TagKind::StartTag
+                && &*tag.name == "img"
+            {
+                let attr = |name: &str| tag.attrs.iter().find(|a| &*a.name.local == name).map(|a| a.value.to_string());
+                let src = browser_url(&attr("src").unwrap_or_default());
+                let (w, h, style) = (attr("width"), attr("height"), attr("style"));
+                if is_tracking_image(&src, w.as_deref(), h.as_deref(), style.as_deref()) {
+                    self.0.borrow_mut().insert(src);
+                }
+            }
+            TokenSinkResult::Continue
+        }
+    }
+    let input = BufferQueue::default();
+    let t: StrTendril = html.to_tendril();
+    input.push_back(t);
+    let tok = Tokenizer::new(Pixels(RefCell::new(HashSet::new())), Default::default());
+    let _ = tok.feed(&input);
+    tok.end();
+    tok.sink.0.take()
+}
+
 /// The value of an attribute in the text of one tag (`<img src="…" width=1>`), as sent.
 fn attr<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
     let lower = tag.to_ascii_lowercase();
@@ -247,8 +289,9 @@ fn attr<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
     None
 }
 
-/// Takes the tracking pixels out of an HTML message; returns the rest and how many were removed.
-/// The result still goes through the sanitizer; this only decides which `<img>` tags go.
+/// Takes the tracking pixels out of an HTML message by its text; returns the rest and how many
+/// were removed. A quick look only: the sanitizer decides on the tags as parsed
+/// ([`pixel_sources`]), which markup cannot fool.
 pub fn strip_pixels(html: &str) -> (String, usize) {
     let lower = html.to_ascii_lowercase();
     if lower.len() != html.len() {

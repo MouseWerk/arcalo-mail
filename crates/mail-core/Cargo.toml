@@ -29,6 +29,9 @@ der = { version = "0.7.10", features = ["alloc", "oid"] }
 hickory-resolver = { version = "0.26.3", default-features = false, features = ["tokio", "system-config"] }
 # The device's zone by its IANA name, for appointments written here.
 iana-time-zone = "0.1.65"
+# HTML's tokenizer (the one ammonia parses with): the tracking pixels are found on the tags as a
+# browser reads them.
+html5ever = "0.40.1"
 # The IMAP response parser; the client (`imap::client`) and its commands are our own.
 imap-proto = "0.17.0"
 # SMTP once the connection stands (`network` does TCP, TLS and STARTTLS itself).

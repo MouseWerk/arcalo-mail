@@ -453,10 +453,25 @@ pub fn file(store: &Store, data: &str, inv: &Invitation, answer: Answer, calenda
     Ok(Some(format!("{calendar_id}|{id}|")))
 }
 
+/// The address of an `ORGANIZER` as [`Invitation::organizer`] holds it (`Name <address>`).
+fn organizer_address(organizer: &str) -> String {
+    let o = organizer.trim();
+    let a = o.rsplit_once('<').map(|(_, a)| a.trim_end_matches('>')).unwrap_or(o);
+    a.trim().trim_start_matches("mailto:").trim_start_matches("MAILTO:").trim().to_ascii_lowercase()
+}
+
 /// An update or a cancellation from the organizer, applied to the copy in the user's calendars
 /// (not to a Microsoft calendar: Exchange does that itself). `true` when something changed.
-pub fn apply(store: &Store, data: &str, inv: &Invitation) -> Result<bool> {
+/// Only the organizer may change a meeting (RFC 5546 3.2.2, 3.2.5): the message's sender
+/// (`sender`, its From address) must be the organizer of the stored copy, and the update keeps
+/// that organizer. Anything else stays a card the user can look at.
+pub fn apply(store: &Store, data: &str, inv: &Invitation, sender: Option<&str>) -> Result<bool> {
     if inv.mine || !matches!(inv.method.as_str(), "REQUEST" | "CANCEL") {
+        return Ok(false);
+    }
+    let organizer = organizer_address(&inv.organizer);
+    let Some(sender) = sender.map(|s| s.trim().to_ascii_lowercase()) else { return Ok(false) };
+    if organizer.is_empty() || sender != organizer {
         return Ok(false);
     }
     let mut changed = false;
@@ -467,6 +482,10 @@ pub fn apply(store: &Store, data: &str, inv: &Invitation) -> Result<bool> {
         }
         let me = calendar::my_addresses(store)?;
         let Some(current) = parse(&o.data, &me) else { continue };
+        // The organizer stays who it was.
+        if organizer_address(&current.organizer) != organizer {
+            continue;
+        }
         if inv.sequence < current.sequence || (inv.sequence == current.sequence && inv.method == "REQUEST") {
             continue;
         }
@@ -507,7 +526,14 @@ pub fn scan(store: &Store) -> Result<bool> {
         };
         let Some(inv) = parse(&data, &me) else { continue };
         note(store, id, &inv)?;
-        changed |= apply(store, &data, &inv)?;
+        let detail = store.message(id)?;
+        // Mail in Junk or Trash never changes the calendar.
+        let role = store.mailbox(detail.summary.mailbox_id)?.role;
+        if matches!(role, Some(crate::imap::Role::Junk | crate::imap::Role::Trash)) {
+            continue;
+        }
+        let sender = detail.summary.from.as_ref().map(|a| a.email.as_str());
+        changed |= apply(store, &data, &inv, sender)?;
     }
     Ok(changed)
 }

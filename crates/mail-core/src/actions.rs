@@ -16,7 +16,7 @@ use crate::error::{Error, Result};
 use crate::imap::Role;
 use crate::outbox::{self, Op};
 use crate::sanitize::{
-    Sanitized, inline_cids, quote_start_html, quote_start_text, sanitize_html, sanitize_html_with, text_to_html_counted,
+    Sanitized, quote_start_html, quote_start_text, sanitize_html_inline, sanitize_html_with, text_to_html_counted,
 };
 use crate::settings::RemoteContent;
 use crate::store::{Attachment, Mailbox, MessageDetail, Store, now};
@@ -677,10 +677,7 @@ pub fn message_view_with(
     }
     let images =
         if detail.html.as_deref().is_some_and(|h| h.contains("cid:")) { store.inline_images(id)? } else { vec![] };
-    let clean = |html: &str| -> Sanitized {
-        let s = sanitize_html(html, allow);
-        Sanitized { html: inline_cids(&s.html, &images), blocked_remote: s.blocked_remote, trackers: s.trackers }
-    };
+    let clean = |html: &str| -> Sanitized { sanitize_html_inline(html, allow, &images) };
     let body = match (&detail.html, &detail.text) {
         (Some(html), text) => {
             let full = clean(html);

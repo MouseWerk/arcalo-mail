@@ -104,9 +104,25 @@ fn clean_style(style: &str) -> String {
     out
 }
 
-fn is_remote(url: &str) -> bool {
-    let u = url.trim_start().to_ascii_lowercase();
-    u.starts_with("http:") || u.starts_with("https:") || u.starts_with("//")
+/// A picture's address is the message's own (`cid:`) or inside it (`data:`); anything else
+/// would be fetched from somewhere (or is nothing a picture can show).
+fn is_own_picture(url: &str) -> bool {
+    let u = crate::tracking::browser_url(url).to_ascii_lowercase();
+    u.starts_with("cid:") || u.starts_with("data:image/")
+}
+
+/// The type of an inline picture as it may go into a `data:` address: `image/` and a plain
+/// subtype, nothing else.
+fn picture_type(mime: &str) -> Option<String> {
+    let m = mime.trim().to_ascii_lowercase();
+    let sub = m.strip_prefix("image/")?;
+    (!sub.is_empty() && sub.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '+' | '-'))).then_some(m)
+}
+
+/// The `data:` address of an inline picture, `None` for a part that is no picture.
+fn data_uri(mime: &str, data: &[u8]) -> Option<String> {
+    use base64::Engine;
+    Some(format!("data:{};base64,{}", picture_type(mime)?, base64::engine::general_purpose::STANDARD.encode(data)))
 }
 
 /// Cleans the HTML of a message and removes its trackers. `allow_remote`: keep remote images
@@ -118,8 +134,24 @@ pub fn sanitize_html(html: &str, allow_remote: bool) -> Sanitized {
 /// [`sanitize_html`]; `trackers: false` leaves links and pictures as they are (the user's own
 /// message in the compose sheet).
 pub fn sanitize_html_with(html: &str, allow_remote: bool, trackers: bool) -> Sanitized {
-    let (html, pixels) = if trackers { crate::tracking::strip_pixels(html) } else { (html.to_string(), 0) };
-    let html = html.as_str();
+    sanitize(html, allow_remote, trackers, &[])
+}
+
+/// [`sanitize_html`] with the message's inline pictures (Content-ID, type, bytes): a `cid:`
+/// picture becomes a `data:` address while it is cleaned, so its type goes through the same
+/// escaping as any attribute, and only a picture type is used.
+pub fn sanitize_html_inline(html: &str, allow_remote: bool, images: &[(String, String, Vec<u8>)]) -> Sanitized {
+    sanitize(html, allow_remote, true, images)
+}
+
+fn sanitize(html: &str, allow_remote: bool, trackers: bool, images: &[(String, String, Vec<u8>)]) -> Sanitized {
+    // Pictures are decided on as the browser reads them: the tracking pixels by their tags as
+    // parsed, any other picture from outside the message as remote.
+    let pixels = if trackers { crate::tracking::pixel_sources(html) } else { HashSet::new() };
+    let pixel_count = Arc::new(AtomicUsize::new(0));
+    let pixel_counter = pixel_count.clone();
+    let inline: Vec<(String, String)> =
+        images.iter().filter_map(|(cid, mime, data)| Some((format!("cid:{cid}"), data_uri(mime, data)?))).collect();
     let blocked = Arc::new(AtomicUsize::new(0));
     let counter = blocked.clone();
     let links = Arc::new(AtomicUsize::new(0));
@@ -145,9 +177,29 @@ pub fn sanitize_html_with(html: &str, allow_remote: bool, trackers: bool) -> San
                 }
                 None => Some(Cow::Borrowed(value)),
             },
-            ("img", "src") if is_remote(value) && !allow_remote => {
-                counter.fetch_add(1, Ordering::Relaxed);
-                None
+            ("img", "src") => {
+                let url = crate::tracking::browser_url(value);
+                if let Some((_, uri)) = inline.iter().find(|(cid, _)| *cid == url) {
+                    return Some(Cow::Owned(uri.clone()));
+                }
+                if is_own_picture(&url) {
+                    return Some(Cow::Owned(url));
+                }
+                if pixels.contains(&url) || (trackers && crate::tracking::is_tracking_image(&url, None, None, None)) {
+                    pixel_counter.fetch_add(1, Ordering::Relaxed);
+                    return None;
+                }
+                let lower = url.to_ascii_lowercase();
+                let fetched = lower.starts_with("http:") || lower.starts_with("https:") || lower.starts_with("//");
+                if !fetched {
+                    // Nothing a picture can show (a relative or unknown address).
+                    None
+                } else if allow_remote {
+                    Some(Cow::Owned(url))
+                } else {
+                    counter.fetch_add(1, Ordering::Relaxed);
+                    None
+                }
             }
             _ => Some(Cow::Borrowed(value)),
         });
@@ -155,7 +207,7 @@ pub fn sanitize_html_with(html: &str, allow_remote: bool, trackers: bool) -> San
     Sanitized {
         html,
         blocked_remote: blocked.load(Ordering::Relaxed),
-        trackers: pixels + links.load(Ordering::Relaxed),
+        trackers: pixel_count.load(Ordering::Relaxed) + links.load(Ordering::Relaxed),
     }
 }
 
@@ -292,14 +344,17 @@ pub fn quote_start_text(text: &str) -> Option<usize> {
 /// Replaces `cid:` pictures by `data:` addresses of the stored parts, so the frame shows them
 /// without asking anything outside.
 pub fn inline_cids(html: &str, images: &[(String, String, Vec<u8>)]) -> String {
-    use base64::Engine;
     if images.is_empty() || !html.contains("cid:") {
         return html.to_string();
     }
     let mut out = html.to_string();
     for (cid, mime, data) in images {
-        let uri = format!("data:{mime};base64,{}", base64::engine::general_purpose::STANDARD.encode(data));
-        out = out.replace(&format!("cid:{cid}"), &uri);
+        // Only a picture type, and a Content-ID that cannot leave the attribute.
+        let Some(uri) = data_uri(mime, data) else { continue };
+        if cid.contains(['"', '\'', '<', '>', '&']) {
+            continue;
+        }
+        out = out.replace(&format!("\"cid:{cid}\""), &format!("\"{uri}\""));
     }
     out
 }
@@ -406,6 +461,64 @@ mod tests {
         assert_eq!(&text[..quote_start_text(text).unwrap()], "Passt!\n\n");
         assert!(quote_start_text("> nur\n> Zitat").is_none());
         assert!(quote_start_text("Hallo\n> eine Zeile").is_none());
+    }
+
+    #[test]
+    fn a_pictures_type_cannot_add_markup() {
+        let html = sanitize_html("<img src=\"cid:logo@x\">", false).html;
+        let evil = "image/x\"><link/rel=dns-prefetch/href=//victim-42.evil.example><meta/x=\"";
+        for out in [
+            inline_cids(&html, &[("logo@x".into(), evil.into(), vec![1, 2, 3])]),
+            sanitize_html_inline("<img src=\"cid:logo@x\">", false, &[("logo@x".into(), evil.into(), vec![1, 2, 3])])
+                .html,
+        ] {
+            assert!(!out.contains("<link") && !out.contains("victim-42") && !out.contains("<meta"), "{out}");
+        }
+        let ok = sanitize_html_inline(
+            "<img src=\"cid:logo@x\">",
+            false,
+            &[("logo@x".into(), "image/svg+xml".into(), vec![1])],
+        );
+        assert!(ok.html.contains("src=\"data:image/svg+xml;base64,AQ==\""), "{}", ok.html);
+        let odd =
+            sanitize_html_inline("<img src=\"cid:logo@x\">", false, &[("logo@x".into(), "text/html".into(), vec![1])]);
+        assert!(!odd.html.contains("text/html"), "only pictures: {}", odd.html);
+    }
+
+    #[test]
+    fn remote_pictures_are_found_as_the_browser_reads_them() {
+        // Tabs and line breaks inside, control characters and spaces before: a browser still
+        // loads these.
+        for src in [
+            "ht&#9;tps://track.example/a.png",
+            "&#1;https://track.example/a.png",
+            " https://track.example/a.png",
+            "https&#58;//track.example/a.png",
+            "h&#10;ttps://track.example/a.png",
+            "//track.example/a.png",
+        ] {
+            let s = sanitize_html(&format!("<img src=\"{src}\">"), false);
+            assert!(!s.html.contains("track.example"), "{src}: {}", s.html);
+            assert_eq!(s.blocked_remote, 1, "{src}");
+        }
+        // Anything that is not a picture of the message itself counts as remote.
+        let s = sanitize_html("<img src=\"x-unknown:abc\">", false);
+        assert!(!s.html.contains("x-unknown"), "{}", s.html);
+    }
+
+    #[test]
+    fn pixels_go_whatever_the_markup_around_them() {
+        for img in [
+            "<img alt=\">\" src=\"https://track.example/o.gif\" width=\"1\" height=\"1\">",
+            "<img src=\"https&#58;//track.example/o.gif\" width=\"1\" height=\"1\">",
+            "<img src=\"ht&#9;tps://track.example/o.gif\" width=1 height=1>",
+            "<IMG\nSRC=\"https://track.example/o.gif\"\nstyle=\"width:1px;height:1px\">",
+        ] {
+            let s = sanitize_html(&format!("<p>Neu</p>{img}<img src=\"https://cdn.example/hero.jpg\">"), true);
+            assert!(!s.html.contains("track.example"), "{img}: {}", s.html);
+            assert_eq!(s.trackers, 1, "{img}");
+            assert!(s.html.contains("cdn.example/hero.jpg"), "{}", s.html);
+        }
     }
 
     #[test]

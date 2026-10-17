@@ -169,7 +169,7 @@ fn accepted_invitations_are_filed_updated_and_cancelled() {
     // The first card is outdated now; an old update does nothing.
     assert!(card(&s, first, &data).unwrap().unwrap().outdated);
     let older = find_in_message(invite("REQUEST", 0, "20261103T150000", "20261103T160000", "").as_bytes()).unwrap();
-    assert!(!apply(&s, &older, &parse(&older, &me()).unwrap()).unwrap());
+    assert!(!apply(&s, &older, &parse(&older, &me()).unwrap(), Some("jonas@example.org")).unwrap());
     let _ = moved;
     // Cancelled: gone.
     deliver(&s, inbox, 3, &invite("CANCEL", 2, "20261103T110000", "20261103T120000", "STATUS:CANCELLED\r\n"));
@@ -227,4 +227,58 @@ fn a_date_from_a_mail_becomes_a_draft() {
     assert_eq!((d.title.as_str(), d.location.as_str()), ("Abstimmung Angebot", "Telefon"));
     let day = draft_from(&crate::ai::extract::Item { time: None, end: None, ..item }, "").unwrap();
     assert!(day.all_day && day.end - day.start == Duration::days(1));
+}
+
+#[test]
+fn only_the_organizer_moves_or_cancels_a_meeting() {
+    let (s, account, inbox) = store();
+    let cal = calendar::local_calendar(&s).unwrap();
+    let first = deliver(&s, inbox, 1, &invite("REQUEST", 0, "20261103T100000", "20261103T110000", ""));
+    let data = find_in_message(&s.raw_message(first).unwrap().unwrap()).unwrap();
+    let inv = parse(&data, &me()).unwrap();
+    let key = file(&s, &data, &inv, Answer::Accepted, cal).unwrap().unwrap();
+    assert!(!scan(&s).unwrap(), "the invitation itself changes nothing");
+    let from_mallory =
+        |raw: String| raw.replace("From: Jonas Berger <jonas@example.org>", "From: Mallory <mallory@evil.example>");
+    let mallory_organizes = |raw: String| {
+        raw.replace(
+            "ORGANIZER;CN=Jonas Berger:mailto:jonas@example.org",
+            "ORGANIZER;CN=Mallory:mailto:mallory@evil.example",
+        )
+    };
+    // Someone else who knows the UID moves it, takes it over, cancels it: nothing happens.
+    deliver(&s, inbox, 2, &from_mallory(invite("REQUEST", 1, "20261103T150000", "20261103T160000", "")));
+    deliver(
+        &s,
+        inbox,
+        3,
+        &from_mallory(mallory_organizes(invite("REQUEST", 2, "20261103T150000", "20261103T160000", ""))),
+    );
+    deliver(
+        &s,
+        inbox,
+        4,
+        &from_mallory(invite("CANCEL", 3, "20261103T100000", "20261103T110000", "STATUS:CANCELLED\r\n")),
+    );
+    assert!(!scan(&s).unwrap());
+    let ev = calendar::event(&s, &key, &me()).unwrap();
+    assert_eq!(ev.start, utc(2026, 11, 3, 9, 0));
+    assert!(calendar::object(&s, ev.object_id).unwrap().data.contains("mailto:jonas@example.org"));
+    // Not even the organizer's address can hand the meeting to someone else.
+    deliver(&s, inbox, 5, &mallory_organizes(invite("REQUEST", 4, "20261103T150000", "20261103T160000", "")));
+    assert!(!scan(&s).unwrap());
+    // A cancellation in Junk is not applied either.
+    let junk = s
+        .upsert_mailbox(
+            account,
+            &MailboxEntry { name: "Junk".into(), delimiter: Some('/'), attributes: vec!["\\Junk".into()] },
+        )
+        .unwrap();
+    deliver(&s, junk, 1, &invite("CANCEL", 5, "20261103T100000", "20261103T110000", "STATUS:CANCELLED\r\n"));
+    assert!(!scan(&s).unwrap());
+    assert!(calendar::event(&s, &key, &me()).is_ok());
+    // The organizer himself: applied.
+    deliver(&s, inbox, 6, &invite("REQUEST", 6, "20261103T110000", "20261103T120000", ""));
+    assert!(scan(&s).unwrap());
+    assert_eq!(calendar::event(&s, &key, &me()).unwrap().start, utc(2026, 11, 3, 10, 0));
 }
