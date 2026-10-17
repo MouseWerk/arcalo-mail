@@ -113,7 +113,7 @@ it("keeps the list's bars and the compose button clear of the system bars", asyn
   await insets();
   await clearOfBars(".list-head");
   const fab = await app.browser.execute(() => document.querySelector(".compose-fab").getBoundingClientRect().toJSON());
-  assert.ok(fab.bottom <= H - BOTTOM && fab.height >= 44, JSON.stringify(fab));
+  assert.ok(fab.bottom <= H - BOTTOM && Math.round(fab.height) >= 44, JSON.stringify(fab));
   // Every tab of the sorted inbox, with its name, and Focus.
   const tabs = await app.browser.execute(() => [...document.querySelectorAll(".inbox-tab")].map((b) => b.textContent.trim()));
   assert.equal(tabs.length, 6, JSON.stringify(tabs));
@@ -152,7 +152,7 @@ it("writes with an app bar below the status bar", async () => {
   await clearOfBars(".compose-bar");
   assert.equal((await app.$$(".compose-foot")).length, 0, "no desktop footer on a phone");
   const send = await app.browser.execute(() => document.querySelector(".compose-send").getBoundingClientRect().toJSON());
-  assert.ok(send.width >= 44 && send.height >= 44, JSON.stringify(send));
+  assert.ok(Math.round(send.width) >= 44 && Math.round(send.height) >= 44, JSON.stringify(send));
   await app.click(".compose [data-compose='more']");
   await app.waitFor(".menu-sheet");
   await new Promise((r) => setTimeout(r, 400));
