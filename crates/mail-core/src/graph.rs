@@ -26,12 +26,44 @@ pub fn base_url() -> String {
     GRAPH_URL.into()
 }
 
+/// The condition of Graph's `messageRulePredicates` a condition becomes.
+fn predicate(c: &crate::rules::Condition) -> &'static str {
+    match c.field {
+        Field::From if c.op == Op::Is => "fromAddresses",
+        Field::From => "senderContains",
+        Field::To if c.op == Op::Is => "sentToAddresses",
+        Field::To | Field::Cc => "recipientContains",
+        Field::Subject => "subjectContains",
+        Field::List => "headerContains",
+        Field::HasAttachment => "hasAttachments",
+        Field::Size => "withinSizeRange",
+        Field::Age | Field::Category => "",
+    }
+}
+
 /// Why a rule cannot be a Microsoft inbox rule (`None`: it can).
 pub fn unsupported(rule: &Rule) -> Option<String> {
     if !rule.body.match_all && rule.body.conditions.len() > 1 {
         return Some(
             tr!("Microsoft verknüpft Bedingungen immer mit „und“.", "Microsoft always combines conditions with “and”.")
                 .into(),
+        );
+    }
+    // Graph takes several values of one condition as „any of them“: two conditions that would
+    // share one would match more mail than the rule says. Its exceptions all have to hold at
+    // once, so only one kind of „does not contain“ fits.
+    let wanted: Vec<&str> = rule.body.conditions.iter().filter(|c| c.op != Op::NotContains).map(predicate).collect();
+    let shared = wanted.iter().enumerate().any(|(i, k)| wanted[..i].contains(k));
+    let mut excepted: Vec<&str> =
+        rule.body.conditions.iter().filter(|c| c.op == Op::NotContains).map(predicate).collect();
+    excepted.dedup();
+    if shared || excepted.len() > 1 {
+        return Some(
+            tr!(
+                "Microsoft kann dieselbe Angabe nicht zweimal mit „und“ prüfen.",
+                "Microsoft cannot check the same field twice with “and”."
+            )
+            .into(),
         );
     }
     for c in &rule.body.conditions {
@@ -44,6 +76,10 @@ pub fn unsupported(rule: &Rule) -> Option<String> {
             _ if c.op == Op::StartsWith => {
                 Some(tr!("Microsoft kennt „beginnt mit“ nicht.", "Microsoft has no “starts with”."))
             }
+            Field::Subject | Field::List | Field::Cc if c.op == Op::Is => Some(tr!(
+                "Microsoft prüft hier nur „enthält“, nicht „ist genau“.",
+                "Microsoft checks only “contains” here, not “is”."
+            )),
             Field::HasAttachment if c.op == Op::NotContains => None,
             _ => None,
         };
@@ -74,6 +110,33 @@ pub fn unsupported(rule: &Rule) -> Option<String> {
     None
 }
 
+/// The most folders read for the rules' folder list.
+const MAX_FOLDERS: usize = 5000;
+
+/// The id of a folder by its path (`Inbox/Rechnungen`, the IMAP name), from [`Graph::folders`]:
+/// `INBOX` stands for the inbox whatever its name; a bare name used by one folder only finds it
+/// at any depth; Graph's well-known `archive` and `deleteditems` stand for themselves.
+pub fn find_folder(folders: &[(String, String, String)], name: &str) -> Option<String> {
+    let name = name.trim().trim_matches('/');
+    let inbox = folders.iter().find(|(_, _, kind)| kind == "inbox");
+    let wanted = match (name.split_once('/'), inbox) {
+        (Some((first, rest)), Some((path, _, _))) if first.eq_ignore_ascii_case("inbox") => format!("{path}/{rest}"),
+        (None, Some((path, _, _))) if name.eq_ignore_ascii_case("inbox") => path.clone(),
+        _ => name.to_string(),
+    };
+    if let Some((_, id, _)) = folders.iter().find(|(p, _, _)| p.eq_ignore_ascii_case(&wanted)) {
+        return Some(id.clone());
+    }
+    if !name.contains('/') {
+        let leaf = |p: &str| p.rsplit('/').next().unwrap_or(p).eq_ignore_ascii_case(name);
+        let mut found = folders.iter().filter(|(p, _, _)| leaf(p));
+        if let (Some((_, id, _)), None) = (found.next(), found.next()) {
+            return Some(id.clone());
+        }
+    }
+    (name == "archive" || name == "deleteditems").then(|| name.to_string())
+}
+
 fn addresses(list: &[&str]) -> Value {
     Value::Array(list.iter().map(|a| json!({"emailAddress": {"address": a.trim()}})).collect())
 }
@@ -101,7 +164,8 @@ pub fn rule_json(rule: &Rule, sequence: i64, folder: &dyn Fn(&str) -> Option<Str
             Field::To if c.op == Op::Is => push(target, "sentToAddresses", addresses(&[v])),
             Field::To | Field::Cc => push(target, "recipientContains", json!([v])),
             Field::Subject => push(target, "subjectContains", json!([v])),
-            Field::List => push(target, "headerContains", json!([format!("List-Id: {v}")])),
+            // The List-Id header reads `Name <id>`: the id alone is found in it.
+            Field::List => push(target, "headerContains", json!([v.trim_matches(['<', '>'])])),
             Field::HasAttachment => {
                 let want = !matches!(v, "false" | "no" | "0");
                 push(target, "hasAttachments", json!(want));
@@ -152,7 +216,9 @@ pub fn rule_json(rule: &Rule, sequence: i64, folder: &dyn Fn(&str) -> Option<Str
             Action::Flag | Action::Pin | Action::Category { .. } => {}
         }
     }
-    if rule.body.stop {
+    // A message moved away or deleted is out of reach of the later rules, as with local and
+    // Sieve rules.
+    if rule.body.stop || actions.contains_key("moveToFolder") || actions.contains_key("delete") {
         actions.insert("stopProcessingRules".into(), json!(true));
     }
     let mut v = json!({
@@ -257,18 +323,41 @@ impl Graph {
         Ok(Some(serde_json::from_slice(&bytes)?))
     }
 
-    /// The mail folders by name, with Graph's well-known `archive` and `deleteditems`.
-    pub async fn folders(&self) -> Result<Vec<(String, String)>> {
-        let mut out = vec![];
-        let mut next = Some("/me/mailFolders?$top=200&$select=id,displayName".to_string());
-        while let Some(path) = next.take() {
-            let Some(v) = self.json(reqwest::Method::GET, &path, None).await? else { break };
-            for f in v["value"].as_array().cloned().unwrap_or_default() {
-                if let (Some(id), Some(name)) = (f["id"].as_str(), f["displayName"].as_str()) {
-                    out.push((name.to_string(), id.to_string()));
+    /// The mail folders, subfolders too: their path (`Inbox/Rechnungen`), id and, for the
+    /// inbox, `inbox`.
+    pub async fn folders(&self) -> Result<Vec<(String, String, String)>> {
+        let inbox = self
+            .json(reqwest::Method::GET, "/me/mailFolders/inbox?$select=id", None)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|v| v["id"].as_str().map(str::to_owned));
+        let mut out: Vec<(String, String, String)> = vec![];
+        // (parent path, first page)
+        let mut todo: std::collections::VecDeque<(String, String)> = std::collections::VecDeque::new();
+        todo.push_back((String::new(), "/me/mailFolders?$top=200&$select=id,displayName,childFolderCount".into()));
+        while let Some((parent, first)) = todo.pop_front() {
+            let mut next = Some(first);
+            while let Some(path) = next.take() {
+                let Some(v) = self.json(reqwest::Method::GET, &path, None).await? else { break };
+                for f in v["value"].as_array().cloned().unwrap_or_default() {
+                    let (Some(id), Some(name)) = (f["id"].as_str(), f["displayName"].as_str()) else { continue };
+                    let full = if parent.is_empty() { name.to_string() } else { format!("{parent}/{name}") };
+                    let is_inbox = inbox.as_deref() == Some(id)
+                        || f["wellKnownName"].as_str() == Some("inbox")
+                        || (inbox.is_none() && parent.is_empty() && name.eq_ignore_ascii_case("inbox"));
+                    if f["childFolderCount"].as_u64().unwrap_or(0) > 0 && out.len() < MAX_FOLDERS {
+                        todo.push_back((
+                            full.clone(),
+                            format!(
+                                "/me/mailFolders/{id}/childFolders?$top=200&$select=id,displayName,childFolderCount"
+                            ),
+                        ));
+                    }
+                    out.push((full, id.to_string(), if is_inbox { "inbox".into() } else { String::new() }));
                 }
+                next = v["@odata.nextLink"].as_str().map(str::to_owned);
             }
-            next = v["@odata.nextLink"].as_str().map(str::to_owned);
         }
         Ok(out)
     }
@@ -280,13 +369,7 @@ impl Graph {
         } else {
             vec![]
         };
-        let lookup = |name: &str| {
-            folders
-                .iter()
-                .find(|(n, _)| n.eq_ignore_ascii_case(name))
-                .map(|(_, id)| id.clone())
-                .or_else(|| (name == "archive" || name == "deleteditems").then(|| name.to_string()))
-        };
+        let lookup = |name: &str| find_folder(&folders, name);
         let body = rule_json(rule, sequence, &lookup)?;
         let path = "/me/mailFolders/inbox/messageRules";
         if let Some(id) = existing {
@@ -397,6 +480,94 @@ mod tests {
         );
         any.body.match_all = false;
         assert!(unsupported(&any).is_some());
+    }
+
+    #[test]
+    fn microsoft_rules_match_what_the_rule_says() {
+        // „All of“ two words in the subject: Graph's list would match either of them.
+        let both = rule(
+            "Mahnungen",
+            vec![cond(Field::Subject, Op::Contains, "Rechnung"), cond(Field::Subject, Op::Contains, "Mahnung")],
+            vec![Action::Delete],
+        );
+        assert!(unsupported(&both).is_some());
+        assert!(rule_json(&both, 1, &|_| None).is_err());
+        let to_and_cc = rule(
+            "x",
+            vec![cond(Field::To, Op::Contains, "team@"), cond(Field::Cc, Op::Contains, "chef@")],
+            vec![Action::MarkRead],
+        );
+        assert!(unsupported(&to_and_cc).is_some(), "To and Cc share recipientContains");
+        // „Is“ where Graph only knows „contains“.
+        for f in [Field::Subject, Field::List, Field::Cc] {
+            assert!(unsupported(&rule("x", vec![cond(f, Op::Is, "a")], vec![Action::MarkRead])).is_some(), "{f:?}");
+        }
+        assert!(unsupported(&rule("x", vec![cond(Field::From, Op::Is, "a@b")], vec![Action::MarkRead])).is_none());
+        // Different fields, and a word that must not be there, still work.
+        let ok = rule(
+            "ok",
+            vec![
+                cond(Field::Subject, Op::Contains, "Rechnung"),
+                cond(Field::Subject, Op::NotContains, "Mahnung"),
+                cond(Field::From, Op::Contains, "shop"),
+            ],
+            vec![Action::MarkRead],
+        );
+        assert!(unsupported(&ok).is_none());
+        // A mailing list by its List-Id, as the header has it (`Name <id>`).
+        let list = rule("l", vec![cond(Field::List, Op::Contains, "news.example.org")], vec![Action::MarkRead]);
+        let v = rule_json(&list, 1, &|_| None).unwrap();
+        assert_eq!(v["conditions"]["headerContains"], json!(["news.example.org"]));
+        // A rule that moves or deletes stops the later ones, as local and Sieve rules do.
+        let moving =
+            rule("m", vec![cond(Field::From, Op::Contains, "shop")], vec![Action::Move { folder: "Shop".into() }]);
+        let v = rule_json(&moving, 1, &|_| Some("F1".into())).unwrap();
+        assert_eq!(v["actions"]["stopProcessingRules"], true);
+        let deleting = rule("d", vec![cond(Field::From, Op::Contains, "spam")], vec![Action::Delete]);
+        assert_eq!(rule_json(&deleting, 1, &|_| None).unwrap()["actions"]["stopProcessingRules"], true);
+        let marking = rule("r", vec![cond(Field::From, Op::Contains, "x")], vec![Action::MarkRead]);
+        assert!(rule_json(&marking, 1, &|_| None).unwrap()["actions"].get("stopProcessingRules").is_none());
+        // Folders by their path, below the inbox too.
+        let folders = vec![
+            ("Posteingang".to_string(), "INBOX-ID".to_string(), "inbox".to_string()),
+            ("Posteingang/Rechnungen".to_string(), "R-ID".to_string(), String::new()),
+            ("Archiv".to_string(), "A-ID".to_string(), String::new()),
+            ("Archiv/2026/Rechnungen".to_string(), "R2-ID".to_string(), String::new()),
+            ("Projekte/Neubau".to_string(), "N-ID".to_string(), String::new()),
+        ];
+        assert_eq!(find_folder(&folders, "Inbox/Rechnungen").as_deref(), Some("R-ID"));
+        assert_eq!(find_folder(&folders, "INBOX/Rechnungen").as_deref(), Some("R-ID"));
+        assert_eq!(find_folder(&folders, "Posteingang/Rechnungen").as_deref(), Some("R-ID"));
+        assert_eq!(find_folder(&folders, "Archiv/2026/Rechnungen").as_deref(), Some("R2-ID"));
+        assert_eq!(find_folder(&folders, "Neubau").as_deref(), Some("N-ID"), "a name used once");
+        assert_eq!(find_folder(&folders, "Rechnungen"), None, "a name used twice is not guessed");
+        assert_eq!(find_folder(&folders, "archive").as_deref(), Some("archive"));
+    }
+
+    #[tokio::test]
+    async fn folders_below_others_are_found() {
+        let port = serve(Arc::new(move |method: &str, path: &str, _h: &[(String, String)], _b: &[u8]| {
+            match (method, path.split('?').next().unwrap_or_default()) {
+                ("GET", "/v1.0/me/mailFolders") => Reply::status(
+                    200,
+                    r#"{"value":[{"id":"I","displayName":"Inbox","childFolderCount":1,"wellKnownName":"inbox"},{"id":"S","displayName":"Shop","childFolderCount":0}]}"#,
+                ),
+                ("GET", "/v1.0/me/mailFolders/I/childFolders") => Reply::status(
+                    200,
+                    r#"{"value":[{"id":"R","displayName":"Rechnungen","childFolderCount":1}]}"#,
+                ),
+                ("GET", "/v1.0/me/mailFolders/R/childFolders") => {
+                    Reply::status(200, r#"{"value":[{"id":"R6","displayName":"2026","childFolderCount":0}]}"#)
+                }
+                _ => Reply::status(404, "{}"),
+            }
+        }))
+        .await;
+        let g = Graph::at(&format!("http://127.0.0.1:{port}/v1.0"), "tok", Service::Graph).unwrap();
+        let folders = g.folders().await.unwrap();
+        let paths: Vec<&str> = folders.iter().map(|(p, _, _)| p.as_str()).collect();
+        assert_eq!(paths, ["Inbox", "Shop", "Inbox/Rechnungen", "Inbox/Rechnungen/2026"]);
+        assert_eq!(find_folder(&folders, "INBOX/Rechnungen/2026").as_deref(), Some("R6"));
     }
 
     #[tokio::test]

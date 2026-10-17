@@ -472,7 +472,7 @@ function demoCalendar() {
   let next = 10;
   const make = (cal: number, title: string, start: string, end: string, extra: Partial<CalendarEvent> = {}): CalendarEvent => {
     const id = next++;
-    return { key: `${cal}|${id}|`, calendar_id: cal, object_id: id, uid: `demo-${id}`, instance: "", title, start, end, all_day: false, location: "", organizer: "", attendees: [], body: null, link: null, link_kind: null, busy: "busy", private: false, recurring: false, categories: [], editable: cal === 1 ? "yes" : "ics", write: null, ...extra };
+    return { key: `${cal}|${id}|`, calendar_id: cal, object_id: id, uid: `demo-${id}`, instance: "", title, start, end, all_day: false, location: "", organizer: "", attendees: [], body: null, link: null, link_kind: null, busy: "busy", private: false, recurring: false, categories: [], editable: cal === 1 ? "yes" : "ics", write: null, reanswer: false, ...extra };
   };
   let events: CalendarEvent[] = [
     make(1, "Abstimmung Relaunch", day(0, 10), day(0, 11), { location: "Raum 2", link: "https://meet.jit.si/arcalo-relaunch", link_kind: "Jitsi" }),

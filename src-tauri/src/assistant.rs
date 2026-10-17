@@ -189,8 +189,14 @@ pub fn ai_calendar(state: State<'_, AppState>, message_id: i64, item: Item) -> R
     })
 }
 
-/// New mail of an account whose provider may see it: the model decides about „Wichtig“ (a few
-/// messages at a time, in the background). The local heuristics ran in the worker already.
+/// New mail waiting for the model's judgement („Wichtig“), and whether a task works on it.
+static JUDGE: std::sync::LazyLock<std::sync::Mutex<(priority::ModelQueue, bool)>> =
+    std::sync::LazyLock::new(Default::default);
+
+/// New mail of an account whose provider may see it: the model decides about „Wichtig“ in the
+/// background. Only mail of people goes to it ([`priority::for_model`]); all of it is judged, a
+/// few messages at a time, within each account's hourly budget. The local heuristics ran in the
+/// worker already.
 pub fn judge_new_mail(app: &AppHandle, account_id: i64, messages: &[i64]) {
     let Some(state) = app.try_state::<AppState>() else { return };
     let on =
@@ -198,23 +204,58 @@ pub fn judge_new_mail(app: &AppHandle, account_id: i64, messages: &[i64]) {
     if !on || messages.is_empty() {
         return;
     }
+    let ids = priority::for_model(&state.store(), account_id, messages).unwrap_or_default();
+    if ids.is_empty() {
+        return;
+    }
+    let start = {
+        let mut q = JUDGE.lock().unwrap_or_else(|e| e.into_inner());
+        q.0.push(account_id, &ids);
+        !std::mem::replace(&mut q.1, true)
+    };
+    if !start {
+        return;
+    }
     let app = app.clone();
-    let ids: Vec<i64> = messages.iter().copied().take(5).collect();
     tauri::async_runtime::spawn(async move {
-        let Some(state) = app.try_state::<AppState>() else { return };
-        let mut changed = false;
-        for id in ids {
-            let job = format!("priority-{id}");
-            match run(&app, &state, &job, Request::Priority { message_id: id }, 0).await {
-                Ok(_) => changed = true,
-                Err(e) => {
-                    mail_core::diag::log("ai", &format!("priority: {e}"));
-                    break;
+        loop {
+            let (batch, wait) = {
+                let mut q = JUDGE.lock().unwrap_or_else(|e| e.into_inner());
+                let now = mail_core::store::now();
+                let batch = q.0.next_batch(now);
+                match (batch.is_empty(), q.0.next_free(now)) {
+                    (false, _) => (batch, 0),
+                    (true, Some(at)) => (batch, (at - now).max(1)),
+                    (true, None) => {
+                        q.1 = false;
+                        return;
+                    }
+                }
+            };
+            if wait > 0 {
+                tokio::time::sleep(std::time::Duration::from_secs(wait as u64)).await;
+                continue;
+            }
+            let Some(state) = app.try_state::<AppState>() else { return };
+            let mut changed: Vec<i64> = vec![];
+            for (account, id) in batch {
+                // The provider may have been switched off meanwhile.
+                let allowed = mail_core::settings::load(&state.store())
+                    .map(|s| s.ai.for_priority(account).is_some())
+                    .unwrap_or(false);
+                if !allowed {
+                    continue;
+                }
+                let job = format!("priority-{id}");
+                match run(&app, &state, &job, Request::Priority { message_id: id }, 0).await {
+                    Ok(_) if !changed.contains(&account) => changed.push(account),
+                    Ok(_) => {}
+                    Err(e) => mail_core::diag::log("ai", &format!("priority: {e}")),
                 }
             }
-        }
-        if changed {
-            let _ = app.emit("mail-notice", mail_core::engine::Notice::Changed { account_id, mailboxes: vec![] });
+            for account_id in changed {
+                let _ = app.emit("mail-notice", mail_core::engine::Notice::Changed { account_id, mailboxes: vec![] });
+            }
         }
     });
 }

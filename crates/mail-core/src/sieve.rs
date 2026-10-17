@@ -86,7 +86,9 @@ fn test_of(c: &Condition) -> String {
         Op::StartsWith => format!(
             "header :matches {} {}",
             quote(name),
-            quote(&format!("{}*", v.replace('*', "\\\\*").replace('?', "\\\\?")))
+            // `\` makes the next character of a match pattern literal; `quote` then escapes
+            // the backslashes for the string.
+            quote(&format!("{}*", v.replace('\\', "\\\\").replace('*', "\\*").replace('?', "\\?")))
         ),
         Op::NotContains => format!("not header :contains {} {}", quote(name), quote(v)),
         _ => format!("header :contains {} {}", quote(name), quote(v)),
@@ -597,6 +599,16 @@ mod tests {
             body: RuleBody { match_all: true, conditions, actions, stop: false },
             server_ref: None,
         }
+    }
+
+    #[test]
+    fn starts_with_matches_stars_and_question_marks_as_they_are() {
+        let r = rule("x", vec![cond(Field::Subject, Op::StartsWith, "[*] a?b\\c")], vec![Action::MarkRead]);
+        let (_, script) = script(&[r], "Trash", "Archive");
+        let line = script.lines().find(|l| l.starts_with("if ")).unwrap();
+        // The Sieve string "[\\*] a\\?b\\\\c*" is the pattern [\*] a\?b\\c* : the star, the
+        // question mark and the backslash as they are, then anything.
+        assert!(line.contains(r#"header :matches "subject" "[\\*] a\\?b\\\\c*""#), "{line}");
     }
 
     async fn serve(fake: Arc<Mutex<FakeSieve>>) -> u16 {

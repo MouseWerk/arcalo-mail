@@ -46,6 +46,8 @@ pub struct FakeJmapState {
     pub calendars: Option<crate::calendar::jmap::fake::FakeJmapCalendars>,
     /// A `role` sent as it is for a folder (a server that sends odd values).
     pub raw_roles: BTreeMap<String, String>,
+    /// Further sender identities (aliases).
+    pub aliases: Vec<String>,
 }
 
 static EPOCHS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -505,8 +507,13 @@ impl FakeJmapState {
                 Ok(json!({ "accountId": ACCOUNT, "oldState": email_state, "newState": new_state,
                     "created": created, "notCreated": not_created }))
             }
-            "Identity/get" => Ok(json!({ "accountId": ACCOUNT, "state": "1",
-                "list": [{ "id": "i1", "name": "", "email": self.user, "mayDelete": false }], "notFound": [] })),
+            "Identity/get" => {
+                let mut list = vec![json!({ "id": "i1", "name": "", "email": self.user, "mayDelete": false })];
+                for (n, a) in self.aliases.iter().enumerate() {
+                    list.push(json!({ "id": format!("i{}", n + 2), "name": "", "email": a, "mayDelete": true }));
+                }
+                Ok(json!({ "accountId": ACCOUNT, "state": "1", "list": list, "notFound": [] }))
+            }
             "EmailSubmission/set" => {
                 let mut created = Map::new();
                 let mut not_created = Map::new();

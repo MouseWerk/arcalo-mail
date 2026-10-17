@@ -678,17 +678,22 @@ async fn sync_round<C: Connector>(ctx: &Ctx<C>, conn: &mut C::Imap, caps: Capabi
         if r.changed() || touched.iter().any(|n| ctx.mailbox_named(n) == Some(id)) {
             ctx.notice(Notice::Changed { account_id: ctx.account_id, mailboxes: vec![id] });
         }
+        let mut screened = vec![];
         if Some(id) == inbox && r.added > 0 {
             // Mail of senders the user turned away (the Screener) leaves the inbox at once.
             let moved = crate::triage::move_blocked(&ctx.store, Some(ctx.account_id))?;
             if !moved.hidden.is_empty() {
                 ctx.notice(Notice::Changed { account_id: ctx.account_id, mailboxes: vec![id] });
             }
+            screened = moved.hidden;
         }
+        // What the Screener moved away is neither news nor the rules' to handle.
+        let new: Vec<i64> = r.new.iter().copied().filter(|m| !screened.contains(m)).collect();
         let mut new_unread = r.new_unread;
-        if Some(id) == inbox && !r.new.is_empty() {
+        new_unread.retain(|m| !screened.contains(m));
+        if Some(id) == inbox && !new.is_empty() {
             // The local rules first: what they move away or mark read is no news.
-            match crate::rules::run_new(&ctx.store, ctx.account_id, &r.new) {
+            match crate::rules::run_new(&ctx.store, ctx.account_id, &new) {
                 Ok(ran) if ran.matched > 0 => {
                     new_unread.retain(|m| !ran.removed.contains(m));
                     let still_unread: Vec<i64> =
@@ -701,7 +706,7 @@ async fn sync_round<C: Connector>(ctx: &Ctx<C>, conn: &mut C::Imap, caps: Capabi
             }
             if settings.ai.on()
                 && settings.ai.priority
-                && let Err(e) = crate::ai::priority::mark_new(&ctx.store, &r.new)
+                && let Err(e) = crate::ai::priority::mark_new(&ctx.store, &new)
             {
                 crate::diag::log("priority", &e.to_string());
             }
@@ -1378,6 +1383,75 @@ mod tests {
         // A refused sign-in is the caller's to report.
         *s.mail.refuse.lock().unwrap() = Some(Problem::Auth { detail: "no".into() });
         assert!(check_once(s.account, Store::open(&s.db).unwrap(), connector()).await.is_err());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn rules_leave_alone_what_the_screener_moved_away() {
+        use crate::rules::{self, Action, Condition, Field, Op, Place, Rule, RuleBody};
+        let s = setup("screened-rules");
+        crate::triage::block_sender(&s.store, "spam@example.net").unwrap();
+        rules::save(
+            &s.store,
+            &Rule {
+                id: 0,
+                account_id: None,
+                name: "Angebote".into(),
+                place: Place::Local,
+                enabled: true,
+                position: 0,
+                body: RuleBody {
+                    match_all: true,
+                    conditions: vec![Condition { field: Field::Subject, op: Op::Contains, value: "Angebot".into() }],
+                    actions: vec![
+                        Action::Forward { to: "chef@example.org".into() },
+                        Action::Move { folder: "Angebote".into() },
+                    ],
+                    stop: false,
+                },
+                server_ref: None,
+            },
+        )
+        .unwrap();
+        let _w = s.start();
+        s.until("first sync", |s| s.status() == Some(Status::Ready)).await;
+        let spam = String::from_utf8(sample("spam@x", "Angebot der Woche", None, "x"))
+            .unwrap()
+            .replace("From: Maria Muster <maria@example.org>", "From: Werbung <spam@example.net>");
+        s.server.with(|f| f.deliver("INBOX", spam.as_bytes(), 1_760_000_100));
+        s.server.with(|f| f.deliver("INBOX", &sample("p@x", "Hallo", None, "x"), 1_760_000_101));
+        s.until("new mail", |s| s.notices.lock().unwrap().iter().any(|n| matches!(n, Notice::NewMail { .. }))).await;
+        s.until("screened out on the server", |s| {
+            s.server.with(|f| {
+                f.mailboxes.get(crate::triage::BLOCKED_FOLDER).is_some_and(|m| !m.messages.is_empty())
+                    && outbox::next_due(&s.store, s.account, now() + 60).unwrap().is_none()
+            })
+        })
+        .await;
+        let told: Vec<i64> = s
+            .notices
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|n| match n {
+                Notice::NewMail { messages, .. } => Some(messages.clone()),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        let subjects: Vec<String> = s.store.summaries(&told).unwrap().into_iter().map(|m| m.subject).collect();
+        assert_eq!(subjects, ["Hallo"]);
+        assert!(
+            !s.server.with(|f| f.log.iter().any(|l| l.contains("MOVE") && l.ends_with("Angebote"))),
+            "no move of a message that is gone: {:?}",
+            s.server.with(|f| f.log.clone())
+        );
+        let waiting: i64 = s
+            .store
+            .conn()
+            .query_row("SELECT COUNT(*) FROM outbox WHERE state IN ('parked', 'failed')", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(waiting, 0);
+        assert!(s.mail.sent.lock().unwrap().is_empty(), "the screened mail was not forwarded");
     }
 
     #[tokio::test(flavor = "multi_thread")]

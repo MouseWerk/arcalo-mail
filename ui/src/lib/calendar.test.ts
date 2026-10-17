@@ -26,6 +26,7 @@ const ev = (key: string, start: string, end: string, extra: Partial<CalendarEven
   categories: [],
   editable: "yes",
   write: null,
+  reanswer: false,
   ...extra,
 });
 

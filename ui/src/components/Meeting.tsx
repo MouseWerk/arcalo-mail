@@ -69,6 +69,7 @@ export function InvitationCard({ view, onAnswered, onOpenCalendar }: { view: Mes
         {cancelled ? <CalendarX size={16} strokeWidth={1.75} aria-hidden /> : <CalendarDays size={16} strokeWidth={1.75} aria-hidden />}
         <span className="invite-kind">{t(heading)}</span>
         {card.outdated && <span className="invite-outdated">{t("invite.outdated")}</span>}
+        {!card.outdated && card.reanswer && canAnswer && <span className="invite-outdated">{t("invite.reanswer")}</span>}
       </div>
       <h3 className="invite-title">{inv.title || t("list.noSubject")}</h3>
       <div className="invite-rows">

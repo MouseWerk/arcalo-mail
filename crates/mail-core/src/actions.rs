@@ -734,6 +734,9 @@ pub fn message_view_with(
         if let Some(data) = crate::itip::find_in_message(raw) {
             invitation = crate::itip::card(store, id, &data)?;
         }
+    } else if let Some(data) = crate::itip::calendar_data(store, id)? {
+        // A large message: its calendar part came with the text.
+        invitation = crate::itip::card(store, id, &data)?;
     }
     let images =
         if detail.html.as_deref().is_some_and(|h| h.contains("cid:")) { store.inline_images(id)? } else { vec![] };

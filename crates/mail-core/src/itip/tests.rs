@@ -282,3 +282,251 @@ fn only_the_organizer_moves_or_cancels_a_meeting() {
     assert!(scan(&s).unwrap());
     assert_eq!(calendar::event(&s, &key, &me()).unwrap().start, utc(2026, 11, 3, 10, 0));
 }
+
+const SERIES: &str = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:series-1\r\nSEQUENCE:0\r\n\
+DTSTAMP:20261001T080000Z\r\nDTSTART:20261104T090000Z\r\nDTEND:20261104T100000Z\r\nRRULE:FREQ=WEEKLY;COUNT=10\r\n\
+SUMMARY:Jour fixe\r\nORGANIZER:mailto:jonas@example.org\r\nATTENDEE;PARTSTAT=ACCEPTED:mailto:maria@example.org\r\n\
+END:VEVENT\r\nEND:VCALENDAR\r\n";
+
+fn series_starts(s: &Store) -> Vec<DateTime<Utc>> {
+    calendar::events(s, utc(2026, 11, 1, 0, 0), utc(2027, 2, 1, 0, 0), &me(), true)
+        .unwrap()
+        .into_iter()
+        .filter(|e| e.uid == "series-1")
+        .map(|e| e.start)
+        .collect()
+}
+
+fn instance_mail(method: &str, sequence: u32, rid: &str, start: &str, end: &str, extra: &str) -> String {
+    format!(
+        "BEGIN:VCALENDAR\r\nMETHOD:{method}\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:series-1\r\nSEQUENCE:{sequence}\r\n\
+DTSTAMP:20261015T080000Z\r\nRECURRENCE-ID:{rid}\r\nDTSTART:{start}\r\nDTEND:{end}\r\nSUMMARY:Jour fixe\r\n\
+ORGANIZER:mailto:jonas@example.org\r\nATTENDEE;PARTSTAT=NEEDS-ACTION;RSVP=TRUE:mailto:maria@example.org\r\n{extra}\
+END:VEVENT\r\nEND:VCALENDAR\r\n"
+    )
+}
+
+#[test]
+fn one_instance_of_a_series_is_cancelled_or_moved_alone() {
+    let (s, _, _) = store();
+    let cal = calendar::local_calendar(&s).unwrap();
+    calendar::insert_internal(&s, cal, "series-1", SERIES).unwrap();
+    assert_eq!(series_starts(&s).len(), 10);
+    // One meeting cancelled: the other nine stay.
+    let cancel =
+        instance_mail("CANCEL", 1, "20261111T090000Z", "20261111T090000Z", "20261111T100000Z", "STATUS:CANCELLED\r\n");
+    let inv = parse(&cancel, &me()).unwrap();
+    assert!(apply(&s, &cancel, &inv, Some("jonas@example.org")).unwrap());
+    let starts = series_starts(&s);
+    assert_eq!(starts.len(), 9);
+    assert!(!starts.contains(&utc(2026, 11, 11, 9, 0)));
+    // Another one moved to the afternoon: ten minus one, one of them later.
+    let moved = instance_mail("REQUEST", 1, "20261118T090000Z", "20261118T130000Z", "20261118T140000Z", "");
+    let inv = parse(&moved, &me()).unwrap();
+    assert!(apply(&s, &moved, &inv, Some("jonas@example.org")).unwrap());
+    let starts = series_starts(&s);
+    assert_eq!(starts.len(), 9);
+    assert!(starts.contains(&utc(2026, 11, 18, 13, 0)) && !starts.contains(&utc(2026, 11, 18, 9, 0)));
+    let o = &calendar::objects_by_uid(&s, "series-1").unwrap()[0];
+    assert_eq!(o.data.matches("PARTSTAT=ACCEPTED").count(), 2, "the user's answer holds for the moved one: {}", o.data);
+    assert!(o.reanswer, "moved since the user accepted");
+    // The same message again changes nothing.
+    assert!(!apply(&s, &moved, &inv, Some("jonas@example.org")).unwrap());
+    // The organizer updates the whole series (a new room): the cancelled and the moved meeting stay so.
+    let update = SERIES
+        .replace("BEGIN:VCALENDAR\r\n", "BEGIN:VCALENDAR\r\nMETHOD:REQUEST\r\n")
+        .replace("SEQUENCE:0", "SEQUENCE:2")
+        .replace("SUMMARY:Jour fixe", "SUMMARY:Jour fixe\r\nLOCATION:Raum B")
+        .replace("PARTSTAT=ACCEPTED", "PARTSTAT=NEEDS-ACTION");
+    let inv = parse(&update, &me()).unwrap();
+    assert!(apply(&s, &update, &inv, Some("jonas@example.org")).unwrap());
+    let starts = series_starts(&s);
+    assert_eq!(starts.len(), 9, "{starts:?}");
+    assert!(!starts.contains(&utc(2026, 11, 11, 9, 0)) && starts.contains(&utc(2026, 11, 18, 13, 0)));
+    let all = calendar::events(&s, utc(2026, 11, 1, 0, 0), utc(2027, 2, 1, 0, 0), &me(), true).unwrap();
+    assert!(
+        all.iter()
+            .filter(|e| e.instance != "2026-11-18T09:00:00Z")
+            .all(|e| e.location == "Raum B" || e.start == utc(2026, 11, 18, 13, 0))
+    );
+    let o = &calendar::objects_by_uid(&s, "series-1").unwrap()[0];
+    assert!(!o.data.contains("PARTSTAT=NEEDS-ACTION"), "the answer stays: {}", o.data);
+    // The whole series cancelled: gone.
+    let cancel_all = update.replace("METHOD:REQUEST", "METHOD:CANCEL").replace("SEQUENCE:2", "SEQUENCE:3");
+    let inv = parse(&cancel_all, &me()).unwrap();
+    assert!(apply(&s, &cancel_all, &inv, Some("jonas@example.org")).unwrap());
+    assert!(series_starts(&s).is_empty());
+}
+
+#[test]
+fn an_update_never_answers_for_the_user() {
+    for status in ["NEEDS-ACTION", "DECLINED", "TENTATIVE", "ACCEPTED"] {
+        let (s, _, _) = store();
+        let src =
+            calendar::add_source(&s, calendar::SourceKind::Caldav, "Dav", "https://dav.example.org/", "maria", None)
+                .unwrap();
+        let cal = calendar::upsert_calendar(&s, src, "https://dav.example.org/cal/home/", "Home", None, true).unwrap();
+        let server_copy = SERIES
+            .replace("RRULE:FREQ=WEEKLY;COUNT=10\r\n", "")
+            .replace("PARTSTAT=ACCEPTED", &format!("PARTSTAT={status}"));
+        calendar::put_object(
+            &s,
+            cal,
+            "https://dav.example.org/cal/home/series-1.ics",
+            Some("\"e1\""),
+            "ics",
+            &server_copy,
+        )
+        .unwrap();
+        // A new room: nothing to answer again.
+        let update = server_copy
+            .replace("BEGIN:VCALENDAR\r\n", "BEGIN:VCALENDAR\r\nMETHOD:REQUEST\r\n")
+            .replace("SEQUENCE:0", "SEQUENCE:1")
+            .replace("SUMMARY:Jour fixe", "SUMMARY:Jour fixe (Raum B)")
+            .replace(&format!("PARTSTAT={status}"), "PARTSTAT=NEEDS-ACTION;RSVP=TRUE");
+        let inv = parse(&update, &me()).unwrap();
+        assert!(apply(&s, &update, &inv, Some("jonas@example.org")).unwrap());
+        let o = &calendar::objects_by_uid(&s, "series-1").unwrap()[0];
+        let line = o.data.lines().find(|l| l.starts_with("ATTENDEE")).unwrap().to_string();
+        assert!(line.contains(&format!("PARTSTAT={status}")), "{status}: {line}");
+        assert!(o.data.contains("Raum B") && !o.reanswer);
+        // Moved: the answer still stays, the appointment asks for a new one if there was one.
+        let moved = update
+            .replace("SEQUENCE:1", "SEQUENCE:2")
+            .replace("DTSTART:20261104T090000Z", "DTSTART:20261104T140000Z")
+            .replace("DTEND:20261104T100000Z", "DTEND:20261104T150000Z");
+        let inv = parse(&moved, &me()).unwrap();
+        assert!(apply(&s, &moved, &inv, Some("jonas@example.org")).unwrap());
+        let o = &calendar::objects_by_uid(&s, "series-1").unwrap()[0];
+        assert!(o.data.contains(&format!("PARTSTAT={status}")), "{status}: {}", o.data);
+        assert_eq!(o.reanswer, status != "NEEDS-ACTION", "{status}");
+        let ev = calendar::event(&s, &format!("{cal}|{}|", o.id), &me()).unwrap();
+        assert_eq!(ev.reanswer, o.reanswer);
+        // Answering again clears it.
+        file(&s, &moved, &inv, Answer::Accepted, cal).unwrap();
+        assert!(!calendar::object(&s, o.id).unwrap().reanswer);
+    }
+}
+
+#[test]
+fn a_change_without_a_new_sequence_counts_by_its_stamp() {
+    let (s, _, inbox) = store();
+    let cal = calendar::local_calendar(&s).unwrap();
+    let first = deliver(&s, inbox, 1, &invite("REQUEST", 0, "20261103T100000", "20261103T110000", ""));
+    let data = find_in_message(&s.raw_message(first).unwrap().unwrap()).unwrap();
+    let inv = parse(&data, &me()).unwrap();
+    let key = file(&s, &data, &inv, Answer::Accepted, cal).unwrap().unwrap();
+    // The same SEQUENCE, a later DTSTAMP: another room.
+    let later = invite("REQUEST", 0, "20261103T100000", "20261103T110000", "")
+        .replace("DTSTAMP:20261016T080000Z", "DTSTAMP:20261017T090000Z")
+        .replace("LOCATION:Raum Elbe", "LOCATION:Raum Spree")
+        .replace("Message-ID: <inv-REQUEST-0@example.org>", "Message-ID: <inv-later@example.org>");
+    deliver(&s, inbox, 2, &later);
+    assert!(scan(&s).unwrap());
+    assert_eq!(calendar::event(&s, &key, &me()).unwrap().location, "Raum Spree");
+    // An older stamp does not undo it.
+    let older = invite("REQUEST", 0, "20261103T100000", "20261103T110000", "")
+        .replace("DTSTAMP:20261016T080000Z", "DTSTAMP:20261015T090000Z")
+        .replace("LOCATION:Raum Elbe", "LOCATION:Raum Alt");
+    let d = find_in_message(older.as_bytes()).unwrap();
+    assert!(!apply(&s, &d, &parse(&d, &me()).unwrap(), Some("jonas@example.org")).unwrap());
+    assert_eq!(calendar::event(&s, &key, &me()).unwrap().location, "Raum Spree");
+}
+
+#[test]
+fn invitations_in_large_messages_are_read_from_their_part() {
+    let (s, _, inbox) = store();
+    let cal = calendar::local_calendar(&s).unwrap();
+    let raw = invite("REQUEST", 0, "20261103T100000", "20261103T110000", "");
+    let id = deliver(&s, inbox, 1, &raw);
+    let key = file(
+        &s,
+        &find_in_message(raw.as_bytes()).unwrap(),
+        &parse(&find_in_message(raw.as_bytes()).unwrap(), &me()).unwrap(),
+        Answer::Accepted,
+        cal,
+    )
+    .unwrap()
+    .unwrap();
+    let _ = id;
+    // A large update: only the text and the parts came, not the whole message.
+    let update = invite("REQUEST", 1, "20261103T140000", "20261103T150000", "");
+    let p = parse_mail(update.as_bytes()).unwrap();
+    let big = s.insert_message(inbox, &header(2, update.as_bytes()), &p).unwrap();
+    let parts = crate::store::PartialBody {
+        text: Some("Wann: später".into()),
+        snippet: "Wann: später".into(),
+        attachments: p.attachments.iter().map(|a| (a.clone(), format!("2.{}", a.index + 1))).collect(),
+        ..Default::default()
+    };
+    s.set_body_parts(big, &p, &parts).unwrap();
+    assert!(calendar_data(&s, big).unwrap().is_none(), "not loaded yet");
+    assert!(!scan(&s).unwrap(), "waits");
+    let ics = find_in_message(update.as_bytes()).unwrap();
+    for a in s
+        .attachments(big)
+        .unwrap()
+        .iter()
+        .filter(|a| a.mime_type == "text/calendar" || a.mime_type == "application/ics")
+    {
+        s.set_attachment_data(big, a.section.as_deref().unwrap(), ics.as_bytes()).unwrap();
+    }
+    assert!(calendar_data(&s, big).unwrap().is_some_and(|d| d.contains("SEQUENCE:1")));
+    assert!(scan(&s).unwrap(), "applied once loaded");
+    assert_eq!(calendar::event(&s, &key, &me()).unwrap().start, utc(2026, 11, 3, 13, 0));
+    let c = card(&s, big, &calendar_data(&s, big).unwrap().unwrap()).unwrap().unwrap();
+    assert_eq!(c.invitation.sequence, 1);
+    // A message whose calendar part cannot be read is looked at once.
+    let broken = invite("REQUEST", 2, "20261103T140000", "20261103T150000", "").replace("UID:", "X-NO-UID:");
+    deliver(&s, inbox, 3, &broken);
+    assert!(!scan(&s).unwrap());
+    let seen: i64 = s.conn().query_row("SELECT COUNT(*) FROM itip_seen", [], |r| r.get(0)).unwrap();
+    assert!(!scan(&s).unwrap());
+    assert_eq!(s.conn().query_row("SELECT COUNT(*) FROM itip_seen", [], |r| r.get::<_, i64>(0)).unwrap(), seen);
+}
+
+#[test]
+fn a_changed_instance_leaves_the_series_invitation_open() {
+    let (s, _, inbox) = store();
+    let weekly = "RRULE:FREQ=WEEKLY;COUNT=4\r\n";
+    let series = deliver(&s, inbox, 1, &invite("REQUEST", 0, "20261103T100000", "20261103T110000", weekly));
+    let one = invite(
+        "REQUEST",
+        1,
+        "20261110T140000",
+        "20261110T150000",
+        "RECURRENCE-ID;TZID=W. Europe Standard Time:20261110T100000\r\n",
+    )
+    .replace("Message-ID: <inv-REQUEST-1@example.org>", "Message-ID: <inv-one@example.org>");
+    let instance = deliver(&s, inbox, 2, &one);
+    scan(&s).unwrap();
+    let data = |id| find_in_message(&s.raw_message(id).unwrap().unwrap()).unwrap();
+    assert!(!card(&s, series, &data(series)).unwrap().unwrap().outdated, "the series is still to be answered");
+    assert!(!card(&s, instance, &data(instance)).unwrap().unwrap().outdated);
+    // The organizer changes the whole series: both are outdated.
+    let all = deliver(&s, inbox, 3, &invite("REQUEST", 2, "20261103T090000", "20261103T100000", weekly));
+    scan(&s).unwrap();
+    assert!(card(&s, series, &data(series)).unwrap().unwrap().outdated);
+    assert!(card(&s, instance, &data(instance)).unwrap().unwrap().outdated);
+    assert!(!card(&s, all, &data(all)).unwrap().unwrap().outdated);
+}
+
+#[test]
+fn declining_one_instance_keeps_the_series() {
+    let (s, _, _) = store();
+    let cal = calendar::local_calendar(&s).unwrap();
+    calendar::insert_internal(&s, cal, "series-1", SERIES).unwrap();
+    let one = instance_mail("REQUEST", 1, "20261125T090000Z", "20261125T090000Z", "20261125T100000Z", "");
+    let inv = parse(&one, &me()).unwrap();
+    assert!(file(&s, &one, &inv, Answer::Declined, cal).unwrap().is_some(), "the series stays");
+    let starts = series_starts(&s);
+    assert_eq!(starts.len(), 9);
+    assert!(!starts.contains(&utc(2026, 11, 25, 9, 0)));
+    // Accepting another one tentatively: that instance carries the answer, the rest keeps its own.
+    let other = instance_mail("REQUEST", 1, "20261202T090000Z", "20261202T090000Z", "20261202T100000Z", "");
+    file(&s, &other, &parse(&other, &me()).unwrap(), Answer::Tentative, cal).unwrap();
+    let evs = calendar::events(&s, utc(2026, 11, 1, 0, 0), utc(2027, 2, 1, 0, 0), &me(), true).unwrap();
+    assert_eq!(evs.len(), 9);
+    let busy: Vec<Busy> = evs.iter().map(|e| e.busy).collect();
+    assert_eq!(busy.iter().filter(|b| **b == Busy::Tentative).count(), 1, "{busy:?}");
+}

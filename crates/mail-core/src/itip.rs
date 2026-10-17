@@ -345,6 +345,8 @@ pub struct Card {
     pub event_key: Option<String>,
     /// Busy appointments at the same time.
     pub conflicts: Vec<calendar::CalendarEvent>,
+    /// The organizer moved the meeting since the user answered: the answer is asked for again.
+    pub reanswer: bool,
 }
 
 /// The card of a message's invitation.
@@ -356,35 +358,37 @@ pub fn card(store: &Store, message_id: i64, data: &str) -> Result<Option<Card>> 
         .query_row("SELECT answer FROM itip_seen WHERE message_id = ?1", [message_id], |r| r.get(0))
         .optional()?
         .flatten();
+    // A change of the whole series makes every earlier message outdated, a change of one
+    // instance only the earlier messages about that instance.
     let newest: Option<i64> = store
         .conn()
         .query_row(
-            "SELECT MAX(sequence) FROM itip_seen WHERE uid = ?1 AND message_id != ?2",
-            params![inv.uid, message_id],
+            "SELECT MAX(sequence) FROM itip_seen WHERE uid = ?1 AND message_id != ?2 AND method != ''
+               AND (recurrence = '' OR recurrence = ?3)",
+            params![inv.uid, message_id, inv.recurrence_id.as_deref().unwrap_or_default()],
             |r| r.get(0),
         )
         .optional()?
         .flatten();
     let outdated = newest.is_some_and(|n| n > inv.sequence as i64);
-    let event_key = calendar::objects_by_uid(store, &inv.uid)?
-        .into_iter()
-        .find(|o| !o.deleted)
-        .map(|o| format!("{}|{}|", o.calendar_id, o.id));
+    let stored = calendar::objects_by_uid(store, &inv.uid)?.into_iter().find(|o| !o.deleted);
+    let event_key = stored.as_ref().map(|o| format!("{}|{}|", o.calendar_id, o.id));
+    let reanswer = stored.is_some_and(|o| o.reanswer) && answer.is_none();
     let conflicts = if inv.method == "REQUEST" && !inv.all_day {
         calendar::conflicts(store, inv.start, inv.end, &inv.uid)?
     } else {
         vec![]
     };
     note(store, message_id, &inv)?;
-    Ok(Some(Card { invitation: inv, answer, outdated, event_key, conflicts }))
+    Ok(Some(Card { invitation: inv, answer, outdated, event_key, conflicts, reanswer }))
 }
 
 /// Notes that a message's invitation was seen.
 fn note(store: &Store, message_id: i64, inv: &Invitation) -> Result<()> {
     store.conn().execute(
-        "INSERT INTO itip_seen (message_id, uid, method, sequence, at) VALUES (?1, ?2, ?3, ?4, ?5)
+        "INSERT INTO itip_seen (message_id, uid, method, sequence, at, recurrence) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
          ON CONFLICT (message_id) DO NOTHING",
-        params![message_id, inv.uid, inv.method, inv.sequence, now()],
+        params![message_id, inv.uid, inv.method, inv.sequence, now(), inv.recurrence_id.as_deref().unwrap_or_default()],
     )?;
     Ok(())
 }
@@ -401,31 +405,256 @@ pub fn answered(store: &Store, message_id: i64, inv: &Invitation, answer: Answer
     Ok(())
 }
 
+/// The address of an `ATTENDEE` line.
+fn line_address(p: &Prop) -> &str {
+    p.value.trim().trim_start_matches("mailto:").trim_start_matches("MAILTO:").trim()
+}
+
+/// The user's answer in an event (the `PARTSTAT` of the user's attendee line).
+fn my_partstat(ev: &Component, me: &[String]) -> Option<String> {
+    ev.all("ATTENDEE")
+        .find(|p| me.iter().any(|m| m.eq_ignore_ascii_case(line_address(p))))
+        .map(|p| p.param("PARTSTAT").unwrap_or("NEEDS-ACTION").to_ascii_uppercase())
+}
+
+/// Sets the user's answer in an event (tentative ones also marked busy-tentative, so the
+/// calendar shows them hatched).
+fn set_answer(ev: &mut Component, me: &[String], partstat: &str) {
+    for p in ev.props.iter_mut().filter(|p| p.name == "ATTENDEE") {
+        if me.iter().any(|m| m.eq_ignore_ascii_case(line_address(p))) {
+            p.params.retain(|(k, _)| k != "PARTSTAT" && k != "RSVP");
+            p.params.push(("PARTSTAT".into(), partstat.into()));
+        }
+    }
+    ev.remove("X-MICROSOFT-CDO-BUSYSTATUS");
+    if partstat == "TENTATIVE" {
+        ev.props.push(Prop::new("X-MICROSOFT-CDO-BUSYSTATUS", "TENTATIVE"));
+    }
+}
+
 /// The invitation's event as the user's copy: without the method, the user's attendee line with
-/// the answer (tentative ones also marked busy-tentative, so the calendar shows them hatched).
+/// the answer.
 fn own_copy(data: &str, me: &str, answer: Answer) -> Option<String> {
     let mut top = ics::parse_components(data.as_bytes());
     let cal = top.iter_mut().find(|c| c.name == "VCALENDAR")?;
     cal.remove("METHOD");
+    let me = [me.to_string()];
     for ev in cal.children.iter_mut().filter(|c| c.name == "VEVENT") {
-        for p in ev.props.iter_mut().filter(|p| p.name == "ATTENDEE") {
-            let addr = p.value.trim().trim_start_matches("mailto:").trim_start_matches("MAILTO:");
-            if addr.eq_ignore_ascii_case(me) {
-                p.params.retain(|(k, _)| k != "PARTSTAT" && k != "RSVP");
-                p.params.push(("PARTSTAT".into(), answer.partstat().into()));
-            }
-        }
-        ev.remove("X-MICROSOFT-CDO-BUSYSTATUS");
-        if answer == Answer::Tentative {
-            ev.props.push(Prop::new("X-MICROSOFT-CDO-BUSYSTATUS", "TENTATIVE"));
-        }
+        set_answer(ev, &me, answer.partstat());
     }
     Some(cal.to_text())
 }
 
+fn sequence_of(ev: &Component) -> u32 {
+    ev.text("SEQUENCE").and_then(|v| v.parse().ok()).unwrap_or(0)
+}
+
+/// Whether an organizer's version of an event (`new`) is newer than the stored one: a higher
+/// `SEQUENCE`, or the same one with a later `DTSTAMP` (RFC 5546 2.1.5; servers send changes of
+/// the place or the text without counting up).
+fn newer(new: &Component, old: &Component) -> bool {
+    let stamp = |c: &Component| c.text("DTSTAMP").unwrap_or_default().replace(['-', ':'], "").to_ascii_uppercase();
+    let (a, b) = (sequence_of(new), sequence_of(old));
+    a > b || (a == b && stamp(new) > stamp(old))
+}
+
+/// The times of an event, to see whether the organizer moved it.
+type Times = (Option<(DateTime<Utc>, DateTime<Utc>)>, Option<String>, Option<String>);
+
+fn times(file: &Component, ev: &Component) -> Times {
+    (ics::span_of(file, ev), ev.text("RRULE"), ev.text("RDATE"))
+}
+
+/// Who changes the stored copy.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum By<'a> {
+    /// The organizer's update or cancellation (only a newer version counts).
+    Organizer,
+    /// The user's answer (`PARTSTAT`); a declined instance of a series leaves it.
+    User(&'a str),
+}
+
+/// What a message does to a stored copy.
+#[derive(Debug, PartialEq)]
+enum Merge {
+    Keep,
+    Remove,
+    /// The new data, and whether the organizer moved a meeting the user had answered.
+    Replace(String, bool),
+}
+
+/// Merges an invitation's message (`data`) into the stored copy of its appointment. A message
+/// about one instance of a series (`RECURRENCE-ID`) changes only that instance: a cancellation
+/// leaves it out (`EXDATE`), an update replaces or adds its own version. An update of the whole
+/// series keeps the instances it does not name and what was left out. The user's answer stays as
+/// it is (an update never answers for the user).
+fn merge(stored: &str, data: &str, inv: &Invitation, me: &[String], by: By<'_>) -> Option<Merge> {
+    let mut top = ics::parse_components(stored.as_bytes());
+    let cal = top.iter_mut().find(|c| c.name == "VCALENDAR")?;
+    let inc_top = ics::parse_components(data.as_bytes());
+    let inc = inc_top.iter().find(|c| c.name == "VCALENDAR")?;
+    let is_event = |c: &&Component| c.name == "VEVENT";
+    let master_i = cal.children.iter().position(|c| c.name == "VEVENT" && c.prop("RECURRENCE-ID").is_none());
+    let all_day = match master_i {
+        Some(i) => ics::is_all_day(&cal.children[i]),
+        None => inc.children.iter().filter(is_event).any(ics::is_all_day),
+    };
+    let key_of =
+        |file: &Component, ev: &Component| ev.prop("RECURRENCE-ID").and_then(|p| ics::instance_of(file, p, all_day));
+    let organizer = by == By::Organizer;
+    let answered = |a: &Option<String>| matches!(a.as_deref(), Some("ACCEPTED" | "TENTATIVE" | "DECLINED"));
+    // Zones the new parts name and the stored copy lacks.
+    let add_zones = |cal: &mut Component| {
+        for z in inc.children.iter().filter(|c| c.name == "VTIMEZONE") {
+            let id = z.text("TZID");
+            if !cal.children.iter().any(|c| c.name == "VTIMEZONE" && c.text("TZID") == id) {
+                let at = cal.children.iter().position(|c| c.name == "VEVENT").unwrap_or(cal.children.len());
+                cal.children.insert(at, z.clone());
+            }
+        }
+    };
+    if inv.recurrence_id.is_none() {
+        let current = master_i.map(|i| &cal.children[i]).or_else(|| cal.children.iter().find(is_event))?;
+        let inc_master = inc
+            .children
+            .iter()
+            .find(|c| c.name == "VEVENT" && c.prop("RECURRENCE-ID").is_none())
+            .or_else(|| inc.children.iter().find(is_event))?;
+        if organizer && inv.method == "CANCEL" {
+            return Some(if sequence_of(inc_master) >= sequence_of(current) { Merge::Remove } else { Merge::Keep });
+        }
+        if organizer && !newer(inc_master, current) {
+            return Some(Merge::Keep);
+        }
+        let answer = match by {
+            By::User(p) => Some(p.to_string()),
+            By::Organizer => my_partstat(current, me),
+        };
+        let moved = organizer && answered(&answer) && times(inc, inc_master) != times(cal, current);
+        let mut next = inc.clone();
+        next.remove("METHOD");
+        let named: Vec<String> = next.children.iter().filter(is_event).filter_map(|e| key_of(inc, e)).collect();
+        // Instances the message does not name stay as they were (an answer to the whole
+        // series holds for them too).
+        let mut kept: Vec<Component> = cal
+            .children
+            .iter()
+            .filter(is_event)
+            .filter(|o| key_of(cal, o).is_some_and(|k| !named.contains(&k)))
+            .cloned()
+            .collect();
+        if let By::User(p) = by {
+            for o in kept.iter_mut() {
+                set_answer(o, me, p);
+            }
+        }
+        let stored_answers: Vec<(String, Option<String>)> =
+            cal.children.iter().filter(is_event).filter_map(|o| Some((key_of(cal, o)?, my_partstat(o, me)))).collect();
+        let gone: Vec<String> = match master_i {
+            Some(i) => {
+                let have = ics::excluded(inc, inc_master, all_day);
+                ics::excluded(cal, &cal.children[i], all_day).into_iter().filter(|k| !have.contains(k)).collect()
+            }
+            None => vec![],
+        };
+        for ev in next.children.iter_mut().filter(|c| c.name == "VEVENT") {
+            let own = match (&by, ev.prop("RECURRENCE-ID").and_then(|p| ics::instance_of(inc, p, all_day))) {
+                (By::Organizer, Some(k)) => {
+                    stored_answers.iter().find(|(sk, _)| *sk == k).and_then(|(_, a)| a.clone()).or(answer.clone())
+                }
+                _ => answer.clone(),
+            };
+            if let Some(a) = own {
+                set_answer(ev, me, &a);
+            }
+            if ev.prop("RECURRENCE-ID").is_none() {
+                for k in &gone {
+                    if let Some(p) = ics::exdate_for(k) {
+                        ev.props.push(p);
+                    }
+                }
+            }
+        }
+        for z in cal.children.iter().filter(|c| c.name == "VTIMEZONE") {
+            let id = z.text("TZID");
+            if !kept.is_empty() && !next.children.iter().any(|c| c.name == "VTIMEZONE" && c.text("TZID") == id) {
+                next.children.insert(0, z.clone());
+            }
+        }
+        next.children.extend(kept);
+        return Some(Merge::Replace(next.to_text(), moved));
+    }
+    // One instance of a series.
+    let inc_ev = inc
+        .children
+        .iter()
+        .find(|c| c.name == "VEVENT" && c.prop("RECURRENCE-ID").is_some())
+        .or_else(|| inc.children.iter().find(is_event))?;
+    let k = key_of(inc, inc_ev)?;
+    let existing_i =
+        cal.children.iter().position(|c| c.name == "VEVENT" && key_of(cal, c).as_deref() == Some(k.as_str()));
+    let reference_i = existing_i.or(master_i)?;
+    let cancel = (organizer && inv.method == "CANCEL") || by == By::User("DECLINED");
+    if organizer {
+        let current = &cal.children[reference_i];
+        let fresh = match existing_i {
+            Some(_) if cancel => sequence_of(inc_ev) >= sequence_of(current),
+            Some(_) => newer(inc_ev, current),
+            // The first change of this instance: its SEQUENCE counts from the series'.
+            None => cancel || sequence_of(inc_ev) >= sequence_of(current),
+        };
+        if !fresh {
+            return Some(Merge::Keep);
+        }
+    }
+    if cancel {
+        let already = master_i.map(|i| ics::excluded(cal, &cal.children[i], all_day)).unwrap_or_default();
+        if let Some(i) = existing_i {
+            cal.children.remove(i);
+        }
+        let any_left = cal.children.iter().any(|c| c.name == "VEVENT");
+        let master = cal.children.iter_mut().find(|c| c.name == "VEVENT" && c.prop("RECURRENCE-ID").is_none());
+        match master {
+            Some(m) => {
+                if !already.contains(&k)
+                    && let Some(p) = ics::exdate_for(&k)
+                {
+                    m.props.push(p);
+                }
+            }
+            None if !any_left => return Some(Merge::Remove),
+            None => {}
+        }
+        return Some(Merge::Replace(cal.to_text(), false));
+    }
+    let answer = match by {
+        By::User(p) => Some(p.to_string()),
+        By::Organizer => my_partstat(&cal.children[reference_i], me),
+    };
+    let moved = organizer
+        && answered(&answer)
+        && match existing_i {
+            Some(i) => times(inc, inc_ev) != times(cal, &cal.children[i]),
+            None => {
+                inc_ev.prop("DTSTART").and_then(|p| ics::instance_of(inc, p, all_day)).as_deref() != Some(k.as_str())
+            }
+        };
+    let mut ev = inc_ev.clone();
+    if let Some(a) = &answer {
+        set_answer(&mut ev, me, a);
+    }
+    match existing_i {
+        Some(i) => cal.children[i] = ev,
+        None => cal.children.push(ev),
+    }
+    add_zones(cal);
+    Some(Merge::Replace(cal.to_text(), moved))
+}
+
 /// Puts an answered invitation into the calendars: the appointment already there (a server that
 /// schedules put it in) gets the answer, else an accepted or tentative one goes into
-/// `calendar_id`; a declined one leaves. Returns the appointment's key, if it stays.
+/// `calendar_id`; a declined one leaves (a declined instance of a series leaves the series).
+/// Returns the appointment's key, if it stays.
 pub fn file(store: &Store, data: &str, inv: &Invitation, answer: Answer, calendar_id: i64) -> Result<Option<String>> {
     let me = inv.me.clone().or_else(|| calendar::my_addresses(store).ok()?.into_iter().next()).unwrap_or_default();
     let copy = own_copy(data, &me, answer).ok_or_else(|| {
@@ -439,11 +668,20 @@ pub fn file(store: &Store, data: &str, inv: &Invitation, answer: Answer, calenda
         })
         .collect();
     if let Some(o) = existing.first() {
-        if answer == Answer::Declined {
+        if answer == Answer::Declined && inv.recurrence_id.is_none() {
             calendar::remove_internal(store, o.id)?;
             return Ok(None);
         }
-        calendar::replace_internal(store, o.id, &copy)?;
+        let mine = [me.clone()];
+        match merge(&o.data, data, inv, &mine, By::User(answer.partstat())) {
+            Some(Merge::Replace(next, _)) => calendar::replace_internal(store, o.id, &next)?,
+            Some(Merge::Remove) => {
+                calendar::remove_internal(store, o.id)?;
+                return Ok(None);
+            }
+            _ => calendar::replace_internal(store, o.id, &copy)?,
+        }
+        calendar::set_reanswer(store, o.id, false)?;
         return Ok(Some(format!("{}|{}|", o.calendar_id, o.id)));
     }
     if answer == Answer::Declined {
@@ -464,7 +702,9 @@ fn organizer_address(organizer: &str) -> String {
 /// (not to a Microsoft calendar: Exchange does that itself). `true` when something changed.
 /// Only the organizer may change a meeting (RFC 5546 3.2.2, 3.2.5): the message's sender
 /// (`sender`, its From address) must be the organizer of the stored copy, and the update keeps
-/// that organizer. Anything else stays a card the user can look at.
+/// that organizer. Anything else stays a card the user can look at. The user's answer is never
+/// changed by an update: when the organizer moves a meeting the user had answered, the
+/// appointment asks for a new answer ([`calendar::Object::reanswer`]).
 pub fn apply(store: &Store, data: &str, inv: &Invitation, sender: Option<&str>) -> Result<bool> {
     if inv.mine || !matches!(inv.method.as_str(), "REQUEST" | "CANCEL") {
         return Ok(false);
@@ -474,32 +714,26 @@ pub fn apply(store: &Store, data: &str, inv: &Invitation, sender: Option<&str>) 
     if organizer.is_empty() || sender != organizer {
         return Ok(false);
     }
+    let me = calendar::my_addresses(store)?;
     let mut changed = false;
     for o in calendar::objects_by_uid(store, &inv.uid)?.into_iter().filter(|o| o.format == "ics" && !o.deleted) {
         let Ok(cal) = calendar::calendar(store, o.calendar_id) else { continue };
         if !cal.writable || cal.kind == calendar::SourceKind::Ics {
             continue;
         }
-        let me = calendar::my_addresses(store)?;
         let Some(current) = parse(&o.data, &me) else { continue };
         // The organizer stays who it was.
         if organizer_address(&current.organizer) != organizer {
             continue;
         }
-        if inv.sequence < current.sequence || (inv.sequence == current.sequence && inv.method == "REQUEST") {
-            continue;
-        }
-        if inv.method == "CANCEL" {
-            calendar::remove_internal(store, o.id)?;
-        } else {
-            // The user's answer stays.
-            let answer = match current.my_status.as_deref() {
-                Some("TENTATIVE") => Answer::Tentative,
-                _ => Answer::Accepted,
-            };
-            let me_addr = current.me.clone().unwrap_or_default();
-            if let Some(copy) = own_copy(data, &me_addr, answer) {
-                calendar::replace_internal(store, o.id, &copy)?;
+        match merge(&o.data, data, inv, &me, By::Organizer) {
+            None | Some(Merge::Keep) => continue,
+            Some(Merge::Remove) => calendar::remove_internal(store, o.id)?,
+            Some(Merge::Replace(next, moved)) => {
+                calendar::replace_internal(store, o.id, &next)?;
+                if moved {
+                    calendar::set_reanswer(store, o.id, true)?;
+                }
             }
         }
         changed = true;
@@ -507,24 +741,63 @@ pub fn apply(store: &Store, data: &str, inv: &Invitation, sender: Option<&str>) 
     Ok(changed)
 }
 
+/// The calendar part of a message: from the message when it was kept whole, else (a large
+/// message) the part fetched with its body ([`crate::sync`]). `None` until it is loaded.
+pub fn calendar_data(store: &Store, message_id: i64) -> Result<Option<String>> {
+    if let Some(raw) = store.raw_message(message_id)? {
+        return Ok(find_in_message(&raw));
+    }
+    let mut st = store.conn().prepare(
+        "SELECT data FROM attachments WHERE message_id = ?1 AND data IS NOT NULL
+           AND (lower(mime_type) IN ('text/calendar', 'application/ics') OR lower(filename) LIKE '%.ics')
+         ORDER BY lower(mime_type) = 'text/calendar' DESC, part_index",
+    )?;
+    let parts: Vec<Vec<u8>> = st.query_map([message_id], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
+    let mut fallback = None;
+    for bytes in parts {
+        let text = String::from_utf8_lossy(&bytes).into_owned();
+        if !text.contains("BEGIN:VCALENDAR") {
+            continue;
+        }
+        if text.contains("METHOD:") {
+            return Ok(Some(text));
+        }
+        fallback.get_or_insert(text);
+    }
+    Ok(fallback)
+}
+
+/// Notes a message whose calendar part cannot be read, so it is not looked at again.
+fn note_unreadable(store: &Store, message_id: i64) -> Result<()> {
+    store.conn().execute(
+        "INSERT INTO itip_seen (message_id, uid, method, sequence, at) VALUES (?1, '', '', 0, ?2)
+         ON CONFLICT (message_id) DO NOTHING",
+        params![message_id, now()],
+    )?;
+    Ok(())
+}
+
 /// Messages with an invitation that the calendars have not seen yet: applies their updates and
-/// cancellations. Called after a sync; returns whether a calendar changed.
+/// cancellations. Called after a sync; returns whether a calendar changed. A message whose
+/// calendar part is not loaded yet waits until it is.
 pub fn scan(store: &Store) -> Result<bool> {
     let mut st = store.conn().prepare(
         "SELECT DISTINCT a.message_id FROM attachments a
           WHERE (a.mime_type IN ('text/calendar', 'application/ics') OR lower(a.filename) LIKE '%.ics')
             AND a.message_id NOT IN (SELECT message_id FROM itip_seen)
+            AND (a.data IS NOT NULL
+              OR EXISTS (SELECT 1 FROM message_bodies b WHERE b.message_id = a.message_id AND b.raw IS NOT NULL))
           ORDER BY a.message_id LIMIT 200",
     )?;
     let ids: Vec<i64> = st.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
     let me = calendar::my_addresses(store)?;
     let mut changed = false;
     for id in ids {
-        let Some(raw) = store.raw_message(id)? else { continue };
-        let Some(data) = find_in_message(&raw) else {
+        let Some(inv) = calendar_data(store, id)?.and_then(|data| Some((parse(&data, &me)?, data))) else {
+            note_unreadable(store, id)?;
             continue;
         };
-        let Some(inv) = parse(&data, &me) else { continue };
+        let (inv, data) = inv;
         note(store, id, &inv)?;
         let detail = store.message(id)?;
         // Mail in Junk or Trash never changes the calendar.
