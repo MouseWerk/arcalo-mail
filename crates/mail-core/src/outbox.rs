@@ -49,6 +49,13 @@ pub enum Op {
         seen: Option<bool>,
         flagged: Option<bool>,
     },
+    /// An IMAP keyword (a label) set or taken off.
+    Keyword {
+        mailbox: String,
+        uids: Vec<u32>,
+        keyword: String,
+        add: bool,
+    },
     Move {
         from: String,
         to: String,
@@ -92,6 +99,7 @@ impl Op {
             Op::Send { .. } => "send",
             Op::AppendSent { .. } => "append_sent",
             Op::Flags { .. } => "flags",
+            Op::Keyword { .. } => "keyword",
             Op::Move { .. } => "move",
             Op::Delete { .. } => "delete",
             Op::SaveDraft { .. } => "save_draft",

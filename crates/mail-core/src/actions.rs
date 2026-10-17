@@ -68,6 +68,43 @@ pub fn set_flags(store: &Store, ids: &[i64], seen: Option<bool>, flagged: Option
     Ok(accounts)
 }
 
+/// Sets or takes off an IMAP keyword (a label, `$Rechnung`); here at once, on the server
+/// through the queue. Returns the accounts touched.
+pub fn set_keyword(store: &Store, ids: &[i64], keyword: &str, add: bool) -> Result<Vec<i64>> {
+    let keyword = keyword.trim();
+    let valid = !keyword.is_empty()
+        && !keyword.starts_with('\\')
+        && keyword.chars().all(|c| c.is_ascii_graphic() && !"(){%*\"\\]".contains(c));
+    if !valid {
+        return Err(Error::Invalid(trf!(
+            "„{keyword}“ taugt nicht als Schlagwort: nur Buchstaben, Ziffern und $-_. ohne Leerzeichen.",
+            "“{keyword}” does not work as a label: letters, digits and $-_. only, no spaces."
+        )));
+    }
+    let mut accounts = vec![];
+    for (mailbox_id, msgs) in by_mailbox(store, ids)? {
+        let mb = store.mailbox(mailbox_id)?;
+        for (id, _) in &msgs {
+            let raw: String =
+                store.conn().query_row("SELECT keywords FROM messages WHERE id = ?1", [id], |r| r.get(0))?;
+            let mut list: Vec<String> = serde_json::from_str(&raw).unwrap_or_default();
+            list.retain(|k| !k.eq_ignore_ascii_case(keyword));
+            if add {
+                list.push(keyword.to_string());
+            }
+            store.conn().execute(
+                "UPDATE messages SET keywords = ?2 WHERE id = ?1",
+                rusqlite::params![id, serde_json::to_string(&list)?],
+            )?;
+        }
+        let uids = msgs.iter().map(|(_, u)| *u).collect();
+        outbox::enqueue(store, mb.account_id, &Op::Keyword { mailbox: mb.name, uids, keyword: keyword.into(), add })?;
+        accounts.push(mb.account_id);
+    }
+    accounts.dedup();
+    Ok(accounts)
+}
+
 /// The account's folder of a role; created (here and, through the queue, on the server) under
 /// `name` when the server has none.
 fn folder_for(store: &Store, account_id: i64, role: Role, name: &str, undo: &mut Undo) -> Result<Mailbox> {

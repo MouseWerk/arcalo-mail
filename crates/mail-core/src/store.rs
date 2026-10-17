@@ -23,6 +23,7 @@ pub const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0002_mail_actions.sql"),
     include_str!("../migrations/0003_sync_sources.sql"),
     include_str!("../migrations/0004_inbox_tools.sql"),
+    include_str!("../migrations/0005_power_tools.sql"),
 ];
 pub const SCHEMA_VERSION: u32 = MIGRATIONS.len() as u32;
 
@@ -86,6 +87,9 @@ pub struct MessageSummary {
     /// In the lists of the time tools: when it comes back, is due, or was put there (`later`).
     #[serde(default)]
     pub due: Option<i64>,
+    /// „Wichtig“ (`ai::priority`), filled in by the lists that show it.
+    #[serde(default)]
+    pub important: bool,
 }
 
 /// A message as the reading pane shows it (the HTML not yet sanitized).

@@ -488,12 +488,39 @@ pub fn send_now(store: &Store, id: i64) -> Result<i64> {
 /// A reminder for the message with this key, due at `due` unless it was answered.
 pub fn add_followup(store: &Store, account_id: i64, key: &str, due: i64, subject: &str) -> Result<i64> {
     store.conn().execute(
-        "UPDATE followups SET state = 'done' WHERE account_id = ?1 AND message_key = ?2 AND state <> 'done'",
+        "UPDATE followups SET state = 'done'
+         WHERE account_id = ?1 AND message_key = ?2 AND state <> 'done' AND kind = 'no_answer'",
         params![account_id, key],
     )?;
     store.conn().execute(
         "INSERT INTO followups (account_id, message_key, due_at, subject, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
         params![account_id, key, due, subject, now()],
+    )?;
+    Ok(store.conn().last_insert_rowid())
+}
+
+/// A reminder of a task found in a message (the AI assistant's „Erinnerung“): due at `due`
+/// whether or not someone answered, told with `note`.
+pub fn remind_task(store: &Store, id: i64, due: i64, note: &str) -> Result<i64> {
+    if due <= now() {
+        return Err(Error::Invalid(tr!("Der Zeitpunkt liegt in der Vergangenheit.", "That time has passed.").into()));
+    }
+    let r = rows(store, &[id])?
+        .into_iter()
+        .next()
+        .ok_or_else(|| Error::NotFound(tr!("Die Nachricht ist nicht mehr da.", "The message is gone.").into()))?;
+    let note = note.trim();
+    store.conn().execute(
+        "INSERT INTO followups (account_id, message_key, due_at, subject, created_at, kind, note)
+         VALUES (?1, ?2, ?3, ?4, ?5, 'task', ?6)",
+        params![
+            r.account_id,
+            key_of(r.message_id.as_deref(), r.id),
+            due,
+            r.subject,
+            now(),
+            (!note.is_empty()).then_some(note)
+        ],
     )?;
     Ok(store.conn().last_insert_rowid())
 }
@@ -607,16 +634,16 @@ fn tick_in(store: &Store, at: i64) -> Result<Tick> {
             t.accounts.push(s.account_id);
         }
     }
-    let followups: Vec<(i64, i64, String, String, String)> = {
+    let followups: Vec<(i64, i64, String, String, String, bool)> = {
         let mut st = store.conn().prepare(
-            "SELECT id, account_id, message_key, subject, state FROM followups
+            "SELECT id, account_id, message_key, COALESCE(note, subject), state, kind = 'task' FROM followups
              WHERE state = 'due' OR (state = 'waiting' AND due_at <= ?1)",
         )?;
-        st.query_map([at], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))?
+        st.query_map([at], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)))?
             .collect::<rusqlite::Result<_>>()?
     };
-    for (id, account, key, subject, state) in followups {
-        if answered(store, account, &key)? {
+    for (id, account, key, subject, state, task) in followups {
+        if !task && answered(store, account, &key)? {
             store.conn().execute("UPDATE followups SET state = 'done' WHERE id = ?1", [id])?;
             if state == "due" {
                 t.accounts.push(account);

@@ -114,6 +114,13 @@ pub struct Settings {
     pub unified_inbox: bool,
     /// The newsletters tab shows one row per sender, opened as a stream of its issues.
     pub bundles: bool,
+    /// The AI assistant: providers, which account's mail each may see, the automatic parts.
+    pub ai: crate::ai::AiSettings,
+    /// Profile pictures from BIMI: a sender's verified brand logo, fetched once per domain.
+    pub bimi: bool,
+    /// Profile pictures from Gravatar. Off by default: it tells Gravatar which addresses write
+    /// to the user.
+    pub gravatar: bool,
 }
 
 impl Default for Settings {
@@ -140,6 +147,9 @@ impl Default for Settings {
             focus: false,
             unified_inbox: true,
             bundles: true,
+            ai: crate::ai::AiSettings::default(),
+            bimi: true,
+            gravatar: false,
         }
     }
 }

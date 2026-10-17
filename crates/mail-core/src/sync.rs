@@ -56,6 +56,9 @@ pub struct SyncReport {
     /// New unread messages that arrived since the last sync (not the first fetch of a folder):
     /// what a notification tells about.
     pub new_unread: Vec<i64>,
+    /// Every message that arrived since the last sync (not the first fetch): what the rules
+    /// and the priority look at.
+    pub new: Vec<i64>,
 }
 
 impl SyncReport {
@@ -125,7 +128,8 @@ pub async fn sync_mailbox<C: ImapClient>(
     let selected = client.select(&mb.name, q).await?;
     let server = selected.info;
     let strategy = strategy(local, server, caps, q.is_some());
-    let mut report = SyncReport { mailbox_id, strategy, added: 0, updated: 0, removed: 0, new_unread: vec![] };
+    let mut report =
+        SyncReport { mailbox_id, strategy, added: 0, updated: 0, removed: 0, new_unread: vec![], new: vec![] };
     let known_next = local.uid_next.unwrap_or(1);
     let new = match strategy {
         Strategy::Full => {
@@ -184,6 +188,7 @@ pub async fn sync_mailbox<C: ImapClient>(
     // The first fetch of a folder is the existing mail, not new mail.
     if local.uid_validity.is_some() && strategy != Strategy::Full {
         report.new_unread = new.iter().filter(|(_, unread)| *unread).map(|(id, _)| *id).collect();
+        report.new = new.iter().map(|(id, _)| *id).collect();
     }
     store.set_sync_state(
         mailbox_id,

@@ -439,6 +439,7 @@ async fn xoauth2_with_tokens_from_the_identity_provider() {
         authorize_url: format!("http://127.0.0.1:{}/oauth/authorize", srv.control),
         token_url: format!("http://127.0.0.1:{}/oauth/token", srv.control),
         scopes: mail_core::oauth::MS_SCOPES.iter().map(|s| s.to_string()).collect(),
+        extra_consent: vec![],
     };
     // The browser: follows the authorize address to the app's loopback redirect.
     let tokens = sign_in(&cfg, USER, |url| {
@@ -558,4 +559,74 @@ async fn jmap_push_over_the_wire() {
     let found = mail_core::jmap::discover(USER, &[format!("http://127.0.0.1:{}/.well-known/jmap", srv.control)]).await;
     assert!(found.is_some());
     std::fs::remove_dir_all(&dir).ok();
+}
+
+#[tokio::test]
+async fn pop3_downloads_the_inbox_and_removes_at_quit() {
+    use mail_core::pop3::{Policy, visit};
+    let srv = server(all(), false).await;
+    srv.shared.with(|f| {
+        f.deliver("INBOX", &msg("p1@x", "Eins", "Hallo"), 1_760_000_000);
+        f.deliver("INBOX", &msg("p2@x", "Zwei", ".Punkt"), 1_760_000_001);
+    });
+    let (store, account) = store_with_account(plain(srv.imap), plain(srv.smtp));
+    let store = Mutex::new(store);
+    let keep = Policy { leave_on_server: true, delete_after_days: None };
+    let v = visit(&store, account, &plain(srv.pop3), USER, PW, keep).await.unwrap();
+    assert_eq!((v.downloaded, v.removed), (2, 0));
+    assert_eq!(srv.shared.with(|f| f.subjects("INBOX")).len(), 2, "left on the server");
+    let take = Policy { leave_on_server: false, delete_after_days: None };
+    let v = visit(&store, account, &plain(srv.pop3), USER, PW, take).await.unwrap();
+    assert_eq!((v.downloaded, v.removed), (0, 2));
+    assert!(srv.shared.with(|f| f.subjects("INBOX")).is_empty(), "gone at QUIT");
+    let wrong = visit(&store, account, &plain(srv.pop3), USER, "falsch", keep).await.unwrap_err();
+    assert!(matches!(wrong, Error::Connection(Problem::Auth { .. })), "{wrong:?}");
+}
+
+#[tokio::test]
+async fn sieve_rules_and_the_ai_provider_over_the_wire() {
+    use mail_core::rules::{Action, Condition, Field, Op as RuleOp, Place, Rule, RuleBody};
+    let srv = server(all(), false).await;
+    let rule = Rule {
+        id: 1,
+        account_id: Some(1),
+        name: "Shop".into(),
+        place: Place::Server,
+        enabled: true,
+        position: 1,
+        body: RuleBody {
+            match_all: true,
+            conditions: vec![Condition { field: Field::From, op: RuleOp::Contains, value: "shop".into() }],
+            actions: vec![Action::Move { folder: "Shop".into() }],
+            stop: false,
+        },
+        server_ref: None,
+    };
+    let (requires, block) = mail_core::sieve::script(&[rule], "Trash", "Archive");
+    mail_core::sieve::upload(&plain(srv.sieve), USER, PW, &requires, &block).await.unwrap();
+    {
+        let s = srv.shared.sieve.lock().unwrap();
+        assert_eq!(s.active.as_deref(), Some(mail_core::sieve::SCRIPT_NAME));
+        assert!(s.scripts[mail_core::sieve::SCRIPT_NAME].contains("fileinto \"Shop\""));
+    }
+    // The AI provider of the control port, streamed.
+    let p = mail_core::ai::AiProvider {
+        id: "test".into(),
+        name: "Test".into(),
+        kind: mail_core::ai::ProviderKind::Compatible,
+        base_url: format!("http://127.0.0.1:{}/ai/v1", srv.control),
+        model: "llama3.2".into(),
+        api_version: String::new(),
+    };
+    let c = mail_core::ai::AiClient::new(p, None).unwrap();
+    let msgs = mail_core::ai::prompts::rewrite(
+        "Kannst du mir das schicken?",
+        mail_core::ai::prompts::Style::Formal,
+        mail_core::i18n::Lang::De,
+    );
+    let mut pieces = 0;
+    let a = c.chat(&msgs, 0.2, &std::sync::atomic::AtomicBool::new(false), |_| pieces += 1).await.unwrap();
+    assert_eq!(a.text, "Können Sie mir das schicken?");
+    assert!(pieces > 1);
+    assert_eq!(srv.shared.ai.lock().unwrap().requests.len(), 1);
 }

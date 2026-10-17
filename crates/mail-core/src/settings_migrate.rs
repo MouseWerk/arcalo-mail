@@ -12,7 +12,7 @@
 use serde_json::{Map, Value};
 
 /// Version written by this release.
-pub const SETTINGS_VERSION: u32 = 5;
+pub const SETTINGS_VERSION: u32 = 6;
 
 /// One step `from → from + 1`: changes the settings object and says what it did (`None`:
 /// nothing to do for these settings).
@@ -29,6 +29,7 @@ pub const STEPS: [Step; SETTINGS_VERSION as usize] = [
     Step { from: 2, name: "fetch_threads_network", run: fetch_threads_network },
     Step { from: 3, name: "phones", run: phones },
     Step { from: 4, name: "inbox_tools", run: inbox_tools },
+    Step { from: 5, name: "power_tools", run: power_tools },
 ];
 
 /// Version 0 is settings written before versions existed (development builds): nothing to
@@ -109,6 +110,23 @@ fn inbox_tools(map: &mut Map<String, Value>) -> Option<String> {
     (!added.is_empty()).then(|| format!("added {}", added.join(", ")))
 }
 
+/// Version 6: the AI assistant (off: no provider), its automatic summaries, priority and tone
+/// (on once a provider is set up), and the profile pictures (BIMI on, Gravatar off, as decided).
+fn power_tools(map: &mut Map<String, Value>) -> Option<String> {
+    let mut added = vec![];
+    for (key, value) in [
+        ("ai", serde_json::to_value(crate::ai::AiSettings::default()).unwrap_or(Value::Null)),
+        ("bimi", Value::Bool(true)),
+        ("gravatar", Value::Bool(false)),
+    ] {
+        if !map.contains_key(key) {
+            map.insert(key.into(), value);
+            added.push(key);
+        }
+    }
+    (!added.is_empty()).then(|| format!("added {}", added.join(", ")))
+}
+
 /// Runs the steps the settings still need; returns what they did.
 pub fn migrate(map: &mut Map<String, Value>) -> Vec<String> {
     let from = map.get("version").and_then(Value::as_u64).unwrap_or(0) as u32;
@@ -141,7 +159,7 @@ mod tests {
         let mut m: Map<String, Value> = serde_json::from_str(r#"{"version":1,"undo_send_secs":10}"#).unwrap();
         let done = migrate(&mut m);
         // mail_basics, fetch_threads_network and the later steps.
-        assert_eq!(done.len(), 4, "{done:?}");
+        assert_eq!(done.len(), 5, "{done:?}");
         assert!(done[0].starts_with("mail_basics: "), "{done:?}");
         assert_eq!(m["undo_send_secs"], 10);
         assert_eq!(m["notifications"], true);
@@ -153,7 +171,7 @@ mod tests {
         let mut m: Map<String, Value> = serde_json::from_str(r#"{"version":2,"prefetch":"none"}"#).unwrap();
         let done = migrate(&mut m);
         assert_eq!(done[0], "fetch_threads_network: added subject_threads, network");
-        assert_eq!(done.len(), 3, "and the later steps: {done:?}");
+        assert_eq!(done.len(), 4, "and the later steps: {done:?}");
         assert_eq!(m["prefetch"], "none", "kept");
         assert_eq!(m["network"]["profiles"][0]["id"], "standard");
         assert!(migrate(&mut m).is_empty(), "idempotent");
@@ -174,9 +192,23 @@ mod tests {
     fn version_5_adds_the_inbox_tools_once() {
         let mut m: Map<String, Value> = serde_json::from_str(r#"{"version":4,"focus":true}"#).unwrap();
         let done = migrate(&mut m);
-        assert_eq!(done, ["inbox_tools: added screener, unified_inbox, bundles"]);
+        assert_eq!(
+            done,
+            ["inbox_tools: added screener, unified_inbox, bundles", "power_tools: added ai, bimi, gravatar"]
+        );
         assert_eq!(m["focus"], true, "kept");
         assert_eq!(m["screener"], false);
+        assert!(migrate(&mut m).is_empty(), "idempotent");
+    }
+
+    #[test]
+    fn version_6_adds_the_assistant_off_and_the_pictures_once() {
+        let mut m: Map<String, Value> = serde_json::from_str(r#"{"version":5,"gravatar":true}"#).unwrap();
+        let done = migrate(&mut m);
+        assert_eq!(done, ["power_tools: added ai, bimi"]);
+        assert_eq!(m["gravatar"], true, "kept");
+        assert_eq!(m["ai"]["providers"], serde_json::json!([]), "off until a provider is set up");
+        assert_eq!(m["bimi"], true);
         assert!(migrate(&mut m).is_empty(), "idempotent");
     }
 

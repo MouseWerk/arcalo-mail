@@ -24,6 +24,13 @@
 //! * `/unsubscribe…`, `/track…`, `/img…` (any method): a sender's web side, as a newsletter's
 //!   one-click unsubscribe address (RFC 8058), its tracking pixel or its pictures; every request
 //!   is noted (pictures get a 1×1 GIF) and `GET /web` lists them
+//! * `/ai/v1/…`: an OpenAI-compatible AI provider (`mail_core::ai::fake`), streamed piece by
+//!   piece; `GET /ai-requests` lists what it was sent, `POST /ai-answer?task=summary` (the text
+//!   as the body) sets an answer, `POST /ai-fail?status=500` fails the next one,
+//!   `POST /ai-key?value=…` asks for a key
+//! * `/dav/…`: a CardDAV address book with the account's user name and password;
+//!   `POST /dav-card?name=lea` (a vCard as the body) adds a card
+//! * `GET /sieve`: the ManageSieve server's scripts and the active one
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -191,6 +198,32 @@ async fn handle(stream: TcpStream, shared: Arc<Shared>) -> std::io::Result<()> {
         stream.write_all(&out).await?;
         return stream.flush().await;
     }
+    if path.starts_with("/ai/") {
+        let reply = shared.ai.lock().unwrap().handle(&method, &target, &headers, &body);
+        let mut stream = r.into_inner();
+        let head =
+            format!("HTTP/1.1 {} X\r\nContent-Type: {}\r\nConnection: close\r\n\r\n", reply.status, reply.content_type);
+        stream.write_all(head.as_bytes()).await?;
+        for c in reply.chunks {
+            stream.write_all(&c).await?;
+            stream.flush().await?;
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        return stream.flush().await;
+    }
+    if path.starts_with("/dav") && method != "POST" {
+        let auth = headers.iter().find(|(k, _)| k == "authorization").map(|(_, v)| v.clone());
+        let (status, text) =
+            shared.carddav.lock().unwrap().handle(&method, &target, auth.as_deref(), &String::from_utf8_lossy(&body));
+        let mut stream = r.into_inner();
+        let head = format!(
+            "HTTP/1.1 {status} X\r\nContent-Type: application/xml; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            text.len()
+        );
+        stream.write_all(head.as_bytes()).await?;
+        stream.write_all(text.as_bytes()).await?;
+        return stream.flush().await;
+    }
     if path.starts_with("/jmap") || path == "/.well-known/jmap" {
         return crate::jmap::handle(r, &method, &target, &headers, body, shared).await;
     }
@@ -225,6 +258,32 @@ async fn handle(stream: TcpStream, shared: Arc<Shared>) -> std::io::Result<()> {
             ("200 OK", "text/plain", b"ok".to_vec())
         }
         ("GET", "/state") => ("200 OK", "application/json", state(&shared).to_string().into_bytes()),
+        ("GET", "/ai-requests") => {
+            let list = shared.ai.lock().unwrap().requests.clone();
+            ("200 OK", "application/json", serde_json::to_vec(&list).unwrap_or_default())
+        }
+        ("POST", "/ai-answer") => {
+            let task = q.get("task").cloned().unwrap_or_default();
+            shared.ai.lock().unwrap().answers.insert(task, String::from_utf8_lossy(&body).into_owned());
+            ("200 OK", "text/plain", b"ok".to_vec())
+        }
+        ("POST", "/ai-fail") => {
+            shared.ai.lock().unwrap().fail = q.get("status").and_then(|v| v.parse().ok());
+            ("200 OK", "text/plain", b"ok".to_vec())
+        }
+        ("POST", "/ai-key") => {
+            shared.ai.lock().unwrap().key = q.get("value").cloned().filter(|v| !v.is_empty());
+            ("200 OK", "text/plain", b"ok".to_vec())
+        }
+        ("POST", "/dav-card") => {
+            let name = q.get("name").cloned().unwrap_or_else(|| "card".into());
+            shared.carddav.lock().unwrap().put(&name, &String::from_utf8_lossy(&body));
+            ("200 OK", "text/plain", b"ok".to_vec())
+        }
+        ("GET", "/sieve") => {
+            let s = shared.sieve.lock().unwrap();
+            ("200 OK", "application/json", json!({ "scripts": s.scripts, "active": s.active }).to_string().into_bytes())
+        }
         ("GET", "/web") => {
             let web = shared.web.lock().unwrap().clone();
             ("200 OK", "application/json", serde_json::to_vec(&web).unwrap_or_default())

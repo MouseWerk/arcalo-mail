@@ -110,6 +110,14 @@ pub fn report(store: &Store, app: &serde_json::Value) -> Result<String> {
                 "kind": "jmap", "session": redact(session_url), "auth": auth_name(auth),
             }),
             Transport::Graph => serde_json::json!({ "kind": "graph" }),
+            Transport::Pop3 { pop3, smtp, auth, leave_on_server, delete_after_days, .. } => serde_json::json!({
+                "kind": "pop3",
+                "pop3": format!("{}:{} {:?}", pop3.host, pop3.port, pop3.security),
+                "smtp": format!("{}:{} {:?}", smtp.host, smtp.port, smtp.security),
+                "auth": auth_name(auth),
+                "leave_on_server": leave_on_server,
+                "delete_after_days": delete_after_days,
+            }),
         };
         accounts.push(AccountReport {
             id: a.id,

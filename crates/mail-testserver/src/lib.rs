@@ -6,7 +6,9 @@
 //! inbox when it is one of the recipients.
 //!
 //! The same mailboxes are served over JMAP (RFC 8620/8621, with EventSource push) and an
-//! identity provider for OAuth sign-ins (XOAUTH2 on IMAP and SMTP) on the control port.
+//! identity provider for OAuth sign-ins (XOAUTH2 on IMAP and SMTP) on the control port; the
+//! inbox also over POP3. A ManageSieve server keeps uploaded rules, and the control port serves
+//! an OpenAI-compatible AI provider (`/ai/v1/…`) and a CardDAV address book (`/dav/…`).
 //!
 //! A small HTTP control port lets a test deliver mail, look at the server's state, read what
 //! was sent, make commands fail and take the server offline and back. It listens on loopback
@@ -15,6 +17,8 @@
 mod control;
 mod imap;
 mod jmap;
+mod pop3;
+mod sieve;
 mod smtp;
 
 use std::io;
@@ -48,6 +52,8 @@ pub struct Options {
     pub imap_port: u16,
     pub smtp_port: u16,
     pub control_port: u16,
+    pub pop3_port: u16,
+    pub sieve_port: u16,
     /// JMAP with push (EventSource); without it clients poll.
     pub jmap_push: bool,
 }
@@ -63,6 +69,8 @@ impl Default for Options {
             imap_port: 0,
             smtp_port: 0,
             control_port: 0,
+            pop3_port: 0,
+            sieve_port: 0,
             jmap_push: true,
         }
     }
@@ -115,6 +123,14 @@ pub struct Shared {
     pub jmap: Mutex<mail_core::jmap::fake::FakeJmapState>,
     /// Requests to the senders' web addresses (`control.rs`).
     pub web: Mutex<Vec<WebRequest>>,
+    /// The AI provider of the control port (`/ai/v1/…`).
+    pub ai: Mutex<mail_core::ai::fake::FakeAi>,
+    /// The ManageSieve server's scripts.
+    pub sieve: Mutex<mail_core::sieve::fake::FakeSieve>,
+    /// The CardDAV address book of the control port (`/dav/…`).
+    pub carddav: Mutex<mail_core::carddav::fake::FakeCardDav>,
+    /// POP3 sessions so far.
+    pub pop3_sessions: Mutex<u32>,
 }
 
 impl Shared {
@@ -160,6 +176,8 @@ pub struct Running {
     pub imaps: Option<u16>,
     pub smtps: Option<u16>,
     pub control: u16,
+    pub pop3: u16,
+    pub sieve: u16,
     /// The SHA-256 fingerprint of the certificate (with `tls`).
     pub fingerprint: Option<String>,
     pub shared: Arc<Shared>,
@@ -190,6 +208,8 @@ async fn listen(port: u16) -> io::Result<(TcpListener, u16)> {
 enum Kind {
     Imap,
     Smtp,
+    Pop3,
+    Sieve,
 }
 
 fn serve(listener: TcpListener, shared: Arc<Shared>, kind: Kind, implicit_tls: bool) {
@@ -220,6 +240,12 @@ fn serve(listener: TcpListener, shared: Arc<Shared>, kind: Kind, implicit_tls: b
                     match kind {
                         Kind::Imap => imap::session(io, shared.clone(), implicit_tls).await,
                         Kind::Smtp => smtp::session(io, shared.clone(), implicit_tls).await,
+                        Kind::Pop3 => {
+                            let _ = pop3::session(io, shared.clone()).await;
+                        }
+                        Kind::Sieve => {
+                            let _ = sieve::session(io, shared.clone()).await;
+                        }
                     }
                 };
                 tokio::select! {
@@ -271,10 +297,18 @@ pub async fn start(opts: Options) -> io::Result<Running> {
         smtp_8bitmime: Mutex::new(true),
         jmap: Mutex::new(mail_core::jmap::fake::FakeJmapState::new(&opts.user, opts.jmap_push)),
         web: Mutex::new(vec![]),
+        ai: Mutex::new(mail_core::ai::fake::FakeAi::default()),
+        sieve: Mutex::new(mail_core::sieve::fake::FakeSieve::new(&opts.user, &opts.password)),
+        carddav: Mutex::new(mail_core::carddav::fake::FakeCardDav::new(&opts.user, &opts.password)),
+        pop3_sessions: Mutex::new(0),
     });
     let (imap_l, imap) = listen(opts.imap_port).await?;
     let (smtp_l, smtp) = listen(opts.smtp_port).await?;
     let (control_l, control) = listen(opts.control_port).await?;
+    let (pop3_l, pop3) = listen(opts.pop3_port).await?;
+    let (sieve_l, sieve) = listen(opts.sieve_port).await?;
+    serve(pop3_l, shared.clone(), Kind::Pop3, false);
+    serve(sieve_l, shared.clone(), Kind::Sieve, false);
     *shared.ports.lock().unwrap_or_else(|e| e.into_inner()) = (imap, smtp);
     serve(imap_l, shared.clone(), Kind::Imap, false);
     serve(smtp_l, shared.clone(), Kind::Smtp, false);
@@ -288,7 +322,7 @@ pub async fn start(opts: Options) -> io::Result<Running> {
         smtps = Some(p);
     }
     control::serve(control_l, shared.clone());
-    Ok(Running { imap, smtp, imaps, smtps, control, fingerprint, shared })
+    Ok(Running { imap, smtp, imaps, smtps, control, pop3, sieve, fingerprint, shared })
 }
 
 /// The TLS acceptor of a server, for STARTTLS.

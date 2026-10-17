@@ -39,6 +39,13 @@ pub const MS_SCOPES: &[&str] = &[
     "profile",
 ];
 
+/// Microsoft Graph, for what IMAP does not offer: the inbox rules (MailboxSettings.ReadWrite)
+/// and the contacts with their pictures (Contacts.Read). Asked for consent together with
+/// [`MS_SCOPES`] (a token is for one resource, so these come with their own refresh,
+/// [`graph_config`]).
+pub const MS_GRAPH_SCOPES: &[&str] =
+    &["https://graph.microsoft.com/MailboxSettings.ReadWrite", "https://graph.microsoft.com/Contacts.Read"];
+
 /// The redirect of the Android and iOS apps (registered in the Entra app as a mobile redirect
 /// URI; used from milestone 3 on, docs/microsoft.md).
 pub const MOBILE_REDIRECT: &str = "de.mousewerk.arcalo.mail://oauth";
@@ -57,6 +64,9 @@ pub struct OAuthConfig {
     pub authorize_url: String,
     pub token_url: String,
     pub scopes: Vec<String>,
+    /// Scopes of another resource asked for consent in the same sign-in, not part of its tokens
+    /// (Microsoft issues a token for one resource at a time).
+    pub extra_consent: Vec<String>,
 }
 
 /// The client id compiled into this build (`ARCALO_MAIL_MS_CLIENT_ID` at build time).
@@ -102,7 +112,15 @@ pub fn microsoft() -> Option<OAuthConfig> {
         authorize_url: format!("{authority}/authorize"),
         token_url: format!("{authority}/token"),
         scopes: MS_SCOPES.iter().map(|s| s.to_string()).collect(),
+        extra_consent: MS_GRAPH_SCOPES.iter().map(|s| s.to_string()).collect(),
     })
+}
+
+/// The configuration for Graph tokens from the same refresh token: Graph's scopes only.
+pub fn graph_config(cfg: &OAuthConfig) -> OAuthConfig {
+    let mut scopes = vec!["offline_access".to_string()];
+    scopes.extend(MS_GRAPH_SCOPES.iter().map(|s| s.to_string()));
+    OAuthConfig { scopes, extra_consent: vec![], ..cfg.clone() }
 }
 
 /// The configuration of a provider, or why there is none.
@@ -222,7 +240,7 @@ fn get<'a>(pairs: &'a [(String, String)], key: &str) -> Option<&'a str> {
 
 /// The address the browser opens.
 pub fn authorize_url(cfg: &OAuthConfig, redirect_uri: &str, pkce: &Pkce, state: &str, login_hint: &str) -> String {
-    let scope = cfg.scopes.join(" ");
+    let scope = cfg.scopes.iter().chain(&cfg.extra_consent).cloned().collect::<Vec<_>>().join(" ");
     let mut pairs = vec![
         ("client_id", cfg.client_id.as_str()),
         ("response_type", "code"),
@@ -561,6 +579,7 @@ mod tests {
             authorize_url: format!("http://127.0.0.1:{port}/oauth/authorize"),
             token_url: format!("http://127.0.0.1:{port}/oauth/token"),
             scopes: MS_SCOPES.iter().map(|s| s.to_string()).collect(),
+            extra_consent: vec![],
         }
     }
 
@@ -595,6 +614,15 @@ mod tests {
             assert!(url.contains(part), "{part} in {url}");
         }
         assert_eq!(form_decode("a=b+c&d=%C3%A4%2F"), vec![("a".into(), "b c".into()), ("d".into(), "ä/".into())]);
+        // Graph's scopes are asked for consent in the same sign-in, and get tokens of their own.
+        let with_graph =
+            OAuthConfig { extra_consent: MS_GRAPH_SCOPES.iter().map(|s| s.to_string()).collect(), ..cfg(1) };
+        let url = authorize_url(&with_graph, "http://127.0.0.1:5000", &p, "st", "");
+        assert!(url.contains("profile+https%3A%2F%2Fgraph.microsoft.com%2FMailboxSettings.ReadWrite"), "{url}");
+        let g = graph_config(&with_graph);
+        assert!(g.extra_consent.is_empty());
+        assert!(g.scopes.contains(&"https://graph.microsoft.com/Contacts.Read".to_string()));
+        assert!(!g.scopes.iter().any(|s| s.contains("outlook.office.com")), "one resource per token");
     }
 
     #[test]

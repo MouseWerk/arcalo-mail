@@ -54,6 +54,17 @@ pub enum Service {
     UpdateFeed,
     /// A newsletter's one-click unsubscribe address (RFC 8058), only when the user asks.
     Unsubscribe,
+    /// POP3 (RFC 1939) accounts.
+    Pop3,
+    /// ManageSieve (RFC 5804): the server's filter rules.
+    Sieve,
+    /// An AI provider the user set up (`ai`): a local one (Ollama, LM Studio) on this computer,
+    /// or a cloud provider the user added.
+    Ai,
+    /// Address books: CardDAV servers and Microsoft's contacts.
+    Contacts,
+    /// Profile pictures: a sender's BIMI logo, Gravatar when switched on.
+    Pictures,
 }
 
 /// Opening the TCP connection and the TLS handshake together.
@@ -430,7 +441,7 @@ pub enum ProxyMode {
 pub const DEFAULT_PROFILE: &str = "standard";
 
 /// The service groups that can be routed through a profile of their own.
-pub const ROUTE_GROUPS: &[&str] = &["mail", "sign_in", "setup", "updates"];
+pub const ROUTE_GROUPS: &[&str] = &["mail", "sign_in", "setup", "updates", "ai"];
 
 /// A named way out („Firma“, „Zuhause“): a proxy and its exceptions. The proxy password lives
 /// in the credential store ([`proxy_password_key`]).
@@ -482,7 +493,16 @@ impl Service {
     /// The route group of a service ([`ROUTE_GROUPS`]).
     pub fn group(self) -> &'static str {
         match self {
-            Service::Imap | Service::Smtp | Service::Jmap | Service::Graph | Service::Unsubscribe => "mail",
+            Service::Imap
+            | Service::Smtp
+            | Service::Jmap
+            | Service::Graph
+            | Service::Unsubscribe
+            | Service::Pop3
+            | Service::Sieve
+            | Service::Contacts
+            | Service::Pictures => "mail",
+            Service::Ai => "ai",
             Service::OAuthMicrosoft | Service::OAuthGoogle => "sign_in",
             Service::Autoconfig => "setup",
             Service::UpdateFeed => "updates",
@@ -878,7 +898,7 @@ pub fn route_for(service: Service, host: &str) -> Via {
     let cfg = CONFIG.read().unwrap_or_else(|e| e.into_inner());
     let (settings, passwords) = cfg.clone().unwrap_or_default();
     let profile = settings.profile_for(service);
-    let socket = matches!(service, Service::Imap | Service::Smtp);
+    let socket = matches!(service, Service::Imap | Service::Smtp | Service::Pop3 | Service::Sieve);
     let system = if profile.mode == ProxyMode::System { system_proxy() } else { SystemProxy::default() };
     route(&profile, passwords.get(&profile.id).map(String::as_str), &system, host, socket)
 }
@@ -1225,6 +1245,88 @@ pub async fn connect_imap(server: &Server) -> Result<ImapTransport> {
     }
 }
 
+/// A POP3 connection (RFC 1939, RFC 2595 `STLS`), encrypted as the server setting says;
+/// `greeted`: the `+OK` greeting was read already (STLS).
+pub type Pop3Transport = ImapTransport;
+
+/// Connects to a POP3 server: TLS from the first byte (995), or `STLS` before the login (110);
+/// plain text only to this computer.
+pub async fn connect_pop3(server: &Server) -> Result<Pop3Transport> {
+    check_server(server)?;
+    let mut tcp = tcp(server, Service::Pop3).await?;
+    match server.security {
+        Security::Plain => {
+            Ok(ImapTransport { stream: MailStream { inner: Inner::Plain(tcp), prelude: vec![] }, greeted: false })
+        }
+        Security::Tls => {
+            let s = tls(tcp, server).await?;
+            Ok(ImapTransport { stream: MailStream { inner: Inner::Tls(Box::new(s)), prelude: vec![] }, greeted: false })
+        }
+        Security::StartTls => {
+            {
+                let mut r = BufReader::new(&mut tcp);
+                let greeting = line(&mut r).await?;
+                if !greeting.starts_with("+OK") {
+                    return Err(Problem::Protocol { detail: greeting.trim().to_string() }.into());
+                }
+            }
+            send(&mut tcp, "STLS\r\n").await?;
+            let ok = {
+                let mut r = BufReader::new(&mut tcp);
+                line(&mut r).await?
+            };
+            if !ok.starts_with("+OK") {
+                return Err(no_starttls(&server.host).into());
+            }
+            let s = tls(tcp, server).await?;
+            Ok(ImapTransport { stream: MailStream { inner: Inner::Tls(Box::new(s)), prelude: vec![] }, greeted: true })
+        }
+    }
+}
+
+/// Connects to a ManageSieve server (RFC 5804, port 4190): STARTTLS after the first capability
+/// list, TLS from the first byte, or plain text to this computer only. In every case the
+/// client reads a capability list first (the server sends it again after STARTTLS).
+pub async fn connect_sieve(server: &Server) -> Result<MailStream> {
+    check_server(server)?;
+    let mut tcp = tcp(server, Service::Sieve).await?;
+    match server.security {
+        Security::Plain => Ok(MailStream { inner: Inner::Plain(tcp), prelude: vec![] }),
+        Security::Tls => Ok(MailStream { inner: Inner::Tls(Box::new(tls(tcp, server).await?)), prelude: vec![] }),
+        Security::StartTls => {
+            let mut starttls = false;
+            loop {
+                let l = {
+                    let mut r = BufReader::new(&mut tcp);
+                    line(&mut r).await?
+                };
+                let upper = l.trim().to_ascii_uppercase();
+                if upper.starts_with("\"STARTTLS\"") {
+                    starttls = true;
+                }
+                if upper.starts_with("OK") {
+                    break;
+                }
+                if upper.starts_with("NO") || upper.starts_with("BYE") {
+                    return Err(Problem::Protocol { detail: l.trim().to_string() }.into());
+                }
+            }
+            if !starttls {
+                return Err(no_starttls(&server.host).into());
+            }
+            send(&mut tcp, "STARTTLS\r\n").await?;
+            let ok = {
+                let mut r = BufReader::new(&mut tcp);
+                line(&mut r).await?
+            };
+            if !ok.trim().to_ascii_uppercase().starts_with("OK") {
+                return Err(no_starttls(&server.host).into());
+            }
+            Ok(MailStream { inner: Inner::Tls(Box::new(tls(tcp, server).await?)), prelude: vec![] })
+        }
+    }
+}
+
 /// Reads an SMTP reply (`250-…` lines up to `250 …`); returns the code and the lines.
 async fn smtp_reply(tcp: &mut TcpStream) -> std::result::Result<(u16, Vec<String>), Problem> {
     let mut r = BufReader::new(tcp);
@@ -1448,6 +1550,29 @@ pub async fn mx(domain: &str) -> Result<Vec<String>> {
         .collect();
     out.sort();
     Ok(out.into_iter().map(|(_, h)| h).collect())
+}
+
+/// The TXT records of a name, each one's strings joined (BIMI's `default._bimi.<domain>`,
+/// DMARC's `_dmarc.<domain>`); empty when there is none.
+pub async fn txt(name: &str) -> Result<Vec<String>> {
+    use hickory_resolver::proto::rr::{RData, RecordType};
+    let r = resolver()?;
+    let Ok(lookup) = tokio::time::timeout(Duration::from_secs(5), r.lookup(name, RecordType::TXT))
+        .await
+        .map_err(|_| Error::Network("DNS".into()))?
+    else {
+        return Ok(vec![]);
+    };
+    Ok(lookup
+        .answers()
+        .iter()
+        .filter_map(|rec| match &rec.data {
+            RData::TXT(t) => {
+                Some(t.txt_data.iter().map(|part| String::from_utf8_lossy(part).into_owned()).collect::<String>())
+            }
+            _ => None,
+        })
+        .collect())
 }
 
 #[cfg(test)]

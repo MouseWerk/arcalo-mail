@@ -4,7 +4,8 @@
 //! ```text
 //! arcalo-mail-testserver [--user maria@example.org] [--password secret] [--tls]
 //!     [--without qresync,condstore,move,uidplus,idle,special_use] [--files-sent]
-//!     [--imap-port N] [--smtp-port N] [--control-port N] [--no-jmap-push]
+//!     [--imap-port N] [--smtp-port N] [--control-port N] [--pop3-port N] [--sieve-port N]
+//!     [--no-jmap-push]
 //! ```
 
 use mail_testserver::{Options, start};
@@ -23,6 +24,8 @@ fn main() {
             "--imap-port" => opts.imap_port = value().parse().unwrap_or(0),
             "--smtp-port" => opts.smtp_port = value().parse().unwrap_or(0),
             "--control-port" => opts.control_port = value().parse().unwrap_or(0),
+            "--pop3-port" => opts.pop3_port = value().parse().unwrap_or(0),
+            "--sieve-port" => opts.sieve_port = value().parse().unwrap_or(0),
             "--without" => {
                 for cap in value().split(',') {
                     match cap.trim() {
@@ -53,6 +56,8 @@ fn main() {
                 "imaps": s.imaps,
                 "smtps": s.smtps,
                 "control": s.control,
+                "pop3": s.pop3,
+                "sieve": s.sieve,
                 "fingerprint": s.fingerprint,
             })
         );

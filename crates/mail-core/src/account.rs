@@ -86,6 +86,24 @@ pub enum Transport {
     Graph,
     /// A JMAP session resource (RFC 8620), `https://` only.
     Jmap { session_url: String, username: String, auth: Auth },
+    /// POP3 (RFC 1939) for reading, SMTP for sending; the folders live in the app
+    /// ([`crate::pop3`]).
+    Pop3 {
+        pop3: Server,
+        smtp: Server,
+        username: String,
+        auth: Auth,
+        /// Keep the messages on the server after downloading them.
+        #[serde(default = "keep")]
+        leave_on_server: bool,
+        /// With `leave_on_server`: remove them from the server this many days after the download.
+        #[serde(default)]
+        delete_after_days: Option<u32>,
+    },
+}
+
+fn keep() -> bool {
+    true
 }
 
 /// An account as stored (`accounts` table).
@@ -219,6 +237,21 @@ pub fn validate(draft: &AccountDraft) -> Result<()> {
             };
             if !fits {
                 return Err(mismatch());
+            }
+        }
+        (Provider::Imap, Transport::Pop3 { pop3, smtp, username, auth, delete_after_days, .. }) => {
+            if username.trim().is_empty() {
+                return Err(Error::Invalid(tr!("Der Benutzername fehlt.", "The user name is missing.").into()));
+            }
+            crate::network::check_server(pop3)?;
+            crate::network::check_server(smtp)?;
+            if *auth != Auth::Password {
+                return Err(mismatch());
+            }
+            if *delete_after_days == Some(0) {
+                return Err(Error::Invalid(
+                    tr!("Die Tage bis zum Löschen fehlen.", "The days until removal are missing.").into(),
+                ));
             }
         }
         (Provider::Microsoft, Transport::Graph) => {}

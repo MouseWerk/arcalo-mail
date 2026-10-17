@@ -419,6 +419,11 @@ async fn apply<C: Connector>(ctx: &Ctx<C>, conn: &mut C::Imap, id: i64, op: &Op)
             }
             Ok(vec![mailbox.clone()])
         }
+        Op::Keyword { mailbox, uids, keyword, add } => {
+            conn.select(mailbox, None).await?;
+            conn.store(uids, &[keyword.as_str()], *add).await?;
+            Ok(vec![mailbox.clone()])
+        }
         Op::Move { from, to, uids, ids } => {
             conn.select(from, None).await?;
             conn.move_to(uids, to).await?;
@@ -537,8 +542,29 @@ async fn sync_round<C: Connector>(ctx: &Ctx<C>, conn: &mut C::Imap, caps: Capabi
                 ctx.notice(Notice::Changed { account_id: ctx.account_id, mailboxes: vec![id] });
             }
         }
-        if Some(id) == inbox && !r.new_unread.is_empty() {
-            ctx.notice(Notice::NewMail { account_id: ctx.account_id, messages: r.new_unread });
+        let mut new_unread = r.new_unread;
+        if Some(id) == inbox && !r.new.is_empty() {
+            // The local rules first: what they move away or mark read is no news.
+            match crate::rules::run_new(&ctx.store, ctx.account_id, &r.new) {
+                Ok(ran) if ran.matched > 0 => {
+                    new_unread.retain(|m| !ran.removed.contains(m));
+                    let still_unread: Vec<i64> =
+                        ctx.store.summaries(&new_unread)?.into_iter().filter(|s| !s.seen).map(|s| s.id).collect();
+                    new_unread = still_unread;
+                    ctx.notice(Notice::Changed { account_id: ctx.account_id, mailboxes: vec![id] });
+                }
+                Ok(_) => {}
+                Err(e) => crate::diag::log("rules", &format!("account {}: {e}", ctx.account_id)),
+            }
+            if settings.ai.on()
+                && settings.ai.priority
+                && let Err(e) = crate::ai::priority::mark_new(&ctx.store, &r.new)
+            {
+                crate::diag::log("priority", &e.to_string());
+            }
+        }
+        if Some(id) == inbox && !new_unread.is_empty() {
+            ctx.notice(Notice::NewMail { account_id: ctx.account_id, messages: new_unread });
         }
     }
     // The first lines for the list, the text for search, reading offline: the inbox first,
@@ -976,6 +1002,21 @@ pub async fn check_account(transport: &Transport, password: &str) -> CheckResult
 
 /// [`check_account`] with a password or an OAuth access token.
 pub async fn check_account_with(transport: &Transport, credential: &Credential) -> CheckResult {
+    if let (Transport::Pop3 { pop3, smtp, username, .. }, Credential::Password(password)) = (transport, credential) {
+        let (p, s) =
+            tokio::join!(crate::pop3::check(pop3, username, password), smtp::check_with(smtp, username, credential));
+        let mut out = CheckResult { imap: None, smtp: None, error: None, folders: 0 };
+        match p {
+            Ok(_) => out.folders = 1,
+            Err(e) => (out.imap, out.error) = as_problem(e),
+        }
+        if let Err(e) = s {
+            let (p, err) = as_problem(e);
+            out.smtp = p;
+            out.error = out.error.or(err);
+        }
+        return out;
+    }
     let Transport::Imap { imap, smtp, username, .. } = transport else {
         return CheckResult {
             imap: None,
@@ -1140,6 +1181,53 @@ mod tests {
         // A refused sign-in is the caller's to report.
         *s.mail.refuse.lock().unwrap() = Some(Problem::Auth { detail: "no".into() });
         assert!(check_once(s.account, Store::open(&s.db).unwrap(), connector()).await.is_err());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn rules_run_on_new_mail_and_what_they_move_is_no_news() {
+        use crate::rules::{self, Action, Condition, Field, Op, Place, Rule, RuleBody};
+        let s = setup("rules");
+        rules::save(
+            &s.store,
+            &Rule {
+                id: 0,
+                account_id: None,
+                name: "Shop".into(),
+                place: Place::Local,
+                enabled: true,
+                position: 0,
+                body: RuleBody {
+                    match_all: true,
+                    conditions: vec![Condition { field: Field::Subject, op: Op::Contains, value: "Rechnung".into() }],
+                    actions: vec![Action::MarkRead, Action::Move { folder: "Rechnungen".into() }],
+                    stop: false,
+                },
+                server_ref: None,
+            },
+        )
+        .unwrap();
+        let _w = s.start();
+        s.until("first sync", |s| s.status() == Some(Status::Ready)).await;
+        s.server.with(|f| f.deliver("INBOX", &sample("r@x", "Ihre Rechnung", None, "42 Euro"), 1_760_000_100));
+        s.server.with(|f| f.deliver("INBOX", &sample("p@x", "Hallo", None, "x"), 1_760_000_101));
+        s.until("new mail", |s| s.notices.lock().unwrap().iter().any(|n| matches!(n, Notice::NewMail { .. }))).await;
+        let told: Vec<i64> = s
+            .notices
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|n| match n {
+                Notice::NewMail { messages, .. } => Some(messages.clone()),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        let subjects: Vec<String> = s.store.summaries(&told).unwrap().into_iter().map(|m| m.subject).collect();
+        assert_eq!(subjects, ["Hallo"], "the bill went into its folder without a notification");
+        s.until("moved on the server", |s| {
+            s.server.with(|f| f.mailboxes.get("Rechnungen").is_some_and(|m| m.messages.values().any(|x| x.flags.seen)))
+        })
+        .await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
