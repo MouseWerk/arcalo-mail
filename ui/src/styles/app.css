@@ -4465,3 +4465,8 @@ button.rule-text:hover {
 .acct-chip-mark[data-color="6"] {
   background: var(--account-6);
 }
+/* Sheets whose content arrives in parts (a contact's mails and files) stand at their full
+   height from the start: the header and its close button do not move under the finger. */
+:root[data-layout="phone"] .dialog.contact-card {
+  height: calc(var(--app-h, 100dvh) - var(--safe-top) - var(--sp-6));
+}

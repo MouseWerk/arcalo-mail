@@ -22,9 +22,11 @@ before(async () => {
     const s = await startServer({ user });
     servers.push(s);
     for (let k = 0; k <= i; k++) {
-      await s.deliver(message({ to: user, subject: `${name}: Post ${k + 1}`, body: `Gemeinsames Stichwort Zugfahrt ${name}.` }), { date: now - 600 + i * 60 + k });
+      const at = now - 600 + i * 60 + k;
+      await s.deliver(message({ to: user, subject: `${name}: Post ${k + 1}`, body: `Gemeinsames Stichwort Zugfahrt ${name}.`, date: new Date(at * 1000) }), { date: at });
     }
-    await s.deliver(message({ from: user, to: "lea@example.org", subject: `${name}: gesendet`, body: "Gesendet." }), { mailbox: "Sent", seen: true, date: now - 900 + i });
+    const sentAt = now - 900 + i * 60;
+    await s.deliver(message({ from: user, to: "lea@example.org", subject: `${name}: gesendet`, body: "Gesendet.", date: new Date(sentAt * 1000) }), { mailbox: "Sent", seen: true, date: sentAt });
   }
   app = await launch();
   for (const [i, s] of servers.entries()) ids.push((await addAccount(app, s, { name: NAMES[i] })).id);
