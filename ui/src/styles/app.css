@@ -4264,3 +4264,17 @@ button.rule-text:hover {
 .settings .setup {
   padding: 0;
 }
+/* Low: the fields scroll away with the text, the app bar stays. */
+.app[data-short] .compose[data-phone] {
+  overflow-y: auto;
+}
+.app[data-short] .compose-bar {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--bg-overlay);
+}
+.app[data-short] .compose[data-phone] .compose-body-wrap {
+  flex: 1 0 auto;
+  min-height: calc(var(--app-h, 100dvh) - var(--toolbar-h) - var(--safe-top));
+}

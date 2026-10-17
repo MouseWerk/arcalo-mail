@@ -593,8 +593,9 @@ export function ComposeSheet({ draft, accounts, error, sending, saved, modal, ph
   const helpItems = (): MenuItem[] => (Object.keys(STYLE) as WritingStyle[]).map((s) => ({ label: t(STYLE[s]), onSelect: () => writingHelp(s) }));
   const canProtect = !!(abilities?.pgp_sign || abilities?.smime_sign || abilities?.pgp_encrypt || abilities?.smime_encrypt || protect);
   /** A phone's „more“ sheet: what the desktop's footer offers, each opening its own sheet. */
+  const moreAt = useRef({ x: 0, y: 0 });
   const moreItems = (): MenuItem[] => {
-    const open = (items: () => MenuItem[]) => () => setMenu({ items: items(), at: { x: 0, y: 0 } });
+    const open = (items: () => MenuItem[]) => () => setMenu({ items: items(), at: moreAt.current });
     const items: MenuItem[] = [
       { label: t("compose.sendLater"), icon: <Send size={16} strokeWidth={1.75} aria-hidden />, disabled: sending || draft.accountId == null, onSelect: open(laterItems) },
       { label: remind != null ? t("compose.remindSet", { n: remind }) : t("compose.remind"), icon: <AlarmClock size={16} strokeWidth={1.75} aria-hidden />, onSelect: open(remindItems) },
@@ -664,7 +665,19 @@ export function ComposeSheet({ draft, accounts, error, sending, saved, modal, ph
           <button type="button" className="icon-btn compose-send" onClick={() => onSend(followupSecs)} disabled={sending || draft.accountId == null} aria-label={t("compose.send")}>
             {sending ? <Spinner /> : <Send size={18} strokeWidth={1.75} aria-hidden />}
           </button>
-          <button type="button" className="icon-btn" aria-haspopup="menu" aria-label={t("read.more")} data-compose="more" onClick={() => setMenu({ items: moreItems(), at: { x: 0, y: 0 } })}>
+          <button
+            type="button"
+            className="icon-btn"
+            aria-haspopup="menu"
+            aria-label={t("read.more")}
+            data-compose="more"
+            onClick={(e) => {
+              // Below the button where a menu is a popover (a phone in landscape); a phone shows a sheet.
+              const r = e.currentTarget.getBoundingClientRect();
+              moreAt.current = { x: r.right, y: r.bottom + 4 };
+              setMenu({ items: moreItems(), at: moreAt.current });
+            }}
+          >
             <MoreHorizontal size={20} strokeWidth={1.75} aria-hidden />
           </button>
         </header>
