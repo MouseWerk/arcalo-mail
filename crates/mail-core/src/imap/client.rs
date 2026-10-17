@@ -394,14 +394,16 @@ impl ImapSession {
     }
 
     /// Reads the next reply. Cancel-safe: bytes are only taken from the socket when a read
-    /// completes, so IDLE can wait on it next to a timer.
+    /// completes (`read_buf`), so IDLE can wait on it next to a timer.
     async fn read_reply(&mut self, timeout: Duration) -> Result<Reply> {
         loop {
             if let Some(r) = self.parse_buffered()? {
                 return Ok(r);
             }
-            let mut tmp = [0u8; 16 * 1024];
-            let n = match tokio::time::timeout(timeout, self.stream.read(&mut tmp)).await {
+            // Straight into the buffer: a read buffer on the stack would be part of every
+            // command's future, and those nest deep in a sync.
+            self.buf.reserve(16 * 1024);
+            let n = match tokio::time::timeout(timeout, self.stream.read_buf(&mut self.buf)).await {
                 Err(_) => return Err(Problem::Timeout { host: self.host.clone(), port: 0 }.into()),
                 Ok(Err(e)) => return Err(network::io_problem(&e).into()),
                 Ok(Ok(n)) => n,
@@ -411,7 +413,6 @@ impl ImapSession {
                     Problem::Protocol { detail: tr!("Verbindung geschlossen", "connection closed").into() }.into()
                 );
             }
-            self.buf.extend_from_slice(&tmp[..n]);
         }
     }
 
