@@ -4300,3 +4300,72 @@ button.rule-text:hover {
   align-self: center;
   min-height: var(--touch-row);
 }
+
+/* ---- the app's date and time picker (TimeMenus.tsx) */
+
+.dt-picker {
+  display: grid;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-3);
+}
+.dt-month {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.dt-month-name {
+  font-weight: var(--fw-semibold);
+}
+.dt-grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: var(--sp-half);
+}
+.dt-weekday {
+  padding: var(--sp-1) 0;
+  color: var(--text-3);
+  font-size: var(--fs-xs);
+  text-align: center;
+}
+.dt-day {
+  height: var(--ctl-md);
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.dt-day:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+.dt-day[data-other] {
+  color: var(--text-3);
+}
+.dt-day[data-today] {
+  font-weight: var(--fw-semibold);
+}
+/* The chosen day: a neutral tint and weight, as every current item. */
+.dt-day[aria-pressed="true"] {
+  background: var(--bg-current);
+  box-shadow: var(--current-ring);
+  font-weight: var(--fw-semibold);
+}
+.dt-day:disabled {
+  opacity: 0.35;
+}
+:root[data-touch] .dt-day {
+  height: var(--touch-min);
+}
+.dt-time {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  color: var(--text-3);
+}
+.dt-time .select {
+  width: auto;
+}
+/* Touch screens pick with the fingers; the typed field is for keyboards. */
+:root[data-touch] .when-typed {
+  display: none;
+}

@@ -1,7 +1,8 @@
 // Small building blocks shared by the views: dialogs, menus, switches, segmented controls.
 
 import { Check, X } from "lucide-react";
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from "react";
+import { Children, Fragment, isValidElement, useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from "react";
+import { createPortal } from "react-dom";
 import { useT } from "../lib/i18n";
 
 /** A modal dialog: a scrim, focus inside, Esc and the close button close it. */
@@ -273,6 +274,8 @@ export type MenuItem =
       hint?: string;
       /** A choice that is in effect (a check mark, `menuitemradio`). */
       checked?: boolean;
+      /** The value a choice of a `Select` stands for (data-value, for tests). */
+      value?: string;
     }
   | "separator"
   | { heading: string };
@@ -292,7 +295,7 @@ export function Menu({ items, at, onClose, label }: { items: MenuItem[]; at: { x
       const r = el.getBoundingClientRect();
       setPos({ x: Math.min(at.x, window.innerWidth - r.width - 8), y: Math.min(at.y, window.innerHeight - r.height - 8) });
     }
-    el.querySelector<HTMLElement>("[role^='menuitem']:not([disabled])")?.focus({ preventScroll: true });
+    (el.querySelector<HTMLElement>("[aria-checked='true']:not([disabled])") ?? el.querySelector<HTMLElement>("[role^='menuitem']:not([disabled])"))?.focus({ preventScroll: true });
   }, [at, sheet]);
   useEffect(() => {
     const close = (e: MouseEvent) => {
@@ -311,7 +314,9 @@ export function Menu({ items, at, onClose, label }: { items: MenuItem[]; at: { x
     const i = list.indexOf(document.activeElement as HTMLElement);
     list[(i + dir + list.length) % list.length]?.focus();
   };
-  return (
+  // On the page itself, above everything: inside a dialog it would be clipped by the dialog's
+  // scrolling body and drawn under its neighbours.
+  return createPortal(
     <>
       {sheet && <div className="sheet-scrim" aria-hidden />}
       <div
@@ -356,6 +361,7 @@ export function Menu({ items, at, onClose, label }: { items: MenuItem[]; at: { x
               aria-checked={it.checked}
               className={`menu-item${it.danger ? " menu-danger" : ""}`}
               disabled={it.disabled}
+              data-value={it.value}
               onClick={() => {
                 onClose();
                 it.onSelect();
@@ -369,6 +375,115 @@ export function Menu({ items, at, onClose, label }: { items: MenuItem[]; at: { x
           ),
         )}
       </div>
+    </>,
+    document.body,
+  );
+}
+
+/** What a `Select` hands to `onChange`: the shape of a `<select>`'s change event, so a field
+ *  reads `e.target.value` either way. */
+export type SelectChange = { target: { value: string } };
+
+type OptionProps = { value?: string | number; disabled?: boolean; children?: ReactNode };
+
+/** The `<option>` children of a `Select` (also inside arrays and fragments), as value and label. */
+function optionsOf(children: ReactNode): { value: string; label: string; disabled: boolean }[] {
+  const out: { value: string; label: string; disabled: boolean }[] = [];
+  const text = (n: ReactNode): string =>
+    n == null || typeof n === "boolean"
+      ? ""
+      : typeof n === "string" || typeof n === "number"
+        ? String(n)
+        : Array.isArray(n)
+          ? n.map(text).join("")
+          : isValidElement<{ children?: ReactNode }>(n)
+            ? text(n.props.children)
+            : "";
+  const walk = (n: ReactNode) =>
+    Children.forEach(n, (c) => {
+      if (!isValidElement(c)) return;
+      if (c.type === "option") {
+        const p = c.props as OptionProps;
+        const label = text(p.children);
+        out.push({ value: p.value === undefined ? label : String(p.value), label, disabled: !!p.disabled });
+      } else if (c.type === Fragment) walk((c.props as { children?: ReactNode }).children);
+    });
+  walk(children);
+  return out;
+}
+
+/**
+ * A choice from a list, drawn by the app instead of the system's `<select>` (whose stock
+ * dropdown does not match the app on Android, Windows or Linux): a field-like button that opens
+ * the choices as a menu, a sheet from the bottom edge on a phone. Takes `<option>` children and
+ * the props of a `<select>`.
+ */
+export function Select({
+  value,
+  onChange,
+  children,
+  className,
+  id,
+  disabled,
+  title,
+  "aria-label": ariaLabel,
+}: {
+  value: string | number;
+  onChange: (e: SelectChange) => void;
+  children: ReactNode;
+  className?: string;
+  id?: string;
+  disabled?: boolean;
+  title?: string;
+  "aria-label"?: string;
+}) {
+  const [at, setAt] = useState<{ x: number; y: number } | null>(null);
+  const ref = useRef<HTMLButtonElement>(null);
+  const options = optionsOf(children);
+  const current = options.find((o) => o.value === String(value));
+  const open = () => {
+    const r = ref.current?.getBoundingClientRect();
+    if (r) setAt({ x: r.left, y: r.bottom + 4 });
+  };
+  // The field's name: its aria-label, else the text of its <label for>.
+  const name = () => ariaLabel ?? (id && typeof document !== "undefined" ? document.querySelector(`label[for="${id}"]`)?.textContent ?? "" : "");
+  const sheet = typeof document !== "undefined" && document.documentElement.dataset.layout === "phone";
+  return (
+    <>
+      <button
+        ref={ref}
+        type="button"
+        id={id}
+        className={`${className ?? "select"} select-btn`}
+        role="combobox"
+        aria-haspopup="menu"
+        aria-expanded={at !== null}
+        aria-label={ariaLabel}
+        title={title}
+        disabled={disabled}
+        data-value={String(value)}
+        data-count={options.length}
+        onClick={open}
+        onKeyDown={(e) => {
+          if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+            e.preventDefault();
+            open();
+          }
+        }}
+      >
+        <span className="select-text">{current?.label ?? ""}</span>
+      </button>
+      {at && (
+        <Menu
+          at={at}
+          label={name()}
+          onClose={() => setAt(null)}
+          items={[
+            ...(sheet && name() ? [{ heading: name() }] : []),
+            ...options.map((o) => ({ label: o.label, value: o.value, disabled: o.disabled, checked: o.value === String(value), onSelect: () => onChange({ target: { value: o.value } }) })),
+          ]}
+        />
+      )}
     </>
   );
 }

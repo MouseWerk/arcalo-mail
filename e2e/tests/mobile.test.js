@@ -130,7 +130,7 @@ it("writes over the whole screen and opens the settings as pages", async () => {
   await clickText(app, ".settings-nav-item", "Lesen");
   await app.waitFor(".settings-main");
   assert.ok(!(await shown(".settings-nav")));
-  assert.ok(await shown('select[aria-label="Nach links wischen"]'), "the swipe settings");
+  assert.ok(await shown('.select-btn[aria-label="Nach links wischen"]'), "the swipe settings");
   await app.browser.back();
   await app.waitFor(".settings-nav");
   await app.browser.back();

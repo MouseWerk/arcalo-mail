@@ -615,3 +615,53 @@ kbd {
     animation: none !important;
   }
 }
+
+/* ---- the app's own select (components/ui.tsx): a field-like button with a chevron */
+
+.select-btn {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  font: inherit;
+  text-align: left;
+  cursor: default;
+}
+.select-btn .select-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.select-btn:disabled {
+  opacity: 0.6;
+}
+
+/* ---- touch screens: an app, not a web page
+
+   No grey flash where a finger taps, no selection handles on buttons and bars (the message,
+   its subject and every field stay selectable), and the focus ring only for the keyboard. */
+
+:root[data-touch] {
+  -webkit-tap-highlight-color: transparent;
+  -webkit-touch-callout: none;
+}
+:root[data-touch] body {
+  -webkit-user-select: none;
+  user-select: none;
+}
+:root[data-touch] :is(input, textarea, [contenteditable="true"], .message-subject, .message-from, .ai-text, .contact-email, .set-code, .protect-fingerprint, .dialog-detail) {
+  -webkit-user-select: text;
+  user-select: text;
+  -webkit-touch-callout: default;
+}
+:focus:not(:focus-visible) {
+  outline: none;
+}
+/* Phones scroll with their own overlay bars; the panes need none drawn. */
+:root[data-touch] * {
+  scrollbar-width: none;
+}
+:root[data-touch] ::-webkit-scrollbar {
+  display: none;
+}

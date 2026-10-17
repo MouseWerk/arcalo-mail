@@ -46,7 +46,7 @@ import { closeToast, runUndo, setUndo, showToast } from "./lib/toasts";
 import { displayName, now as clockNow, setClock } from "./lib/format";
 import { whenLabel } from "./lib/when";
 import { SHORT_MAX, backStep, isTouch, layoutFor } from "./lib/touch";
-import { applyTypeScale, onVisibility, tellSystemBars, watchViewport } from "./lib/viewport";
+import { applyTypeScale, onVisibility, tellNightMode, tellSystemBars, watchViewport } from "./lib/viewport";
 import type {
   AccountInfo,
   AppInfo,
@@ -278,7 +278,8 @@ export function App() {
     if (!settings) return;
     rememberSplash({ off: !settings.startup_animation, bg: cssHex("--bg-app"), ink: cssHex("--text"), seal: cssHex("--accent") });
     tellSystemBars(theme !== "light", cssHex("--bg-app"));
-  }, [settings?.startup_animation, theme]);
+    tellNightMode(settings.theme === "system" ? "system" : theme === "light" ? "light" : "dark");
+  }, [settings?.startup_animation, settings?.theme, theme]);
 
   const loadAccounts = useCallback(async () => {
     const list = await api.accounts();
@@ -336,6 +337,19 @@ export function App() {
     if (!touch) return;
     applyTypeScale(root);
     return watchViewport(root);
+  }, [touch]);
+
+  // Touch screens: a long press opens the app's own menus (a folder's) or selects text in a
+  // field; nothing else shows the WebView's stock context menu.
+  useEffect(() => {
+    if (!touch) return;
+    const onMenu = (e: MouseEvent) => {
+      if (e.defaultPrevented) return;
+      if ((e.target as Element | null)?.closest?.("input, textarea, [contenteditable='true']")) return;
+      e.preventDefault();
+    };
+    document.addEventListener("contextmenu", onMenu);
+    return () => document.removeEventListener("contextmenu", onMenu);
   }, [touch]);
 
   // The layout on <html> too: what the app shows outside its panes (the setup, menus as bottom

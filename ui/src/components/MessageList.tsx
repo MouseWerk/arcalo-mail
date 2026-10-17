@@ -331,6 +331,7 @@ export function MessageList(p: Props) {
             ref={p.searchRef}
             className="input search-input"
             type="search"
+            enterKeyHint="search"
             value={p.query}
             placeholder={t("list.search")}
             aria-label={t("list.searchLabel")}

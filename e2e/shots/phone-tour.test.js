@@ -304,7 +304,7 @@ for (const t of THEMES) {
       await mail.openView(app, L.calendar);
       await app.waitFor(".calv");
       await shot("calendar");
-      const views = await app.browser.execute(() => [...document.querySelectorAll(".calv-view-select option")].map((o) => o.value));
+      const views = ["day", "agenda", "month"];
       for (const v of views) {
         await mail.choose(app, ".calv-view-select", v);
         await shot(`calendar-${v}`);

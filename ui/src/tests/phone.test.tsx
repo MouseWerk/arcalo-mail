@@ -145,11 +145,11 @@ describe("a phone", () => {
   it("opens menus as sheets from the bottom, and Back closes the top one first", async () => {
     root().dataset.layout = "phone";
     const closed = vi.fn();
-    const el = await render(<Menu items={[{ label: "Eins", onSelect: () => {} }]} at={{ x: 300, y: 10 }} onClose={closed} label="Menü" />);
-    const menu = el.querySelector(".menu")!;
+    await render(<Menu items={[{ label: "Eins", onSelect: () => {} }]} at={{ x: 300, y: 10 }} onClose={closed} label="Menü" />);
+    const menu = document.querySelector(".menu")!;
     expect(menu.classList.contains("menu-sheet")).toBe(true);
     expect((menu as HTMLElement).style.top).toBe("");
-    expect(el.querySelector(".sheet-scrim")).not.toBeNull();
+    expect(document.querySelector(".sheet-scrim")).not.toBeNull();
     expect(openLayers()).toBe(1);
     expect(closeTopLayer()).toBe(true);
     expect(closed).toHaveBeenCalledTimes(1);

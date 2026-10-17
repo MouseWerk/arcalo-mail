@@ -71,7 +71,7 @@ import {
 } from "../lib/calendar";
 import type { CalendarRequest } from "../lib/calendar";
 import type { CalendarEvent, CalendarInfo, CalendarOverview, CalFields, CalUndo, Settings } from "../lib/types";
-import { ConfirmDialog, Segmented } from "./ui";
+import { ConfirmDialog, Segmented, Select } from "./ui";
 
 const VIEW_LABELS: Record<CalView, TKey> = { day: "calv.view.day", workweek: "calv.view.workweek", week: "calv.view.week", month: "calv.view.month", agenda: "calv.view.agenda" };
 const BUSY_LABELS: Record<CalendarEvent["busy"], TKey> = { free: "calv.busy.free", tentative: "calv.busy.tentative", busy: "calv.busy.busy", oof: "calv.busy.oof", elsewhere: "calv.busy.elsewhere" };
@@ -381,13 +381,13 @@ export function CalendarView({ settings, onSettings, onShowFolders, request, onR
           <div className="calv-views">
             <Segmented label={t("calv.view")} value={view} onChange={setView} options={viewOptions} />
           </div>
-          <select className="select select-sm calv-view-select" aria-label={t("calv.view")} value={view} onChange={(e) => setView(e.target.value as CalView)}>
+          <Select className="select select-sm calv-view-select" aria-label={t("calv.view")} value={view} onChange={(e) => setView(e.target.value as CalView)}>
             {viewOptions.map(([v, label]) => (
               <option key={v} value={v}>
                 {label}
               </option>
             ))}
-          </select>
+          </Select>
           <div className="calv-actions">
             <button type="button" className="btn btn-sm calv-new" onClick={newEntryNow} title={t("calv.newKey")}>
               <Plus size={14} strokeWidth={1.75} aria-hidden />
@@ -1080,12 +1080,12 @@ function WhenInputs({ start, end, onCommit }: { start: Date; end: Date; onCommit
         if (!e.currentTarget.contains(e.relatedTarget as Node | null)) commit();
       }}
     >
-      <input className="input date-input" inputMode="numeric" spellCheck={false} aria-label={t("entries.date")} value={date} onChange={(e) => setDate(e.target.value)} />
-      <input className="input time-input" inputMode="numeric" spellCheck={false} aria-label={t("entries.start")} value={from} onChange={(e) => setFrom(e.target.value)} />
+      <input className="input date-input" inputMode="numeric" spellCheck={false} autoCapitalize="off" autoCorrect="off" aria-label={t("entries.date")} value={date} onChange={(e) => setDate(e.target.value)} />
+      <input className="input time-input" inputMode="numeric" spellCheck={false} autoCapitalize="off" autoCorrect="off" aria-label={t("entries.start")} value={from} onChange={(e) => setFrom(e.target.value)} />
       <span className="muted" aria-hidden>
         –
       </span>
-      <input className="input time-input" inputMode="numeric" spellCheck={false} aria-label={t("entries.end")} value={to} onChange={(e) => setTo(e.target.value)} />
+      <input className="input time-input" inputMode="numeric" spellCheck={false} autoCapitalize="off" autoCorrect="off" aria-label={t("entries.end")} value={to} onChange={(e) => setTo(e.target.value)} />
     </div>
   );
 }
@@ -1160,13 +1160,13 @@ function EntryEditor({ draft, calendars, defaultCalendar, onChange, onClose, onC
       <section className="calv-detail-sec calv-entry-fields">
         <input className="input" value={location} placeholder={t("entries.locationPlaceholder")} aria-label={t("entries.location")} onChange={(e) => setLocation(e.target.value)} />
         {calendars.length > 1 && (
-          <select className="select" aria-label={t("entries.calendar")} value={target ?? ""} onChange={(e) => setTarget(Number(e.target.value))}>
+          <Select className="select" aria-label={t("entries.calendar")} value={target ?? ""} onChange={(e) => setTarget(Number(e.target.value))}>
             {calendars.map((c) => (
               <option key={c.id} value={c.id}>
                 {c.source_name && c.source_name !== c.name ? `${c.name} · ${c.source_name}` : c.name}
               </option>
             ))}
-          </select>
+          </Select>
         )}
         {draft.description && <p className="muted calv-entry-from">{draft.description}</p>}
       </section>

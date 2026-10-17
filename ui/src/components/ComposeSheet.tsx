@@ -33,7 +33,7 @@ import { fileSize } from "../lib/format";
 import { useAi } from "../lib/ai";
 import { matchSnippets, snippetQuery, today } from "../lib/snippets";
 import type { Abilities, Account, Contact, Destination, ProtectMethod, Template, WritingStyle } from "../lib/types";
-import { Menu, PromptDialog, Spinner, trapFocus, type MenuItem } from "./ui";
+import { Menu, PromptDialog, Select, Spinner, trapFocus, type MenuItem } from "./ui";
 import { followupItems, sendLaterItems } from "./TimeMenus";
 import { AiText, PrivacyLine } from "./Assistant";
 
@@ -225,6 +225,11 @@ function AddressField({
           ref={input}
           id={id}
           className="chip-input"
+          inputMode="email"
+          enterKeyHint="next"
+          autoCapitalize="off"
+          autoCorrect="off"
+          spellCheck={false}
           dir="auto"
           value={text}
           role="combobox"
@@ -693,13 +698,13 @@ export function ComposeSheet({ draft, accounts, error, sending, saved, modal, ph
         {accounts.length > 1 && (
           <div className="field">
             <label htmlFor="compose-from">{t("compose.from")}</label>
-            <select id="compose-from" className="select select-bare" value={draft.accountId ?? ""} onChange={(e) => set({ accountId: Number(e.target.value) })}>
+            <Select id="compose-from" className="select select-bare" value={draft.accountId ?? ""} onChange={(e) => set({ accountId: Number(e.target.value) })}>
               {accounts.map((a) => (
                 <option key={a.id} value={a.id}>
                   {a.sender_name ? `${a.sender_name} <${a.email}>` : a.email}
                 </option>
               ))}
-            </select>
+            </Select>
           </div>
         )}
         <AddressField
@@ -739,7 +744,7 @@ export function ComposeSheet({ draft, accounts, error, sending, saved, modal, ph
         {draft.showBcc && <AddressField label={t("compose.bcc")} values={draft.bcc} text={typing.bcc} onText={(v) => setTyping("bcc", v)} onChange={(bcc) => update({ bcc })} />}
         <div className="field">
           <label htmlFor="compose-subject">{t("compose.subject")}</label>
-          <input id="compose-subject" ref={subject} className="input input-bare" dir="auto" value={draft.subject} onChange={(e) => set({ subject: e.target.value })} />
+          <input id="compose-subject" ref={subject} className="input input-bare" dir="auto" enterKeyHint="next" autoCapitalize="sentences" value={draft.subject} onChange={(e) => set({ subject: e.target.value })} />
         </div>
       </div>
       <div

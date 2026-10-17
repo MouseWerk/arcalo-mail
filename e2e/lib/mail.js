@@ -134,17 +134,14 @@ export function localTime(secondsAhead) {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 }
 
-/** Chooses `value` in a `<select>` (an element or a selector) the way a person does. */
+/** Chooses `value` in one of the app's selects (an element or a selector) the way a person
+ *  does: a tap on the field, then on the choice in its menu. */
 export async function choose(app, select, value) {
   const el = typeof select === "string" ? await app.waitFor(select) : select;
-  await app.browser.execute(
-    (e, v) => {
-      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value").set.call(e, v);
-      e.dispatchEvent(new Event("change", { bubbles: true }));
-    },
-    el,
-    value,
-  );
+  await el.click();
+  const item = await app.waitFor(`.menu [data-value="${value}"]`);
+  await item.click();
+  await app.waitUntil(async () => (await el.getAttribute("data-value")) === String(value), 5000, `chose ${value}`);
 }
 
 /** Opens the settings at a section of their navigation. */

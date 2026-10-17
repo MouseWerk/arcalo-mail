@@ -623,6 +623,8 @@ export const de: Record<TKey, Msg> = {
   "when.yesterday": "Gestern, {time}",
   "when.custom": "Zeitpunkt wählen…",
   "when.label": "Datum und Uhrzeit",
+  "when.hour": "Stunde",
+  "when.minute": "Minute",
   "when.past": "Wähle einen Zeitpunkt in der Zukunft.",
   "when.remind": "Erinnern",
   "toast.pinned": "Angeheftet",

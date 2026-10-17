@@ -625,6 +625,8 @@ export const en = {
   "when.yesterday": "Yesterday, {time}",
   "when.custom": "Pick a time…",
   "when.label": "Date and time",
+  "when.hour": "Hour",
+  "when.minute": "Minute",
   "when.past": "Pick a time in the future.",
   "when.remind": "Remind me",
   "toast.pinned": "Pinned",

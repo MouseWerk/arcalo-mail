@@ -65,7 +65,7 @@ export function onVisibility(f: (visible: boolean) => void): () => void {
 
 /** The Android shell's side (SystemBars.kt): the bars' insets and the system's font size, and
  *  the page's theme for the bars' icons and the window behind the page. */
-type SystemBarsBridge = { insets?: () => string; setTheme?: (dark: boolean, background: string) => void };
+type SystemBarsBridge = { insets?: () => string; setTheme?: (dark: boolean, background: string) => void; setNightMode?: (mode: string) => void };
 const bridge = (): SystemBarsBridge | undefined => (typeof window === "undefined" ? undefined : (window as unknown as { ArcaloSystemBars?: SystemBarsBridge }).ArcaloSystemBars);
 
 /** Sent after the shell set new values (SystemBars.kt). */
@@ -101,4 +101,10 @@ export function readSystemBars(root: HTMLElement = document.documentElement): vo
 export function tellSystemBars(dark: boolean, background: string | undefined): void {
   const b = bridge();
   if (b?.setTheme && background) b.setTheme(dark, background);
+}
+
+/** Tells the shell the theme the user chose, for the system's splash at the next start:
+ *  „system“ follows the system, the others are light or dark (contrast is dark). */
+export function tellNightMode(choice: "system" | "light" | "dark"): void {
+  bridge()?.setNightMode?.(choice);
 }

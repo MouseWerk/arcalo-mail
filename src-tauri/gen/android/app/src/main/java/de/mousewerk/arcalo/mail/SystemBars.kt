@@ -1,9 +1,11 @@
 package de.mousewerk.arcalo.mail
 
 import android.app.Activity
+import android.app.UiModeManager
 import android.content.Context
 import android.graphics.Color
 import android.graphics.drawable.ColorDrawable
+import android.os.Build
 import android.view.View
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
@@ -106,6 +108,23 @@ class SystemBars(private val activity: Activity) {
         webView?.setBackgroundColor(color)
         lightIcons(!dark)
       }
+    }
+
+    /**
+     * The theme the user chose in the app: „system“, „light“ or „dark“. Android 12 and later draw
+     * their own splash before the app runs, in the app's night mode: from the next start on it
+     * follows the choice (the system's setting for „system“).
+     */
+    @JavascriptInterface
+    fun setNightMode(mode: String) {
+      if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return
+      val ui = activity.getSystemService(Context.UI_MODE_SERVICE) as? UiModeManager ?: return
+      val want = when (mode) {
+        "light" -> UiModeManager.MODE_NIGHT_NO
+        "dark" -> UiModeManager.MODE_NIGHT_YES
+        else -> UiModeManager.MODE_NIGHT_AUTO
+      }
+      activity.runOnUiThread { ui.setApplicationNightMode(want) }
     }
   }
 
