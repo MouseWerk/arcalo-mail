@@ -84,7 +84,13 @@ export async function connect(pid, timeout = 60000) {
       console.log(`DevTools socket ${name} found`);
       adb("forward", `tcp:${port}`, `localabstract:${name}`);
       forwarded = port;
-      const browser = await chromium.connectOverCDP(`http://127.0.0.1:${port}`);
+      // The WebView names its browser endpoint without a port (ws://localhost/devtools/browser):
+      // the same path on the forwarded port.
+      const version = await (await fetch(`http://127.0.0.1:${port}/json/version`)).json();
+      const ws = new URL(version.webSocketDebuggerUrl ?? "ws://localhost/devtools/browser");
+      const endpoint = `ws://127.0.0.1:${port}${ws.pathname}`;
+      console.log(`WebView ${version.Browser ?? "?"}, connecting to ${endpoint}`);
+      const browser = await chromium.connectOverCDP(endpoint);
       for (let i = 0; i < 50; i++) {
         const pages = browser.contexts().flatMap((c) => c.pages());
         const page = pages.find((p) => /tauri\.localhost|^tauri:/.test(p.url()));
