@@ -165,6 +165,9 @@ describe("the message list", () => {
     expect(keyAction(k("Escape"), true)).toBe("escape");
     expect(keyAction(k("n", { ctrlKey: true }), true)).toBe("compose");
     expect(keyAction(k("U", { shiftKey: true }), false)).toBe("markUnread");
+    // The Enter or Escape that ends an input-method composition (WebKit: keyCode 229).
+    expect(keyAction(k("Escape", { isComposing: true }), true)).toBeNull();
+    expect(keyAction(k("Enter", { keyCode: 229 }), false)).toBeNull();
   });
 });
 

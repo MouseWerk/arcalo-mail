@@ -1,6 +1,8 @@
 // The message list's logic without React: which rows are on screen (the list is virtual), which
 // are selected after a click with Shift or Ctrl, and what a key does.
 
+import { isComposing } from "./ime";
+
 /** The rows to render for a scroll position, with some above and below. */
 export function visibleRange(scrollTop: number, viewport: number, rowHeight: number, total: number, overscan = 8): { start: number; end: number } {
   if (total <= 0 || rowHeight <= 0) return { start: 0, end: 0 };
@@ -93,8 +95,12 @@ export type KeyAction =
   | "more";
 
 /** The shortcut a key press means, `null` for anything else. Typing in a field never counts
- *  (except Escape). */
-export function keyAction(e: { key: string; ctrlKey: boolean; metaKey: boolean; altKey: boolean; shiftKey: boolean }, typing: boolean): KeyAction | null {
+ *  (except Escape), nor does a key that ends an input-method composition. */
+export function keyAction(
+  e: { key: string; ctrlKey: boolean; metaKey: boolean; altKey: boolean; shiftKey: boolean; isComposing?: boolean; keyCode?: number },
+  typing: boolean,
+): KeyAction | null {
+  if (isComposing(e)) return null;
   if (e.key === "Escape") return "escape";
   const mod = e.ctrlKey || e.metaKey;
   if (mod && e.key === ",") return "settings";

@@ -1178,11 +1178,17 @@ pub fn undo(store: &Store, u: &Undo, me: &[String]) -> Result<Option<CalendarEve
         // Deleted and gone from the server already: made again from what it was.
         Err(_) if u.kind == "deleted" => {
             let (Some(cal), Some(uid), Some(data)) = (u.calendar_id, u.uid.as_deref(), u.before.as_deref()) else {
-                return Err(Error::NotFound("appointment".into()));
+                return Err(Error::NotFound(
+                    crate::tr!("Den Termin gibt es nicht mehr.", "The appointment no longer exists.").into(),
+                ));
             };
             let data = match u.format.as_deref() {
                 Some("graph") => {
-                    let f = fields_of_data("graph", data).ok_or_else(|| Error::Invalid("graph".into()))?;
+                    let f = fields_of_data("graph", data).ok_or_else(|| {
+                        Error::Invalid(
+                            crate::tr!("Der Termin lässt sich nicht lesen.", "The appointment cannot be read.").into(),
+                        )
+                    })?;
                     ics::new_event(uid, &f, Utc::now())
                 }
                 _ => data.to_string(),
@@ -1413,7 +1419,9 @@ pub fn write_conflict(store: &Store, w: &Write, data: Option<&str>, etag: Option
 /// Settles a conflict: keep the change made here (written over the server's copy), or take the
 /// server's version.
 pub fn resolve(store: &Store, key: &str, keep_mine: bool) -> Result<()> {
-    let (_, object_id, _) = parse_key(key).ok_or_else(|| Error::NotFound("key".into()))?;
+    let (_, object_id, _) = parse_key(key).ok_or_else(|| {
+        Error::NotFound(crate::tr!("Den Konflikt gibt es nicht mehr.", "The conflict no longer exists.").into())
+    })?;
     let o = object(store, object_id)?;
     let row: Option<(String, Option<String>, Option<String>)> = store
         .conn()
@@ -1474,7 +1482,9 @@ pub fn resolve(store: &Store, key: &str, keep_mine: bool) -> Result<()> {
 /// Drops a change that failed or that the server refused: the appointment shows as the server
 /// has it after the next sync.
 pub fn discard(store: &Store, key: &str) -> Result<()> {
-    let (_, object_id, _) = parse_key(key).ok_or_else(|| Error::NotFound("key".into()))?;
+    let (_, object_id, _) = parse_key(key).ok_or_else(|| {
+        Error::NotFound(crate::tr!("Den Konflikt gibt es nicht mehr.", "The conflict no longer exists.").into())
+    })?;
     let o = object(store, object_id)?;
     let op: Option<String> =
         store.conn().query_row("SELECT op FROM cal_writes WHERE object_id = ?1", [o.id], |r| r.get(0)).optional()?;
@@ -1587,7 +1597,9 @@ fn href_for(cal: &Calendar, uid: &str) -> String {
 pub fn insert_internal(store: &Store, calendar_id: i64, uid: &str, data: &str) -> Result<i64> {
     let cal = calendar(store, calendar_id)?;
     let (format, data) = if cal.kind == SourceKind::Graph {
-        let f = fields_of_data("ics", data).ok_or_else(|| Error::Invalid("ics".into()))?;
+        let f = fields_of_data("ics", data).ok_or_else(|| {
+            Error::Invalid(crate::tr!("Der Termin lässt sich nicht lesen.", "The appointment cannot be read.").into())
+        })?;
         ("graph", graph::new_event_json(uid, &f))
     } else {
         ("ics", data.to_string())

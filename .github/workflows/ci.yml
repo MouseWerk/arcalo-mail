@@ -35,9 +35,16 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libdbus-1-dev
       - run: cargo fmt --all --check
+      # Commit rules (CLAUDE.md): the owner's authorship, no co-author or session trailers. Checks
+      # the commits of this push.
+      - name: Commit rules
+        if: github.event_name == 'push'
+        env:
+          COMMITS: ${{ toJSON(github.event.commits) }}
+        run: node scripts/commit-rules.mjs
       # The release's scripts: the automatic release's choice of version, the APK's signer, the
-      # update feed's check and the version stamp (docs/release.md).
-      - run: node --test scripts/release-pick.test.mjs scripts/apk-signer.test.mjs scripts/verify-update-feed.test.mjs scripts/set-version.test.mjs
+      # update feed's check and the version stamp (docs/release.md); the release notes' shape.
+      - run: node --test scripts/release-pick.test.mjs scripts/apk-signer.test.mjs scripts/verify-update-feed.test.mjs scripts/set-version.test.mjs scripts/release-notes.test.mjs scripts/commit-rules.test.mjs
       - run: npm ci --prefix ui
       - run: npm --prefix ui run typecheck
       - run: npm --prefix ui test
@@ -137,6 +144,19 @@ jobs:
       - uses: actions/checkout@v4
       # SQLCipher's vendored OpenSSL is configured with Perl: Strawberry Perl of the runner (Git's
       # perl lacks modules OpenSSL needs), as in Arcalo.
+      # The PowerShell scripts cannot run on Linux: Windows PowerShell 5.1 parses every one of them
+      # here, and a syntax error fails the build instead of a user's installation (as in Arcalo).
+      - name: PowerShell scripts parse (Windows PowerShell 5.1)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $bad = 0
+          Get-ChildItem -Recurse -Filter *.ps1 -Path crates, scripts, src-tauri -ErrorAction SilentlyContinue | Where-Object { $_.FullName -notmatch '\\(node_modules|target)\\' } | ForEach-Object {
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$null, [ref]$errors) | Out-Null
+            foreach ($e in $errors) { Write-Host "$($_.FullName):$($e.Extent.StartLineNumber): $($e.Message)"; $bad++ }
+          }
+          if ($bad) { exit 1 }
       - name: Perl for OpenSSL (Windows)
         if: runner.os == 'Windows'
         shell: bash
@@ -164,6 +184,25 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: ./scripts/check-windows-runtime.ps1 target/release/arcalo-mail.exe
+      # Code for one system only (cfg(windows), cfg(target_os = "macos")) is only compiled here; the
+      # UI is built by now (cargo tauri build), as clippy of the shell needs it.
+      - name: Lints of the system-specific code
+        if: runner.os != 'Linux'
+        run: cargo clippy -p mail-core -p arcalo-mail --all-targets -- -D warnings
+      # File handling and line ends differ on Windows (sharing, flush rights, autocrlf): the
+      # encryption, file and store tests run here too, as Arcalo's backup and encryption tests do.
+      - name: Core tests on Windows (encryption, files, store)
+        if: runner.os == 'Windows'
+        run: cargo test -p mail-core -- cipher files store
+      # The update install compiled like the release (Arcalo's updater refused it only in release
+      # builds): writes into a temp folder, starts nothing. Without fat LTO, still without debug
+      # assertions.
+      - name: Update installer in release mode (dry)
+        if: runner.os != 'Linux'
+        run: cargo test --release -p arcalo-mail --features custom-protocol --lib installer
+        env:
+          CARGO_PROFILE_RELEASE_LTO: "off"
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
       - uses: actions/upload-artifact@v4
         with:
           name: arcalo-mail-${{ runner.os }}

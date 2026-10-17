@@ -1,0 +1,85 @@
+name: e2e soak
+
+# The whole desktop end-to-end suite several times in a row on one build (docs/quality/README.md):
+# a test that fails once in five runs is a bug to find, not luck. Fails on any single failure and
+# keeps the screenshots of every failed round. Started by hand (Actions -> e2e soak -> Run
+# workflow, with the number of rounds) and once a week on main.
+
+on:
+  workflow_dispatch:
+    inputs:
+      rounds:
+        description: "How many times the full suite runs"
+        required: true
+        default: "5"
+  schedule:
+    # Sundays, 02:17 UTC.
+    - cron: "17 2 * * 0"
+
+concurrency:
+  group: e2e-soak-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  soak:
+    name: Desktop e2e x ${{ github.event.inputs.rounds || '5' }} (Linux)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.94.1
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: System packages (WebKitGTK, WebDriver, Xvfb)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libdbus-1-dev webkit2gtk-driver xvfb x11-utils dbus xdg-utils
+      - run: npm ci --prefix ui
+      - run: cargo install tauri-driver --locked
+      # One build for every round, as e2e/run.sh builds it.
+      - name: Build the app and the test server
+        run: |
+          npm --prefix ui run build
+          cargo build -p arcalo-mail --features custom-protocol -p mail-testserver
+          npm ci --prefix e2e
+      - name: Run the suite ${{ github.event.inputs.rounds || '5' }} times
+        env:
+          ROUNDS: ${{ github.event.inputs.rounds || '5' }}
+        run: |
+          case "$ROUNDS" in ''|*[!0-9]*) echo "rounds must be a number: $ROUNDS"; exit 1;; esac
+          app="$PWD/target/debug/arcalo-mail"
+          failed=0
+          mkdir -p soak
+          for round in $(seq 1 "$ROUNDS"); do
+            echo "::group::Round $round of $ROUNDS"
+            shots="$PWD/soak/round-$round"
+            mkdir -p "$shots"
+            if (cd e2e && ARCALO_MAIL_APP="$app" ARCALO_MAIL_SHOTS="$shots" node --test --test-concurrency=1 --test-reporter=spec --test-reporter-destination=stdout --test-reporter=tap --test-reporter-destination="$shots/report.tap" tests/*.test.js); then
+              echo "Round $round: clean"
+              # Only failures are kept: the screenshots of a clean round are the usual ones.
+              rm -rf "$shots"
+            else
+              echo "::error::Round $round failed"
+              grep -E '^not ok' "$shots/report.tap" | sed "s/^/round $round: /" | tee -a soak/failures.txt || true
+              failed=$((failed + 1))
+            fi
+            echo "::endgroup::"
+          done
+          echo "Rounds with a failure: $failed of $ROUNDS"
+          {
+            echo "### e2e soak: $((ROUNDS - failed)) of $ROUNDS rounds clean"
+            if [ -f soak/failures.txt ]; then echo; echo '```'; cat soak/failures.txt; echo '```'; fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          [ "$failed" -eq 0 ]
+      # The screenshots, FAIL-*.png and the TAP report of every round that failed.
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: e2e-soak-failures
+          path: soak
+          if-no-files-found: ignore

@@ -379,7 +379,12 @@ impl Graph {
             }
         }
         let v = self.json(reqwest::Method::POST, path, Some(&body)).await?.unwrap_or_default();
-        v["id"].as_str().map(str::to_owned).ok_or_else(|| Error::Network("Microsoft Graph: no rule id".into()))
+        v["id"].as_str().map(str::to_owned).ok_or_else(|| {
+            Error::Network(
+                tr!("Microsoft hat die Regel ohne Kennung gespeichert.", "Microsoft saved the rule without an ID.")
+                    .into(),
+            )
+        })
     }
 
     pub async fn delete_rule(&self, id: &str) -> Result<()> {

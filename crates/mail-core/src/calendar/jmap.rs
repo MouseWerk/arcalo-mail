@@ -258,7 +258,11 @@ pub fn account_of(client: &JmapClient) -> Option<String> {
 }
 
 async fn call(client: &JmapClient, name: &str, mut args: Value) -> Result<Value> {
-    let account = account_of(client).ok_or_else(|| Error::Invalid("JMAP: no calendars".into()))?;
+    let account = account_of(client).ok_or_else(|| {
+        Error::Invalid(
+            crate::tr!("Dieses JMAP-Konto hat keine Kalender.", "This JMAP account has no calendars.").into(),
+        )
+    })?;
     if let Some(o) = args.as_object_mut() {
         o.insert("accountId".into(), json!(account));
     }
@@ -394,7 +398,9 @@ pub fn calendar_of(e: &Value) -> Option<String> {
 
 /// Creates an event; returns its id. `send`: the server sends the invitations.
 pub async fn create(client: &JmapClient, calendar: &str, data: &str, send: bool) -> Result<String> {
-    let mut e = patch_from_ics(data).ok_or_else(|| Error::Invalid("JMAP: no event".into()))?;
+    let mut e = patch_from_ics(data).ok_or_else(|| {
+        Error::Invalid(crate::tr!("Der Termin lässt sich nicht lesen.", "The appointment cannot be read.").into())
+    })?;
     e["calendarIds"] = json!({ calendar: true });
     let v = call(client, "CalendarEvent/set", json!({ "create": { "n": e }, "sendSchedulingMessages": send })).await?;
     if let Some(err) = v["notCreated"]["n"].as_object() {
@@ -403,13 +409,23 @@ pub async fn create(client: &JmapClient, calendar: &str, data: &str, send: bool)
             err.get("type").and_then(Value::as_str).unwrap_or("notCreated")
         )));
     }
-    v["created"]["n"]["id"].as_str().map(str::to_owned).ok_or_else(|| Error::Network("JMAP: no id".into()))
+    v["created"]["n"]["id"].as_str().map(str::to_owned).ok_or_else(|| {
+        Error::Network(
+            crate::tr!(
+                "Der Server hat den Termin ohne Kennung angelegt.",
+                "The server created the appointment without an ID."
+            )
+            .into(),
+        )
+    })
 }
 
 /// Writes an event's changed properties and the user's answer (`me`: the user's addresses).
 /// `send`: the user confirmed that the attendees get the change; the server sends it.
 pub async fn update(client: &JmapClient, id: &str, data: &str, send: bool, me: &[String]) -> Result<()> {
-    let mut e = patch_from_ics(data).ok_or_else(|| Error::Invalid("JMAP: no event".into()))?;
+    let mut e = patch_from_ics(data).ok_or_else(|| {
+        Error::Invalid(crate::tr!("Der Termin lässt sich nicht lesen.", "The appointment cannot be read.").into())
+    })?;
     if let Some(o) = e.as_object_mut() {
         o.remove("uid");
         o.extend(answers_from_ics(data, me));
