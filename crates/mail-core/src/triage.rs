@@ -461,6 +461,28 @@ pub fn worth_telling(store: &Store, account_id: i64, ids: &[i64]) -> Result<Vec<
     Ok(out)
 }
 
+/// The new messages of an account's inbox from people or other senders (not newsletters,
+/// notifications or the like), and none the Screener holds back or turned away.
+pub fn personal(store: &Store, account_id: i64, ids: &[i64]) -> Result<Vec<i64>> {
+    let since = screener_since(store);
+    let mut st =
+        store.conn().prepare(&format!("WITH base AS ({BASE}) SELECT screened, cat FROM base WHERE id = ?4"))?;
+    let mut out = vec![];
+    for &id in ids {
+        let row = st
+            .query_row(params![Some(account_id), now(), since, id], |r| {
+                Ok((r.get::<_, bool>(0)?, r.get::<_, String>(1)?))
+            })
+            .optional()?;
+        let Some((screened, cat)) = row else { continue };
+        if screened || !matches!(Category::parse(&cat), Some(Category::People | Category::Other)) {
+            continue;
+        }
+        out.push(id);
+    }
+    Ok(out)
+}
+
 // ---------------------------------------------------------------------------- senders
 
 /// Remembers the category of a sender for all its mail (`None`: back to the header's).

@@ -370,7 +370,26 @@ async fn fetch_selected<C: ImapClient>(client: &mut C, store: &Store, message_id
             (info, p.section.clone())
         })
         .collect();
-    store.set_body_parts(message_id, &header_of(store, message_id)?, &body)
+    // A meeting's calendar data comes along (small), so its invitation shows and applies.
+    let mut calendar = vec![];
+    for p in parts.iter().filter(|p| p.is_attachment() && is_calendar_part(p) && p.size <= CALENDAR_PART_LIMIT) {
+        calendar.push((p.section.clone(), part_content(&client.fetch_section(uid, &p.section).await?)));
+    }
+    store.set_body_parts(message_id, &header_of(store, message_id)?, &body)?;
+    for (section, data) in calendar {
+        store.set_attachment_data(message_id, &section, &data)?;
+    }
+    Ok(())
+}
+
+/// The largest calendar part fetched with the body of a large message.
+pub const CALENDAR_PART_LIMIT: u64 = 1024 * 1024;
+
+fn is_calendar_part(p: &crate::imap::BodyPart) -> bool {
+    let mime = p.mime_type.to_ascii_lowercase();
+    mime == "text/calendar"
+        || mime == "application/ics"
+        || p.filename.as_deref().is_some_and(|f| f.to_ascii_lowercase().ends_with(".ics"))
 }
 
 /// The content of an attachment: from the kept message, else its part from the server.
@@ -786,6 +805,34 @@ Content-Transfer-Encoding: base64\r\n\r\n{big}\r\n--B--\r\n"
         assert_eq!(att[0].filename.as_deref(), Some("plaene.zip"));
         let data = fetch_attachment(&mut server, &store, att[0].id).await.unwrap();
         assert_eq!(data.len(), big.len() / 4 * 3, "the whole attachment");
+    }
+
+    /// An invitation with a large agenda attached: its calendar part comes with the text, so the
+    /// card shows and the update applies without the whole message.
+    #[tokio::test]
+    async fn invitations_in_large_messages_come_with_the_text() {
+        let (mut server, store, account) = setup(all_caps());
+        let big = "QUJD".repeat((FULL_FETCH_LIMIT as usize) / 3);
+        let ics = "BEGIN:VCALENDAR\r\nMETHOD:REQUEST\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:big-1\r\nSEQUENCE:0\r\n\
+DTSTART:20261103T090000Z\r\nDTEND:20261103T100000Z\r\nSUMMARY:Planung\r\nORGANIZER:mailto:lea@example.org\r\n\
+ATTENDEE;PARTSTAT=NEEDS-ACTION:mailto:maria@example.org\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+        let raw = format!(
+            "From: Lea <lea@example.org>\r\nTo: maria@example.org\r\nSubject: Planung\r\nMessage-ID: <bigics@x>\r\n\
+MIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=\"B\"\r\n\r\n\
+--B\r\nContent-Type: multipart/alternative; boundary=\"A\"\r\n\r\n\
+--A\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nDie Agenda ist angehängt.\r\n\
+--A\r\nContent-Type: text/calendar; charset=utf-8; method=REQUEST\r\n\r\n{ics}\r\n--A--\r\n\
+--B\r\nContent-Type: application/pdf\r\nContent-Disposition: attachment; filename=\"agenda.pdf\"\r\n\
+Content-Transfer-Encoding: base64\r\n\r\n{big}\r\n--B--\r\n"
+        );
+        server.deliver("INBOX", raw.as_bytes(), 1_760_000_550);
+        sync_account(&mut server, &store, account).await.unwrap();
+        let ib = inbox(&store, account);
+        let id = store.messages(ib, 10, 0).unwrap().into_iter().find(|m| m.subject == "Planung").unwrap().id;
+        fetch_body(&mut server, &store, id).await.unwrap();
+        assert!(store.raw_message(id).unwrap().is_none(), "not kept whole");
+        let data = crate::itip::calendar_data(&store, id).unwrap().expect("the calendar part");
+        assert!(data.contains("UID:big-1") && data.contains("METHOD:REQUEST"));
     }
 
     #[tokio::test]

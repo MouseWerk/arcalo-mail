@@ -1297,7 +1297,7 @@ function EventDetail({ event: e, calendars, onClose, onSave, onDelete, onReload 
         </section>
       )}
 
-      {(w || ro || e.editable === "confirm" || editable) && (
+      {(w || ro || e.reanswer || e.editable === "confirm" || editable) && (
         <section className="calv-detail-sec calv-entry-state">
           {w?.state === "pending" && (
             <div className="calv-entry-note pending" role="status" data-write="pending">
@@ -1365,6 +1365,12 @@ function EventDetail({ event: e, calendars, onClose, onSave, onDelete, onReload 
             <div className="calv-entry-note">
               <Users size={14} strokeWidth={1.75} aria-hidden />
               <span>{t("entries.confirmNote")}</span>
+            </div>
+          )}
+          {e.reanswer && (
+            <div className="calv-entry-note" role="status" data-reanswer>
+              <CalendarClock size={14} strokeWidth={1.75} aria-hidden />
+              <span>{t("entries.reanswer")}</span>
             </div>
           )}
           {ro && (

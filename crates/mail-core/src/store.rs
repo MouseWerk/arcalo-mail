@@ -27,6 +27,7 @@ pub const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0006_calendar_crypto.sql"),
     include_str!("../migrations/0007_sync_safety.sql"),
     include_str!("../migrations/0008_key_trust.sql"),
+    include_str!("../migrations/0009_calendar_ai_keys.sql"),
 ];
 pub const SCHEMA_VERSION: u32 = MIGRATIONS.len() as u32;
 
@@ -772,6 +773,15 @@ impl Store {
         )?;
         let rows = st.query_map([message_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Keeps the content of a part fetched with the body of a large message (its calendar data).
+    pub fn set_attachment_data(&self, message_id: i64, section: &str, data: &[u8]) -> Result<()> {
+        self.conn.execute(
+            "UPDATE attachments SET data = ?3 WHERE message_id = ?1 AND section = ?2",
+            params![message_id, section, data],
+        )?;
+        Ok(())
     }
 
     /// Notes where an attachment was saved.

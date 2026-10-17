@@ -557,6 +557,9 @@ pub struct Object {
     pub format: String,
     pub data: String,
     pub deleted: bool,
+    /// The organizer changed the time of a meeting the user had answered: the answer stays, the
+    /// appointment asks for a new one.
+    pub reanswer: bool,
 }
 
 fn object_row(r: &rusqlite::Row) -> rusqlite::Result<Object> {
@@ -569,10 +572,11 @@ fn object_row(r: &rusqlite::Row) -> rusqlite::Result<Object> {
         format: r.get(5)?,
         data: r.get(6)?,
         deleted: r.get(7)?,
+        reanswer: r.get(8)?,
     })
 }
 
-const OBJECT_COLS: &str = "id, calendar_id, href, etag, uid, format, data, deleted";
+const OBJECT_COLS: &str = "id, calendar_id, href, etag, uid, format, data, deleted, reanswer";
 
 pub fn object(store: &Store, id: i64) -> Result<Object> {
     store
@@ -739,6 +743,8 @@ pub struct CalendarEvent {
     pub categories: Vec<String>,
     pub editable: Editability,
     pub write: Option<WriteState>,
+    /// The organizer moved the meeting since the user answered (see [`Object::reanswer`]).
+    pub reanswer: bool,
 }
 
 /// The parts of a key.
@@ -808,10 +814,20 @@ fn write_state(store: &Store, object_id: i64) -> Result<Option<WriteState>> {
         .optional()?)
 }
 
+/// The key of an occurrence. A subscription keeps all of its appointments in one object, so its
+/// keys also name the UID.
+fn key_of(cal: &Calendar, o: &Object, x: &Occurrence) -> String {
+    if cal.kind == SourceKind::Ics {
+        format!("{}|{}|{}|{}", cal.id, o.id, x.instance, x.uid)
+    } else {
+        format!("{}|{}|{}", cal.id, o.id, x.instance)
+    }
+}
+
 fn view(cal: &Calendar, o: &Object, x: Occurrence, me: &[String], write: Option<WriteState>) -> CalendarEvent {
     let editable = editability(cal, o, &x, me);
     CalendarEvent {
-        key: format!("{}|{}|{}", cal.id, o.id, x.instance),
+        key: key_of(cal, o, &x),
         calendar_id: cal.id,
         object_id: o.id,
         uid: x.uid,
@@ -832,6 +848,7 @@ fn view(cal: &Calendar, o: &Object, x: Occurrence, me: &[String], write: Option<
         categories: x.categories,
         editable,
         write,
+        reanswer: o.reanswer,
     }
 }
 
@@ -870,19 +887,24 @@ pub fn events(
 /// One appointment by its key.
 pub fn event(store: &Store, key: &str, me: &[String]) -> Result<CalendarEvent> {
     let gone = || Error::NotFound(tr!("Den Termin gibt es nicht mehr.", "The appointment is gone.").into());
-    let (cal_id, obj_id, instance) = parse_key(key).ok_or_else(gone)?;
+    let (cal_id, obj_id, rest) = parse_key(key).ok_or_else(gone)?;
+    let (instance, uid) = match rest.split_once('|') {
+        Some((i, u)) => (i.to_string(), Some(u.to_string())),
+        None => (rest, None),
+    };
     let o = object(store, obj_id)?;
     let cal = calendar(store, cal_id)?;
     let far = (Utc.with_ymd_and_hms(1900, 1, 1, 0, 0, 0).unwrap(), Utc.with_ymd_and_hms(2200, 1, 1, 0, 0, 0).unwrap());
+    let same_uid = |x: &Occurrence| uid.as_deref().is_none_or(|u| u == x.uid);
     let x = if instance.is_empty() {
-        occurrences(&o, far.0, far.1).into_iter().next()
+        occurrences(&o, far.0, far.1).into_iter().find(|x| same_uid(x))
     } else {
         let at = DateTime::parse_from_rfc3339(&instance).map(|t| t.with_timezone(&Utc)).ok();
         let (a, b) = match at {
             Some(t) => (t - Duration::days(400), t + Duration::days(400)),
             None => far,
         };
-        occurrences(&o, a, b).into_iter().find(|x| x.instance == instance)
+        occurrences(&o, a, b).into_iter().find(|x| x.instance == instance && same_uid(x))
     }
     .ok_or_else(gone)?;
     Ok(view(&cal, &o, x, me, write_state(store, o.id)?))
@@ -906,9 +928,17 @@ pub struct Undo {
     pub uid: Option<String>,
     #[serde(default)]
     pub format: Option<String>,
+    /// The change went to a meeting's attendees: taking it back goes to them too.
+    #[serde(default)]
+    pub send: bool,
 }
 
-/// Queues a write for an object, merged with one already waiting.
+/// Rounds in which the server answered and a write still failed before it is parked (shown as
+/// refused, with „Verwerfen“), so it no longer comes first in every round.
+pub const MAX_WRITE_ATTEMPTS: u32 = 5;
+
+/// Queues a write for an object, merged with one already waiting. Every merge counts up the
+/// write's `version`, so a round that sent an earlier state leaves the newer one queued.
 fn queue(store: &Store, object_id: i64, op: &str, mine: Option<&Fields>, send: bool) -> Result<()> {
     let existing: Option<(i64, String, Option<String>, bool)> = store
         .conn()
@@ -929,11 +959,19 @@ fn queue(store: &Store, object_id: i64, op: &str, mine: Option<&Fields>, send: b
             store.conn().execute("DELETE FROM cal_objects WHERE id = ?1", [object_id])?;
         }
         ("create", _) => {
-            store.conn().execute("UPDATE cal_writes SET state = 'pending', error = NULL WHERE id = ?1", [id])?;
+            store.conn().execute(
+                "UPDATE cal_writes SET state = 'pending', error = NULL, strikes = 0, version = version + 1 WHERE id = ?1",
+                [id],
+            )?;
         }
+        // What waited before the delete is kept for „Rückgängig“.
         (_, "delete") => {
             store.conn().execute(
-                "UPDATE cal_writes SET op = 'delete', state = 'pending', error = NULL, server = NULL WHERE id = ?1",
+                "UPDATE cal_writes SET prev_op = CASE WHEN op = 'delete' THEN prev_op ELSE op END,
+                   prev_mine = CASE WHEN op = 'delete' THEN prev_mine ELSE mine END,
+                   prev_send = CASE WHEN op = 'delete' THEN prev_send ELSE send END,
+                   op = 'delete', state = 'pending', error = NULL, server = NULL, strikes = 0, version = version + 1
+                 WHERE id = ?1",
                 [id],
             )?;
         }
@@ -943,7 +981,8 @@ fn queue(store: &Store, object_id: i64, op: &str, mine: Option<&Fields>, send: b
                 (a, b) => b.cloned().or(a),
             };
             store.conn().execute(
-                "UPDATE cal_writes SET op = ?2, mine = ?3, send = ?4, state = CASE WHEN state = 'conflict' THEN state ELSE 'pending' END, error = NULL WHERE id = ?1",
+                "UPDATE cal_writes SET op = ?2, mine = ?3, send = ?4, state = CASE WHEN state = 'conflict' THEN state ELSE 'pending' END, error = NULL,
+                   strikes = 0, version = version + 1, prev_op = NULL, prev_mine = NULL, prev_send = 0 WHERE id = ?1",
                 params![id, if old_op == "delete" { "update" } else { old_op.as_str() }, merged.map(|m| serde_json::to_string(&m)).transpose()?, old_send || send],
             )?;
         }
@@ -996,7 +1035,18 @@ pub fn create(store: &Store, calendar_id: i64, f: &Fields, me: &[String]) -> Res
         Ok(id)
     })?;
     let ev = first_event(store, id, me)?;
-    Ok((ev, Undo { object_id: id, kind: "created".into(), before: None, calendar_id: None, uid: None, format: None }))
+    Ok((
+        ev,
+        Undo {
+            object_id: id,
+            kind: "created".into(),
+            before: None,
+            calendar_id: None,
+            uid: None,
+            format: None,
+            send: false,
+        },
+    ))
 }
 
 /// The first appointment of an object (a single one: itself).
@@ -1055,6 +1105,7 @@ pub fn update(store: &Store, key: &str, f: &Fields, send: bool, me: &[String]) -
         }
         Ok(())
     })?;
+    let confirmed = send && ev.editable == Editability::Confirm;
     let ev = event(store, &format!("{}|{}|{}", o.calendar_id, o.id, ev.instance), me)?;
     Ok((
         ev,
@@ -1065,6 +1116,7 @@ pub fn update(store: &Store, key: &str, f: &Fields, send: bool, me: &[String]) -
             calendar_id: None,
             uid: None,
             format: None,
+            send: confirmed,
         },
     ))
 }
@@ -1113,6 +1165,7 @@ pub fn delete(store: &Store, key: &str, me: &[String]) -> Result<Undo> {
         calendar_id: Some(o.calendar_id),
         uid: Some(o.uid),
         format: Some(o.format),
+        send: false,
     })
 }
 
@@ -1163,16 +1216,30 @@ pub fn undo(store: &Store, u: &Undo, me: &[String]) -> Result<Option<CalendarEve
                     set_data(store, o.id, before)?;
                 }
                 match op.as_deref() {
-                    // Not on its way yet: nothing happened on the server.
+                    // Not on its way yet: nothing happened on the server; a change that waited
+                    // before the delete waits again.
                     Some("delete") if !local => {
-                        let sent: bool = store.conn().query_row(
-                            "SELECT attempts > 0 FROM cal_writes WHERE object_id = ?1",
+                        let (sent, prev): (bool, Option<String>) = store.conn().query_row(
+                            "SELECT attempts > 0, prev_op FROM cal_writes WHERE object_id = ?1",
                             [o.id],
-                            |r| r.get(0),
+                            |r| Ok((r.get(0)?, r.get(1)?)),
                         )?;
-                        store.conn().execute("DELETE FROM cal_writes WHERE object_id = ?1", [o.id])?;
-                        if sent {
-                            queue(store, o.id, "create", None, false)?;
+                        match prev {
+                            Some(prev) => {
+                                store.conn().execute(
+                                    "UPDATE cal_writes SET op = ?2, mine = prev_mine, send = prev_send, prev_op = NULL,
+                                       prev_mine = NULL, prev_send = 0, state = 'pending', error = NULL, server = NULL,
+                                       strikes = 0, version = version + 1
+                                     WHERE object_id = ?1",
+                                    params![o.id, prev],
+                                )?;
+                            }
+                            None => {
+                                store.conn().execute("DELETE FROM cal_writes WHERE object_id = ?1", [o.id])?;
+                                if sent {
+                                    queue(store, o.id, "create", None, false)?;
+                                }
+                            }
                         }
                     }
                     None if !local => {
@@ -1187,11 +1254,16 @@ pub fn undo(store: &Store, u: &Undo, me: &[String]) -> Result<Option<CalendarEve
             Ok(first_event(store, o.id, me).ok())
         }
         _ => {
-            let before = u.before.clone().unwrap_or_default();
+            let mut before = u.before.clone().unwrap_or_default();
+            // The attendees had the change: the old state goes to them as a newer version.
+            if u.send && o.format == "ics" {
+                let next = ics::sequence(&o.data).max(ics::sequence(&before)) + 1;
+                before = ics::with_sequence(&before, next).unwrap_or(before);
+            }
             store.batch(|| {
                 set_data(store, o.id, &before)?;
                 if !local {
-                    queue(store, o.id, "update", None, false)?;
+                    queue(store, o.id, "update", None, u.send)?;
                 }
                 Ok(())
             })?;
@@ -1210,28 +1282,51 @@ pub struct Write {
     pub op: String,
     pub send: bool,
     pub attempts: u32,
+    /// The merges the write had when it was read (see [`queue`]).
+    pub version: i64,
 }
 
 /// The writes of a source that can go now (not the conflicts the user settles first).
 pub fn pending_writes(store: &Store, source_id: i64) -> Result<Vec<Write>> {
     let mut st = store.conn().prepare(
-        "SELECT w.id, w.op, w.send, w.attempts, w.object_id FROM cal_writes w
+        "SELECT w.id, w.op, w.send, w.attempts, w.object_id, w.version FROM cal_writes w
            JOIN cal_objects o ON o.id = w.object_id JOIN calendars c ON c.id = o.calendar_id
           WHERE c.source_id = ?1 AND w.state = 'pending' ORDER BY w.id",
     )?;
-    let rows: Vec<(i64, String, bool, u32, i64)> = st
-        .query_map([source_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))?
+    let rows: Vec<(i64, String, bool, u32, i64, i64)> = st
+        .query_map([source_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)))?
         .collect::<rusqlite::Result<_>>()?;
     let mut out = vec![];
-    for (id, op, send, attempts, object_id) in rows {
-        out.push(Write { id, object: object(store, object_id)?, op, send, attempts });
+    for (id, op, send, attempts, object_id, version) in rows {
+        out.push(Write { id, object: object(store, object_id)?, op, send, attempts, version });
     }
     Ok(out)
 }
 
 /// The server took a write: the object's new name, ETag and data (when the server changed it).
+/// A change made here while the write was on its way stays queued, based on the new ETag.
 pub fn write_done(store: &Store, w: &Write, href: Option<&str>, etag: Option<&str>, data: Option<&str>) -> Result<()> {
     store.batch(|| {
+        let now: Option<(i64, String)> = store
+            .conn()
+            .query_row("SELECT version, op FROM cal_writes WHERE id = ?1", [w.id], |r| Ok((r.get(0)?, r.get(1)?)))
+            .optional()?;
+        if let Some((_, op)) = now.filter(|(v, _)| *v != w.version) {
+            if w.op == "delete" {
+                // Gone on the server, wanted again here: made there again.
+                store.conn().execute("UPDATE cal_objects SET etag = NULL WHERE id = ?1", [w.object.id])?;
+                store.conn().execute("UPDATE cal_writes SET op = 'create', state = 'pending' WHERE id = ?1", [w.id])?;
+                return Ok(());
+            }
+            if let Some(h) = href {
+                store.conn().execute("UPDATE cal_objects SET href = ?2 WHERE id = ?1", params![w.object.id, h])?;
+            }
+            store.conn().execute("UPDATE cal_objects SET etag = ?2 WHERE id = ?1", params![w.object.id, etag])?;
+            if w.op == "create" && op == "create" {
+                store.conn().execute("UPDATE cal_writes SET op = 'update' WHERE id = ?1", [w.id])?;
+            }
+            return Ok(());
+        }
         store.conn().execute("DELETE FROM cal_writes WHERE id = ?1", [w.id])?;
         if w.op == "delete" {
             store.conn().execute("DELETE FROM cal_objects WHERE id = ?1", [w.object.id])?;
@@ -1256,6 +1351,19 @@ pub fn write_failed(store: &Store, w: &Write, error: &str) -> Result<()> {
     Ok(())
 }
 
+/// A write failed in a round in which the server answered otherwise: after
+/// [`MAX_WRITE_ATTEMPTS`] such rounds it is parked as refused (with its last error) and waits
+/// for the user.
+pub fn write_struck(store: &Store, w: &Write) -> Result<()> {
+    store.conn().execute(
+        "UPDATE cal_writes SET strikes = strikes + 1,
+           state = CASE WHEN strikes + 1 >= ?2 AND state = 'pending' THEN 'refused' ELSE state END
+         WHERE id = ?1",
+        params![w.id, MAX_WRITE_ATTEMPTS],
+    )?;
+    Ok(())
+}
+
 /// The server refused a write for good (no permission, a broken object).
 pub fn write_refused(store: &Store, w: &Write, error: &str) -> Result<()> {
     store.conn().execute(
@@ -1277,6 +1385,7 @@ pub fn fields_of_data(format: &str, data: &str) -> Option<Fields> {
         format: format.into(),
         data: data.into(),
         deleted: false,
+        reanswer: false,
     };
     let x = occurrences(&o, far.0, far.1).into_iter().next()?;
     Some(Fields {
@@ -1340,7 +1449,8 @@ pub fn resolve(store: &Store, key: &str, keep_mine: bool) -> Result<()> {
                 }
             }
             store.conn().execute(
-                "UPDATE cal_writes SET state = 'pending', server = NULL, error = NULL WHERE object_id = ?1",
+                "UPDATE cal_writes SET state = 'pending', server = NULL, error = NULL, strikes = 0, version = version + 1
+                 WHERE object_id = ?1",
                 [o.id],
             )?;
         } else {
@@ -1398,9 +1508,57 @@ pub fn set_sync_state(store: &Store, calendar_id: i64, state: Option<&str>, ctag
     Ok(())
 }
 
-/// The user's own addresses (which meetings the user organizes or is invited to).
+/// The user's own addresses (which meetings the user organizes or is invited to): the accounts'
+/// addresses, then the ones calendar servers and JMAP identities name.
 pub fn my_addresses(store: &Store) -> Result<Vec<String>> {
-    Ok(store.accounts()?.into_iter().map(|a| a.email.to_ascii_lowercase()).collect())
+    let mut out: Vec<String> = store.accounts()?.into_iter().map(|a| a.email.to_ascii_lowercase()).collect();
+    let mut st = store.conn().prepare("SELECT address FROM user_addresses ORDER BY id")?;
+    for a in st.query_map([], |r| r.get::<_, String>(0))? {
+        let a = a?.trim().to_ascii_lowercase();
+        if a.contains('@') && !out.contains(&a) {
+            out.push(a);
+        }
+    }
+    Ok(out)
+}
+
+/// Where further addresses of the user come from.
+#[derive(Debug, Clone, Copy)]
+pub enum AddressOrigin {
+    /// A CalDAV server's `calendar-user-address-set`.
+    Source(i64),
+    /// A JMAP account's sender identities.
+    Account(i64),
+}
+
+/// Replaces the addresses one origin names.
+pub fn set_user_addresses(store: &Store, origin: AddressOrigin, addresses: &[String]) -> Result<()> {
+    let (source, account) = match origin {
+        AddressOrigin::Source(id) => (Some(id), None),
+        AddressOrigin::Account(id) => (None, Some(id)),
+    };
+    store.batch(|| {
+        store.conn().execute(
+            "DELETE FROM user_addresses WHERE cal_source_id IS ?1 AND account_id IS ?2",
+            params![source, account],
+        )?;
+        for a in addresses {
+            let a = a.trim().to_ascii_lowercase();
+            if a.contains('@') {
+                store.conn().execute(
+                    "INSERT INTO user_addresses (address, cal_source_id, account_id) VALUES (?1, ?2, ?3)",
+                    params![a, source, account],
+                )?;
+            }
+        }
+        Ok(())
+    })
+}
+
+/// Marks a meeting whose time the organizer changed since the user answered (or clears it).
+pub fn set_reanswer(store: &Store, object_id: i64, on: bool) -> Result<()> {
+    store.conn().execute("UPDATE cal_objects SET reanswer = ?2 WHERE id = ?1", params![object_id, on])?;
+    Ok(())
 }
 
 /// Appointments overlapping `start..end` in any calendar but the one with `uid` (an

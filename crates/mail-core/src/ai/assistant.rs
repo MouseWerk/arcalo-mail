@@ -174,7 +174,38 @@ fn thread_texts(store: &Store, message_id: i64, offset: i64, lang: Lang) -> Resu
     }
     out.reverse();
     let latest = list.last().map_or(message_id, |m| m.id);
-    Ok((out, format!("thread:{thread_id}:{latest}:{}", list.len())))
+    let key =
+        format!("thread:{}:{}:{}", message_key_id(store, latest)?, list.len(), digest(&out.iter().collect::<Vec<_>>()));
+    Ok((out, key))
+}
+
+/// The Message-ID of a message (`local:<row>` without one): answers kept about it follow the
+/// message, not its row, whose id a later message may take.
+fn message_key_id(store: &Store, id: i64) -> Result<String> {
+    let mid: Option<String> = store
+        .conn()
+        .query_row("SELECT message_id FROM messages WHERE id = ?1", [id], |r| r.get(0))
+        .optional()?
+        .flatten();
+    Ok(mid.filter(|m| !m.trim().is_empty()).unwrap_or_else(|| format!("local:{id}")))
+}
+
+/// A short hash of the texts a request sends.
+fn digest(texts: &[&MailText]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    for t in texts {
+        for part in [&t.from, &t.subject, &t.text] {
+            h.update(part.as_bytes());
+            h.update([0]);
+        }
+    }
+    h.finalize().iter().take(12).map(|b| format!("{b:02x}")).collect()
+}
+
+/// The key of answers kept about one message: its Message-ID and the hash of its text.
+fn message_key(store: &Store, id: i64, m: &MailText) -> Result<String> {
+    Ok(format!("msg:{}:{}", message_key_id(store, id)?, digest(&[m])))
 }
 
 /// Whether a conversation is long enough for its summary to come by itself.
@@ -332,7 +363,7 @@ pub fn prepare(
             let (provider, dest) = route(account_of(store, *message_id)?)?;
             let m = mail_text(store, *message_id, offset, lang, THREAD_CHARS)?;
             let kind = format!("translation:{}", target.trim().to_ascii_lowercase());
-            let key = format!("msg:{message_id}");
+            let key = message_key(store, *message_id, &m)?;
             let mut p = base(Task::Translate, provider, dest, prompts::translate(&m, target, lang));
             p.cached = cached(store, &key, &kind, code)?;
             p.cache = Some((key, kind, code.into()));
@@ -342,7 +373,7 @@ pub fn prepare(
         Request::Extract { message_id } => {
             let (provider, dest) = route(account_of(store, *message_id)?)?;
             let m = mail_text(store, *message_id, offset, lang, MESSAGE_CHARS)?;
-            let key = format!("msg:{message_id}");
+            let key = message_key(store, *message_id, &m)?;
             let mut p = base(Task::Extract, provider, dest, prompts::extract(&m, &today_text(now, offset, lang), lang));
             p.cached = cached(store, &key, "extract", code)?;
             p.cache = Some((key, "extract".into(), code.into()));
@@ -481,6 +512,37 @@ mod tests {
         };
         s.normalize().unwrap();
         s
+    }
+
+    #[test]
+    fn kept_answers_belong_to_their_message_not_to_its_row() {
+        let (s, _, inbox) = store_with_inbox();
+        let a = put(&s, inbox, 1, "Jonas <jonas@example.org>", "Rechnung", None, "Bitte bis Freitag zahlen.");
+        let cfg = settings();
+        let req = |id| Request::Translate { message_id: id, target: "English".into() };
+        let p = prepare(&s, &cfg, &req(a), Lang::De, 0, 0).unwrap();
+        finish(&s, &p, Answer { text: "Please pay by Friday.".into(), cancelled: false }, false).unwrap();
+        let ex = prepare(&s, &cfg, &Request::Extract { message_id: a }, Lang::De, 0, 0).unwrap();
+        finish(&s, &ex, Answer { text: "[]".into(), cancelled: false }, false).unwrap();
+        let sum = prepare(&s, &cfg, &Request::Summary { message_id: a }, Lang::De, 0, 0).unwrap();
+        finish(&s, &sum, Answer { text: "- Zahlen bis Freitag".into(), cancelled: false }, false).unwrap();
+        assert_eq!(
+            prepare(&s, &cfg, &req(a), Lang::De, 0, 0).unwrap().cached.as_deref(),
+            Some("Please pay by Friday.")
+        );
+        // The message goes; the next one takes its row id.
+        s.remove_messages(&[a]).unwrap();
+        let b = put(&s, inbox, 2, "Lea <lea@example.org>", "Urlaub", None, "Ich bin ab Montag weg.");
+        assert_eq!(a, b, "the row id is used again");
+        assert!(prepare(&s, &cfg, &req(b), Lang::De, 0, 0).unwrap().cached.is_none(), "not the old translation");
+        assert!(prepare(&s, &cfg, &Request::Extract { message_id: b }, Lang::De, 0, 0).unwrap().cached.is_none());
+        assert!(kept_summary(&s, b, Lang::De).unwrap().is_none());
+        // The same message stored again (another folder, synced anew) keeps its answer.
+        let c = put(&s, inbox, 1, "Jonas <jonas@example.org>", "Rechnung", None, "Bitte bis Freitag zahlen.");
+        assert_eq!(
+            prepare(&s, &cfg, &req(c), Lang::De, 0, 0).unwrap().cached.as_deref(),
+            Some("Please pay by Friday.")
+        );
     }
 
     #[test]

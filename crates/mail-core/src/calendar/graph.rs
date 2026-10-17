@@ -229,6 +229,15 @@ fn graph_error(status: u16, bytes: &[u8]) -> Error {
     Error::Network(trf!("Microsoft Graph meldet {status}: {msg}", "Microsoft Graph reports {status}: {msg}"))
 }
 
+/// The error of a write: a refusal that trying again does not change (a 4xx but a sign-in, a
+/// timeout or too many requests) is final, anything else is tried again.
+fn write_error(status: u16, bytes: &[u8]) -> Error {
+    match graph_error(status, bytes) {
+        Error::Network(m) if super::caldav::permanent(status) => Error::Invalid(m),
+        e => e,
+    }
+}
+
 /// The answers a write can get.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Written {
@@ -328,7 +337,7 @@ pub async fn create(g: &Graph, calendar_id: &str, data: &str) -> Result<Value> {
         .exchange(reqwest::Method::POST, &format!("/me/calendars/{calendar_id}/events"), Some(&body), &[PREFER])
         .await?;
     if status >= 400 {
-        return Err(graph_error(status, &bytes));
+        return Err(write_error(status, &bytes));
     }
     Ok(serde_json::from_slice(&bytes)?)
 }
@@ -345,7 +354,7 @@ pub async fn update(g: &Graph, id: &str, data: &str, etag: Option<&str>) -> Resu
     match status {
         412 | 409 => Ok(Written::Conflict),
         404 => Ok(Written::Conflict),
-        s if s >= 400 => Err(graph_error(s, &bytes)),
+        s if s >= 400 => Err(write_error(s, &bytes)),
         _ => Ok(Written::Done(serde_json::from_slice(&bytes).ok())),
     }
 }
@@ -357,7 +366,7 @@ pub async fn delete(g: &Graph, id: &str, etag: Option<&str>) -> Result<Written> 
     match status {
         412 | 409 => Ok(Written::Conflict),
         404 | 410 => Ok(Written::Done(None)),
-        s if s >= 400 => Err(graph_error(s, &bytes)),
+        s if s >= 400 => Err(write_error(s, &bytes)),
         _ => Ok(Written::Done(None)),
     }
 }

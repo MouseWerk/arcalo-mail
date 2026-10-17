@@ -50,6 +50,8 @@ pub struct Discovered {
     pub calendars: Vec<RemoteCalendar>,
     /// The server sends invitations and updates itself (`calendar-auto-schedule`).
     pub auto_schedule: bool,
+    /// The user's addresses the server knows (`calendar-user-address-set`), lower case.
+    pub addresses: Vec<String>,
 }
 
 /// One `<response>` of a multistatus.
@@ -254,9 +256,16 @@ impl CalDav {
                     .into(),
             )
         })?;
-        let home = self
-            .propfind(&principal, "0", "<c:calendar-home-set/>")
-            .await?
+        let about = self.propfind(&principal, "0", "<c:calendar-home-set/><c:calendar-user-address-set/>").await?;
+        let mut addresses: Vec<String> = vec![];
+        for href in about.iter().filter_map(|r| r.prop("calendar-user-address-set")).flat_map(|p| p.3.iter()) {
+            let Some(a) = href.strip_prefix("mailto:").or_else(|| href.strip_prefix("MAILTO:")) else { continue };
+            let a = a.trim().to_ascii_lowercase();
+            if a.contains('@') && !addresses.contains(&a) {
+                addresses.push(a);
+            }
+        }
+        let home = about
             .iter()
             .find_map(|r| r.prop("calendar-home-set").map(|p| p.3.first().cloned().unwrap_or_else(|| p.1.clone())))
             .filter(|h| !h.is_empty())
@@ -301,7 +310,7 @@ impl CalDav {
             return Err(Error::Network(tr!("Der Server hat keinen Kalender.", "The server has no calendar.").into()));
         }
         let options = self.request("OPTIONS", &home, &[], None).await.map(|a| a.dav).unwrap_or_default();
-        Ok(Discovered { calendars, auto_schedule: options.contains("calendar-auto-schedule") })
+        Ok(Discovered { calendars, auto_schedule: options.contains("calendar-auto-schedule"), addresses })
     }
 
     /// What changed since `token` (RFC 6578). `Ok(None)`: the server has no tokens or forgot
@@ -397,7 +406,9 @@ impl CalDav {
         match a.status {
             200..=299 => Ok(Written::Done(a.etag)),
             412 => Ok(Written::Conflict),
-            403 => Err(refused(a.status)),
+            // Gone on the server since it was read: the user decides, as for a conflict.
+            404 | 410 if etag.is_some() => Ok(Written::Conflict),
+            s if permanent(s) => Err(refused(s)),
             s => Err(Error::Network(trf!("Der Kalender-Server meldet {}.", "The calendar server reports {}.", s))),
         }
     }
@@ -409,10 +420,16 @@ impl CalDav {
         match a.status {
             200..=299 | 404 | 410 => Ok(Written::Done(None)),
             412 => Ok(Written::Conflict),
-            403 => Err(refused(a.status)),
+            s if permanent(s) => Err(refused(s)),
             s => Err(Error::Network(trf!("Der Kalender-Server meldet {}.", "The calendar server reports {}.", s))),
         }
     }
+}
+
+/// A status that trying the same write again does not change: a 4xx but a sign-in (401), a
+/// timeout (408), too early (425) or too many requests (429).
+pub fn permanent(status: u16) -> bool {
+    (400..500).contains(&status) && !matches!(status, 401 | 408 | 425 | 429)
 }
 
 /// A refusal that trying again does not change.
@@ -452,6 +469,10 @@ pub mod fake {
         pub auto_schedule: bool,
         /// Every write that came in: (method, path).
         pub writes: Vec<(String, String)>,
+        /// Writes whose body holds the text are answered with the status (a server's own checks).
+        pub reject: Vec<(String, u16)>,
+        /// The principal's `calendar-user-address-set`.
+        pub addresses: Vec<String>,
         etags: u64,
     }
 
@@ -476,6 +497,8 @@ pub mod fake {
                 token: 1,
                 auto_schedule: false,
                 writes: vec![],
+                reject: vec![],
+                addresses: vec![],
                 etags: 0,
             }
         }
@@ -567,13 +590,19 @@ pub mod fake {
                         ),
                         None,
                     ),
-                    "/caldav/principals/user" => Self::multistatus(
-                        &format!(
-                            "<d:response><d:href>/caldav/principals/user/</d:href>{}</d:response>",
-                            ok("<c:calendar-home-set><d:href>/caldav/calendars/user/</d:href></c:calendar-home-set>")
-                        ),
-                        None,
-                    ),
+                    "/caldav/principals/user" => {
+                        let addresses: String =
+                            self.addresses.iter().map(|a| format!("<d:href>{a}</d:href>")).collect();
+                        Self::multistatus(
+                            &format!(
+                                "<d:response><d:href>/caldav/principals/user/</d:href>{}</d:response>",
+                                ok(&format!(
+                                    "<c:calendar-home-set><d:href>/caldav/calendars/user/</d:href></c:calendar-home-set><c:calendar-user-address-set>{addresses}</c:calendar-user-address-set>"
+                                ))
+                            ),
+                            None,
+                        )
+                    }
                     "/caldav/calendars/user" => {
                         let mut inner = format!(
                             "<d:response><d:href>/caldav/calendars/user/</d:href>{}</d:response>",
@@ -679,6 +708,9 @@ pub mod fake {
                     };
                     if !fits {
                         return (412, vec![], String::new());
+                    }
+                    if let Some((_, status)) = self.reject.iter().find(|(text, _)| body.contains(text.as_str())) {
+                        return (*status, vec![], String::new());
                     }
                     self.writes.push(("PUT".into(), path.clone()));
                     let name = path[cal.len()..].to_string();

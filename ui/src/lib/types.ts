@@ -301,6 +301,8 @@ export type CalendarEvent = {
   categories: string[];
   editable: Editability;
   write: WriteState | null;
+  /** The organizer moved the meeting since the user answered: the answer is asked for again. */
+  reanswer: boolean;
 };
 
 export type CalSourceKind = "local" | "caldav" | "graph" | "jmap" | "ics";
@@ -376,6 +378,8 @@ export type InvitationCard = {
   outdated: boolean;
   event_key: string | null;
   conflicts: CalendarEvent[];
+  /** The organizer moved the meeting since the user answered. */
+  reanswer: boolean;
 };
 
 /** An appointment the assistant found, as a draft for the calendar's editor. */

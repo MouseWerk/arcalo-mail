@@ -89,7 +89,9 @@ fn put_times(c: &mut Component, start: &str, zone: Option<&str>, all_day: bool, 
     }
 }
 
-fn participant(p: &Value) -> Option<(String, Prop)> {
+/// A participant as an `ORGANIZER` or `ATTENDEE` line; the participant's id goes along
+/// (`X-JMAP-ID`), so the user's answer can be written back to it.
+fn participant(id: &str, p: &Value) -> Option<(String, Prop)> {
     let email = p["email"]
         .as_str()
         .map(str::to_owned)
@@ -104,6 +106,9 @@ fn participant(p: &Value) -> Option<(String, Prop)> {
         && let Some(s) = p["participationStatus"].as_str()
     {
         prop = prop.with("PARTSTAT", &s.to_ascii_uppercase());
+    }
+    if !id.is_empty() {
+        prop = prop.with("X-JMAP-ID", id);
     }
     Some((kind.to_string(), prop))
 }
@@ -134,7 +139,7 @@ pub fn to_ics(e: &Value) -> Option<String> {
         ev.props.push(Prop::new("URL", u));
     }
     if let Some(ps) = e["participants"].as_object() {
-        let mut list: Vec<(String, Prop)> = ps.values().filter_map(participant).collect();
+        let mut list: Vec<(String, Prop)> = ps.iter().filter_map(|(id, p)| participant(id, p)).collect();
         list.sort_by(|a, b| b.0.cmp(&a.0));
         for (_, p) in list {
             ev.props.push(p);
@@ -227,6 +232,26 @@ pub fn patch_from_ics(data: &str) -> Option<Value> {
     }))
 }
 
+/// The answers of the user (`me`) in an object, as patches of the JSCalendar participants they
+/// came from: `participants/<id>/participationStatus`.
+fn answers_from_ics(data: &str, me: &[String]) -> Map<String, Value> {
+    let mut out = Map::new();
+    let top = ics::parse_components(data.as_bytes());
+    let master = top
+        .iter()
+        .filter(|c| c.name == "VCALENDAR")
+        .flat_map(|c| c.children.iter())
+        .find(|c| c.name == "VEVENT" && c.prop("RECURRENCE-ID").is_none());
+    for p in master.into_iter().flat_map(|ev| ev.all("ATTENDEE")) {
+        let address = p.value.trim().trim_start_matches("mailto:").trim_start_matches("MAILTO:").trim();
+        let (Some(id), Some(status)) = (p.param("X-JMAP-ID"), p.param("PARTSTAT")) else { continue };
+        if me.iter().any(|m| m.eq_ignore_ascii_case(address)) {
+            out.insert(format!("participants/{id}/participationStatus"), json!(status.to_ascii_lowercase()));
+        }
+    }
+    out
+}
+
 /// The calendars account of a JMAP session (`None`: the server offers no calendars).
 pub fn account_of(client: &JmapClient) -> Option<String> {
     client.primary_account(CALENDARS)
@@ -272,38 +297,85 @@ pub struct Changes {
     pub state: String,
 }
 
+/// Events asked for per page of a full read (servers may give fewer).
+const QUERY_PAGE: u64 = 256;
+
 pub async fn changes(client: &JmapClient, state: Option<&str>) -> Result<Changes> {
     if let Some(s) = state {
-        match call(client, "CalendarEvent/changes", json!({ "sinceState": s })).await {
-            Ok(v) => {
-                let mut ids: Vec<String> = vec![];
-                for k in ["created", "updated"] {
-                    ids.extend(v[k].as_array().into_iter().flatten().filter_map(|x| x.as_str().map(str::to_owned)));
+        let mut since = s.to_string();
+        let mut ids: Vec<String> = vec![];
+        let mut removed: Vec<String> = vec![];
+        let mut full = false;
+        loop {
+            match call(client, "CalendarEvent/changes", json!({ "sinceState": since })).await {
+                Ok(v) => {
+                    let list = |k: &str| -> Vec<String> {
+                        v[k].as_array().into_iter().flatten().filter_map(|x| x.as_str().map(str::to_owned)).collect()
+                    };
+                    for id in list("created").into_iter().chain(list("updated")) {
+                        if !ids.contains(&id) {
+                            ids.push(id);
+                        }
+                    }
+                    for id in list("destroyed") {
+                        ids.retain(|i| *i != id);
+                        removed.push(id);
+                    }
+                    let next = v["newState"].as_str().unwrap_or(&since).to_string();
+                    let more = v["hasMoreChanges"].as_bool() == Some(true) && next != since;
+                    since = next;
+                    if !more {
+                        break;
+                    }
                 }
-                let removed = v["destroyed"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .filter_map(|x| x.as_str().map(str::to_owned))
-                    .collect();
-                let changed = get(client, &ids).await?;
-                return Ok(Changes {
-                    full: false,
-                    changed,
-                    removed,
-                    state: v["newState"].as_str().unwrap_or(s).to_string(),
-                });
+                Err(e) if crate::jmap::cannot_calculate_changes(&e) => {
+                    full = true;
+                    break;
+                }
+                Err(e) => return Err(e),
             }
-            Err(e) if crate::jmap::cannot_calculate_changes(&e) => {}
-            Err(e) => return Err(e),
+        }
+        if !full {
+            let changed = get(client, &ids).await?;
+            return Ok(Changes { full: false, changed, removed, state: since });
         }
     }
-    let q = call(client, "CalendarEvent/query", json!({})).await?;
-    let ids: Vec<String> =
-        q["ids"].as_array().into_iter().flatten().filter_map(|x| x.as_str().map(str::to_owned)).collect();
+    // Everything: the state first, so what changes while the pages are read comes with the
+    // next round.
     let got = call(client, "CalendarEvent/get", json!({ "ids": [] })).await?;
     let state = got["state"].as_str().unwrap_or_default().to_string();
+    let mut ids: Vec<String> = vec![];
+    loop {
+        let q = call(
+            client,
+            "CalendarEvent/query",
+            json!({ "position": ids.len(), "limit": QUERY_PAGE, "calculateTotal": true }),
+        )
+        .await?;
+        let page: Vec<String> =
+            q["ids"].as_array().into_iter().flatten().filter_map(|x| x.as_str().map(str::to_owned)).collect();
+        if page.is_empty() {
+            break;
+        }
+        ids.extend(page);
+        if q["total"].as_u64().is_some_and(|t| ids.len() as u64 >= t) {
+            break;
+        }
+    }
     Ok(Changes { full: true, changed: get(client, &ids).await?, removed: vec![], state })
+}
+
+/// The addresses of the account's sender identities, lower case.
+pub async fn identities(client: &JmapClient) -> Result<Vec<String>> {
+    let v = client.call("Identity/get", json!({ "ids": null })).await?;
+    Ok(v["list"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|i| i["email"].as_str())
+        .map(|e| e.trim().to_ascii_lowercase())
+        .filter(|e| e.contains('@') && !e.starts_with("*@"))
+        .collect())
 }
 
 async fn get(client: &JmapClient, ids: &[String]) -> Result<Vec<Value>> {
@@ -320,11 +392,11 @@ pub fn calendar_of(e: &Value) -> Option<String> {
     e["calendarIds"].as_object().and_then(|m| m.iter().find(|(_, v)| v.as_bool() == Some(true)).map(|(k, _)| k.clone()))
 }
 
-/// Creates an event; returns its id.
-pub async fn create(client: &JmapClient, calendar: &str, data: &str) -> Result<String> {
+/// Creates an event; returns its id. `send`: the server sends the invitations.
+pub async fn create(client: &JmapClient, calendar: &str, data: &str, send: bool) -> Result<String> {
     let mut e = patch_from_ics(data).ok_or_else(|| Error::Invalid("JMAP: no event".into()))?;
     e["calendarIds"] = json!({ calendar: true });
-    let v = call(client, "CalendarEvent/set", json!({ "create": { "n": e } })).await?;
+    let v = call(client, "CalendarEvent/set", json!({ "create": { "n": e }, "sendSchedulingMessages": send })).await?;
     if let Some(err) = v["notCreated"]["n"].as_object() {
         return Err(Error::Invalid(format!(
             "JMAP: {}",
@@ -334,11 +406,15 @@ pub async fn create(client: &JmapClient, calendar: &str, data: &str) -> Result<S
     v["created"]["n"]["id"].as_str().map(str::to_owned).ok_or_else(|| Error::Network("JMAP: no id".into()))
 }
 
-/// Writes an event's changed properties.
-pub async fn update(client: &JmapClient, id: &str, data: &str) -> Result<()> {
+/// Writes an event's changed properties and the user's answer (`me`: the user's addresses).
+/// `send`: the user confirmed that the attendees get the change; the server sends it.
+pub async fn update(client: &JmapClient, id: &str, data: &str, send: bool, me: &[String]) -> Result<()> {
     let mut e = patch_from_ics(data).ok_or_else(|| Error::Invalid("JMAP: no event".into()))?;
-    e.as_object_mut().map(|o| o.remove("uid"));
-    let v = call(client, "CalendarEvent/set", json!({ "update": { id: e } })).await?;
+    if let Some(o) = e.as_object_mut() {
+        o.remove("uid");
+        o.extend(answers_from_ics(data, me));
+    }
+    let v = call(client, "CalendarEvent/set", json!({ "update": { id: e }, "sendSchedulingMessages": send })).await?;
     if let Some(err) = v["notUpdated"][id].as_object() {
         return Err(Error::Invalid(format!(
             "JMAP: {}",
@@ -369,6 +445,12 @@ pub mod fake {
         /// What changed at which state: (state, id, destroyed).
         pub log: Vec<(u64, String, bool)>,
         next: u64,
+        /// The most ids one query gives (servers clamp `limit`).
+        pub query_limit: Option<usize>,
+        /// Put by another client while a query runs.
+        pub during_query: Option<Value>,
+        /// The arguments of every `CalendarEvent/set`.
+        pub sets: Vec<Value>,
     }
 
     impl FakeJmapCalendars {
@@ -392,7 +474,23 @@ pub mod fake {
                     {"id": "cal2", "name": "Team", "color": "#0891b2", "myRights": {"mayWriteAll": false}}
                 ], "notFound": [] })),
                 "CalendarEvent/query" => {
-                    Ok(json!({ "ids": self.events.keys().collect::<Vec<_>>(), "queryState": self.state.to_string() }))
+                    let all: Vec<String> = self.events.keys().cloned().collect();
+                    let total = all.len();
+                    let position = args["position"].as_u64().unwrap_or(0) as usize;
+                    let mut limit = args["limit"].as_u64().map(|l| l as usize).unwrap_or(usize::MAX);
+                    if let Some(max) = self.query_limit {
+                        limit = limit.min(max);
+                    }
+                    let ids: Vec<String> = all.into_iter().skip(position).take(limit).collect();
+                    let state = self.state.to_string();
+                    if let Some(e) = self.during_query.take() {
+                        self.put(e);
+                    }
+                    let mut out = json!({ "ids": ids, "queryState": state, "position": position });
+                    if args["calculateTotal"].as_bool() == Some(true) {
+                        out["total"] = json!(total);
+                    }
+                    Ok(out)
                 }
                 "CalendarEvent/get" => {
                     let ids: Vec<String> = args["ids"]
@@ -425,6 +523,7 @@ pub mod fake {
                     )
                 }
                 "CalendarEvent/set" => {
+                    self.sets.push(args.clone());
                     let mut out =
                         json!({ "oldState": self.state.to_string(), "created": {}, "updated": {}, "destroyed": [] });
                     if let Some(c) = args["create"].as_object() {
@@ -444,7 +543,13 @@ pub mod fake {
                                 continue;
                             };
                             for (k, v) in patch.as_object().cloned().unwrap_or_default() {
-                                e[k] = v;
+                                // A path into the event (`participants/p1/participationStatus`).
+                                let mut at = &mut e;
+                                let parts: Vec<&str> = k.split('/').collect();
+                                for p in &parts[..parts.len() - 1] {
+                                    at = &mut at[*p];
+                                }
+                                at[parts[parts.len() - 1]] = v;
                             }
                             self.put(e);
                             out["updated"][id] = Value::Null;

@@ -1196,6 +1196,97 @@ pub fn edit_event(data: &str, f: &Fields, now: DateTime<Utc>) -> Option<String> 
     Some(cal.to_text())
 }
 
+/// The `SEQUENCE` of an object's appointment (the master of a series), 0 without one.
+pub fn sequence(data: &str) -> u32 {
+    let top = parse_components(data.as_bytes());
+    top.iter()
+        .filter(|c| c.name == "VCALENDAR")
+        .flat_map(|c| c.children.iter())
+        .filter(|c| c.name == "VEVENT")
+        .min_by_key(|c| c.prop("RECURRENCE-ID").is_some())
+        .and_then(|c| c.text("SEQUENCE"))
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0)
+}
+
+/// The object with `SEQUENCE` set to `n` in every appointment of it.
+pub fn with_sequence(data: &str, n: u32) -> Option<String> {
+    let mut top = parse_components(data.as_bytes());
+    let cal = top.iter_mut().find(|c| c.name == "VCALENDAR")?;
+    for ev in cal.children.iter_mut().filter(|c| c.name == "VEVENT") {
+        ev.set(Prop::new("SEQUENCE", &n.to_string()));
+    }
+    Some(cal.to_text())
+}
+
+/// The zones a calendar file defines, floating times in the device's zone.
+fn file_zones(cal: &Component) -> Zones {
+    let mut defined = HashMap::new();
+    for tz in cal.children.iter().filter(|c| c.name == "VTIMEZONE") {
+        let Some(id) = tz.text("TZID") else { continue };
+        if defined.contains_key(&id) {
+            continue;
+        }
+        if let Some(rules) = zone_rules(tz) {
+            defined.insert(id, Zone::Rules(Arc::new(rules)));
+        }
+    }
+    Zones { defined, default: Zone::Local }
+}
+
+/// The instance a date property names (a `RECURRENCE-ID`, an `EXDATE`, a `DTSTART`) in the
+/// form [`parse`] gives [`Occurrence::instance`]: the UTC instant, or the day of an all-day
+/// series (`all_day`). `cal`: the file it is in (for its zones).
+pub fn instance_of(cal: &Component, p: &Prop, all_day: bool) -> Option<String> {
+    let zones = file_zones(cal);
+    let w = whens(p, &zones).into_iter().next()?;
+    let w = match w {
+        When::Time(t, Zone::Utc) if all_day => When::Date(zones.default.to_wall(Zone::Utc.to_utc(t)).date()),
+        When::Time(t, _) if all_day => When::Date(t.date()),
+        w => w,
+    };
+    Some(instance_key(&w, &zones.default))
+}
+
+/// The start and end of an event (the first instance of a series), with the zones of its file.
+pub fn span_of(cal: &Component, ev: &Component) -> Option<(DateTime<Utc>, DateTime<Utc>)> {
+    let zones = file_zones(cal);
+    let start = when(ev, "DTSTART", &zones)?;
+    let len = length(ev, &start, &zones);
+    let (s, e, _) = place(&start, &len, &zones);
+    Some((s, e))
+}
+
+/// The instances the `EXDATE`s of an event leave out (see [`instance_of`]).
+pub fn excluded(cal: &Component, ev: &Component, all_day: bool) -> Vec<String> {
+    let zones = file_zones(cal);
+    ev.all("EXDATE")
+        .flat_map(|p| whens(p, &zones))
+        .map(|w| match w {
+            When::Time(t, Zone::Utc) if all_day => When::Date(zones.default.to_wall(Zone::Utc.to_utc(t)).date()),
+            When::Time(t, _) if all_day => When::Date(t.date()),
+            w => w,
+        })
+        .map(|w| instance_key(&w, &zones.default))
+        .collect()
+}
+
+/// An `EXDATE` for an instance key of [`instance_of`].
+pub fn exdate_for(instance: &str) -> Option<Prop> {
+    if let Ok(d) = NaiveDate::parse_from_str(instance, "%Y-%m-%d") {
+        return Some(Prop::new("EXDATE", &d.format("%Y%m%d").to_string()).with("VALUE", "DATE"));
+    }
+    let t = DateTime::parse_from_rfc3339(instance).ok()?.with_timezone(&Utc);
+    Some(Prop::new("EXDATE", &utc_text(t)))
+}
+
+/// Whether an event is all-day (its `DTSTART` a date).
+pub fn is_all_day(ev: &Component) -> bool {
+    ev.prop("DTSTART").is_some_and(|p| {
+        p.param("VALUE").is_some_and(|v| v.eq_ignore_ascii_case("DATE")) || (p.value.trim().len() == 8)
+    })
+}
+
 /// The first and last instant an object can show at (for picking the objects of a range);
 /// `None` for the end of a series without an end.
 pub fn bounds(data: &str) -> (Option<i64>, Option<i64>) {

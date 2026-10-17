@@ -39,32 +39,53 @@ fn lock(store: &Mutex<Store>) -> std::sync::MutexGuard<'_, Store> {
     store.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// One round of a source.
+/// One round of a source. A write that fails stays queued and the round goes on: the other
+/// writes and the server's changes are never held up by it. When the server answered in that
+/// round, the failure counts towards parking the write ([`super::write_struck`]).
 pub async fn sync_source(store: &Mutex<Store>, source_id: i64, access: &Access) -> Result<Outcome> {
     let source = super::source(&lock(store), source_id)?;
     let result = async {
         let mut out = Outcome::default();
         let writes = super::pending_writes(&lock(store), source_id)?;
         let auto_schedule = source.auto_schedule;
+        let mut failed = vec![];
+        let mut first_error = None;
         for w in writes {
             match replay(store, &source.kind, access, &w).await {
-                Ok(()) => {
+                Ok(Replayed::Done) => {
                     out.changed = true;
                     if w.send && w.op != "delete" && source.kind == SourceKind::Caldav && !auto_schedule {
-                        out.notify.push(super::object(&lock(store), w.object.id).map(|o| o.data).unwrap_or_default());
+                        out.notify.push(w.object.data.clone());
                     }
                 }
+                // Refused because of a change made elsewhere: nobody hears of it before the
+                // user settled the conflict.
+                Ok(Replayed::Conflict) => out.changed = true,
                 Err(Error::Invalid(e)) => {
                     super::write_refused(&lock(store), &w, &e)?;
                     out.changed = true;
                 }
                 Err(e) => {
                     super::write_failed(&lock(store), &w, &super::describe_error(&e))?;
-                    return Err(e);
+                    out.changed = true;
+                    failed.push(w);
+                    // Signed out: the rest would fail the same way.
+                    let stop = matches!(e, Error::Connection(_));
+                    first_error.get_or_insert(e);
+                    if stop {
+                        break;
+                    }
                 }
             }
         }
-        out.changed |= pull(store, source_id, &source.kind, access).await?;
+        match pull(store, source_id, &source.kind, access).await {
+            Ok(changed) => out.changed |= changed,
+            Err(e) => return Err(first_error.unwrap_or(e)),
+        }
+        let s = lock(store);
+        for w in &failed {
+            super::write_struck(&s, w)?;
+        }
         Ok(out)
     }
     .await;
@@ -80,7 +101,16 @@ fn remote_of(store: &Mutex<Store>, w: &Write) -> Result<String> {
     Ok(super::calendar(&lock(store), w.object.calendar_id)?.remote_id)
 }
 
-async fn replay(store: &Mutex<Store>, kind: &SourceKind, access: &Access, w: &Write) -> Result<()> {
+/// What became of a write.
+enum Replayed {
+    Done,
+    /// Changed elsewhere since: the user decides.
+    Conflict,
+}
+
+async fn replay(store: &Mutex<Store>, kind: &SourceKind, access: &Access, w: &Write) -> Result<Replayed> {
+    let done = |r: Result<()>| r.map(|_| Replayed::Done);
+    let conflict = |r: Result<()>| r.map(|_| Replayed::Conflict);
     match (kind, access) {
         (SourceKind::Caldav, Access::Basic { user, password }) => {
             let dav = caldav::CalDav::new(user, password)?;
@@ -101,15 +131,15 @@ async fn replay(store: &Mutex<Store>, kind: &SourceKind, access: &Access, w: &Wr
                         },
                         _ => (new_etag, None),
                     };
-                    super::write_done(&lock(store), w, None, etag.as_deref(), data.as_deref())
+                    done(super::write_done(&lock(store), w, None, etag.as_deref(), data.as_deref()))
                 }
                 caldav::Written::Conflict => {
                     let server = dav.get(href).await?;
                     let s = lock(store);
-                    match server {
+                    conflict(match server {
                         Some((e, d)) => super::write_conflict(&s, w, Some(&d), e.as_deref()),
                         None => super::write_conflict(&s, w, None, None),
-                    }
+                    })
                 }
             }
         }
@@ -123,39 +153,41 @@ async fn replay(store: &Mutex<Store>, kind: &SourceKind, access: &Access, w: &Wr
             match written {
                 graph::Written::Done(Some(v)) => {
                     let id = v["id"].as_str().map(str::to_owned);
-                    super::write_done(
+                    done(super::write_done(
                         &lock(store),
                         w,
                         id.as_deref(),
                         graph::etag_of(&v).as_deref(),
                         Some(&v.to_string()),
-                    )
+                    ))
                 }
-                graph::Written::Done(None) => super::write_done(&lock(store), w, None, None, None),
+                graph::Written::Done(None) => done(super::write_done(&lock(store), w, None, None, None)),
                 graph::Written::Conflict => {
                     let server = graph::get(g, &w.object.href).await?;
                     let s = lock(store);
-                    match server {
+                    conflict(match server {
                         Some(v) => super::write_conflict(&s, w, Some(&v.to_string()), graph::etag_of(&v).as_deref()),
                         None => super::write_conflict(&s, w, None, None),
-                    }
+                    })
                 }
             }
         }
         (SourceKind::Jmap, Access::Jmap(client)) => {
             let calendar = remote_of(store, w)?;
+            // The server sends a confirmed change to the attendees itself.
+            let me = super::my_addresses(&lock(store))?;
             match w.op.as_str() {
                 "create" => {
-                    let id = jmap::create(client, &calendar, &w.object.data).await?;
-                    super::write_done(&lock(store), w, Some(&id), None, None)
+                    let id = jmap::create(client, &calendar, &w.object.data, w.send).await?;
+                    done(super::write_done(&lock(store), w, Some(&id), None, None))
                 }
                 "delete" => {
                     jmap::destroy(client, &w.object.href).await?;
-                    super::write_done(&lock(store), w, None, None, None)
+                    done(super::write_done(&lock(store), w, None, None, None))
                 }
                 _ => {
-                    jmap::update(client, &w.object.href, &w.object.data).await?;
-                    super::write_done(&lock(store), w, None, None, None)
+                    jmap::update(client, &w.object.href, &w.object.data, w.send, &me).await?;
+                    done(super::write_done(&lock(store), w, None, None, None))
                 }
             }
         }
@@ -228,6 +260,7 @@ async fn pull(store: &Mutex<Store>, source_id: i64, kind: &SourceKind, access: &
             }
             let s = lock(store);
             super::keep_calendars(&s, source_id, &ids)?;
+            super::set_user_addresses(&s, super::AddressOrigin::Source(source_id), &found.addresses)?;
             super::synced(&s, source_id, None, Some(found.auto_schedule))?;
         }
         (SourceKind::Graph, Access::Graph(g)) => {
@@ -280,7 +313,12 @@ async fn pull(store: &Mutex<Store>, source_id: i64, kind: &SourceKind, access: &
                 None => None,
             };
             let ch = jmap::changes(client, state.as_deref()).await?;
+            let identities = jmap::identities(client).await.unwrap_or_default();
+            let account = super::source(&lock(store), source_id)?.account_id;
             let s = lock(store);
+            if let Some(account) = account {
+                super::set_user_addresses(&s, super::AddressOrigin::Account(account), &identities)?;
+            }
             s.batch(|| {
                 let seen: Vec<String> = ch.changed.iter().filter_map(|e| e["id"].as_str().map(str::to_owned)).collect();
                 for (_, cal) in &cal_ids {

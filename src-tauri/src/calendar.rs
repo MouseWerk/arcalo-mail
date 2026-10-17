@@ -430,14 +430,9 @@ pub async fn invitation_answer(
         let store = state.store();
         let detail = store.message(message_id)?;
         let account = store.account(detail.account_id)?;
-        let raw = store.raw_message(message_id)?.ok_or_else(|| {
+        let data = itip::calendar_data(&store, message_id)?.ok_or_else(|| {
             Error::Invalid(
                 mail_core::tr!("Die Einladung ist noch nicht geladen.", "The invitation is not loaded yet.").into(),
-            )
-        })?;
-        let data = itip::find_in_message(&raw).ok_or_else(|| {
-            Error::Invalid(
-                mail_core::tr!("Die Nachricht enthält keine Einladung.", "The message holds no invitation.").into(),
             )
         })?;
         let me = calendar::my_addresses(&store)?;

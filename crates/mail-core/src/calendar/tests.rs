@@ -576,3 +576,367 @@ async fn subscriptions_are_read_only_and_follow_their_etag() {
     assert!(create(&s, cal, &fields("x", utc(2026, 11, 3, 9, 0), 30), &me()).is_err());
     assert_ne!(default_calendar(&s, Some(cal)).unwrap(), cal, "never the default");
 }
+
+fn with_account() -> Store {
+    let s = Store::open_in_memory().unwrap();
+    s.add_account(&crate::account::AccountDraft {
+        provider: crate::account::Provider::Imap,
+        name: "Maria".into(),
+        email: "maria@example.org".into(),
+        sender_name: "Maria Muster".into(),
+        transport: crate::account::preset(crate::account::Provider::Imap, "maria@example.org").unwrap(),
+    })
+    .unwrap();
+    s
+}
+
+fn dav_calendar(s: &Store) -> i64 {
+    let src = add_source(s, SourceKind::Caldav, "Dav", "https://dav.example.org/", "maria", None).unwrap();
+    upsert_calendar(s, src, "https://dav.example.org/cal/home/", "Home", None, true).unwrap()
+}
+
+fn queued(s: &Store) -> Vec<(i64, String, String)> {
+    let mut st = s.conn().prepare("SELECT object_id, op, state FROM cal_writes ORDER BY id").unwrap();
+    st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap().collect::<rusqlite::Result<_>>().unwrap()
+}
+
+#[test]
+fn undoing_a_delete_keeps_the_change_that_waited() {
+    let s = with_account();
+    let cal = dav_calendar(&s);
+    let href = "https://dav.example.org/cal/home/own-1.ics";
+    let single = ics_event("own-1", "Alt", "20261104T090000Z", "20261104T100000Z", "");
+    put_object(&s, cal, href, Some("\"e1\""), "ics", &single).unwrap();
+    let id = objects_by_uid(&s, "own-1").unwrap()[0].id;
+    let key = format!("{cal}|{id}|");
+    // Offline: renamed, deleted, taken back.
+    update(&s, &key, &Fields { title: Some("Neu".into()), ..Fields::default() }, false, &me()).unwrap();
+    let u = delete(&s, &key, &me()).unwrap();
+    undo(&s, &u, &me()).unwrap();
+    assert!(object(&s, id).unwrap().data.contains("SUMMARY:Neu"));
+    assert_eq!(queued(&s), [(id, "update".to_string(), "pending".to_string())], "the rename still goes out");
+    let w = event(&s, &key, &me()).unwrap().write.unwrap();
+    assert_eq!(w.mine.and_then(|f| f.title).as_deref(), Some("Neu"));
+    // The next pull does not take the rename back.
+    put_object(&s, cal, href, Some("\"e1\""), "ics", &single).unwrap();
+    assert!(object(&s, id).unwrap().data.contains("SUMMARY:Neu"));
+    // A delete with nothing waiting before it: taken back, nothing to write.
+    let s = with_account();
+    let cal = dav_calendar(&s);
+    put_object(&s, cal, href, Some("\"e1\""), "ics", &single).unwrap();
+    let id = objects_by_uid(&s, "own-1").unwrap()[0].id;
+    let u = delete(&s, &format!("{cal}|{id}|"), &me()).unwrap();
+    undo(&s, &u, &me()).unwrap();
+    assert!(queued(&s).is_empty());
+}
+
+#[test]
+fn a_change_made_while_a_write_is_on_its_way_stays_queued() {
+    let s = with_account();
+    let cal = dav_calendar(&s);
+    let href = "https://dav.example.org/cal/home/own-2.ics";
+    let single = ics_event("own-2", "Alt", "20261104T090000Z", "20261104T100000Z", "");
+    put_object(&s, cal, href, Some("\"e1\""), "ics", &single).unwrap();
+    let id = objects_by_uid(&s, "own-2").unwrap()[0].id;
+    let key = format!("{cal}|{id}|");
+    update(&s, &key, &Fields { title: Some("A".into()), ..Fields::default() }, false, &me()).unwrap();
+    let source = calendar(&s, cal).unwrap().source_id;
+    let w = pending_writes(&s, source).unwrap().remove(0);
+    let sent = w.object.data.clone();
+    // The round sends „A“; meanwhile the user renames it to „B“.
+    update(&s, &key, &Fields { title: Some("B".into()), ..Fields::default() }, false, &me()).unwrap();
+    write_done(&s, &w, None, Some("\"e2\""), Some(&sent)).unwrap();
+    assert_eq!(queued(&s), [(id, "update".to_string(), "pending".to_string())], "„B“ still goes out");
+    let o = object(&s, id).unwrap();
+    assert!(o.data.contains("SUMMARY:B"), "the server's copy of „A“ does not replace „B“");
+    assert_eq!(o.etag.as_deref(), Some("\"e2\""), "the next write is based on the server's new version");
+    put_object(&s, cal, href, Some("\"e2\""), "ics", &sent).unwrap();
+    assert!(object(&s, id).unwrap().data.contains("SUMMARY:B"));
+    // The next write goes out and is done.
+    let w = pending_writes(&s, source).unwrap().remove(0);
+    write_done(&s, &w, None, Some("\"e3\""), None).unwrap();
+    assert!(queued(&s).is_empty());
+    // A new appointment changed while it is created: the change follows as an update.
+    let (ev, _) = create(&s, cal, &fields("Neu", utc(2026, 11, 5, 9, 0), 30), &me()).unwrap();
+    let w = pending_writes(&s, source).unwrap().remove(0);
+    update(&s, &ev.key, &Fields { title: Some("Neuer".into()), ..Fields::default() }, false, &me()).unwrap();
+    write_done(&s, &w, None, Some("\"n1\""), None).unwrap();
+    assert_eq!(queued(&s), [(ev.object_id, "update".to_string(), "pending".to_string())]);
+}
+
+#[tokio::test]
+async fn a_meeting_update_the_server_refused_is_not_mailed() {
+    let (fake, base) = dav_server().await;
+    let meeting = ics_event(
+        "kick",
+        "Kickoff",
+        "20261105T080000Z",
+        "20261105T090000Z",
+        "SEQUENCE:0\r\nORGANIZER:mailto:maria@example.org\r\nATTENDEE:mailto:lea@example.org\r\n",
+    );
+    fake.lock().unwrap().put(caldav::fake::WORK, "kick.ics", &meeting);
+    let store = Mutex::new(with_account());
+    let source = add_source(&store.lock().unwrap(), SourceKind::Caldav, "Dav", &base, "maria", None).unwrap();
+    sync_source(&store, source, &basic()).await.unwrap();
+    let o = objects_by_uid(&store.lock().unwrap(), "kick").unwrap().remove(0);
+    let key = format!("{}|{}|", o.calendar_id, o.id);
+    // Someone else changes it on the server meanwhile.
+    fake.lock().unwrap().put(
+        caldav::fake::WORK,
+        "kick.ics",
+        &meeting.replace("SUMMARY:Kickoff", "SUMMARY:Kickoff (Raum 2)"),
+    );
+    let moved = Fields { start: Some(utc(2026, 11, 5, 10, 0)), ..Fields::default() };
+    update(&store.lock().unwrap(), &key, &moved, true, &me()).unwrap();
+    let out = sync_source(&store, source, &basic()).await.unwrap();
+    assert_eq!(queued(&store.lock().unwrap())[0].2, "conflict");
+    assert!(out.notify.is_empty(), "the attendees hear nothing the server did not take");
+    // Kept: written over the server's copy, then mailed once.
+    resolve(&store.lock().unwrap(), &key, true).unwrap();
+    let out = sync_source(&store, source, &basic()).await.unwrap();
+    assert_eq!(out.notify.len(), 1);
+    assert!(sync_source(&store, source, &basic()).await.unwrap().notify.is_empty(), "once");
+    // Taken back after it went out: the attendees hear of that too, with a higher SEQUENCE.
+    let (_, u) = update(
+        &store.lock().unwrap(),
+        &key,
+        &Fields { start: Some(utc(2026, 11, 5, 12, 0)), ..Fields::default() },
+        true,
+        &me(),
+    )
+    .unwrap();
+    let out = sync_source(&store, source, &basic()).await.unwrap();
+    assert_eq!(out.notify.len(), 1);
+    let seq = |data: &str| crate::itip::parse(data, &[]).unwrap().sequence;
+    let sent_seq = seq(&out.notify[0]);
+    undo(&store.lock().unwrap(), &u, &me()).unwrap();
+    let out = sync_source(&store, source, &basic()).await.unwrap();
+    assert_eq!(out.notify.len(), 1, "the undo is sent as well");
+    assert!(seq(&out.notify[0]) > sent_seq, "{}", out.notify[0]);
+    assert_eq!(crate::itip::parse(&out.notify[0], &[]).unwrap().start, utc(2026, 11, 5, 10, 0));
+}
+
+#[tokio::test]
+async fn a_rejected_write_is_parked_and_never_blocks_the_pull() {
+    let (fake, base) = dav_server().await;
+    let store = Mutex::new(with_account());
+    let source = add_source(&store.lock().unwrap(), SourceKind::Caldav, "Dav", &base, "maria", None).unwrap();
+    sync_source(&store, source, &basic()).await.unwrap();
+    let work = calendars(&store.lock().unwrap()).unwrap().into_iter().find(|c| c.name == "Arbeit").unwrap().id;
+    // The server rejects one object for good (a strict check, a UID used elsewhere).
+    fake.lock().unwrap().reject.push(("SUMMARY:Kaputt".into(), 400));
+    let (bad, _) = create(&store.lock().unwrap(), work, &fields("Kaputt", utc(2026, 11, 3, 9, 0), 30), &me()).unwrap();
+    let (good, _) = create(&store.lock().unwrap(), work, &fields("Gut", utc(2026, 11, 4, 9, 0), 30), &me()).unwrap();
+    fake.lock().unwrap().put(
+        caldav::fake::WORK,
+        "neu.ics",
+        &ics_event("neu", "Von drüben", "20261105T090000Z", "20261105T100000Z", ""),
+    );
+    sync_source(&store, source, &basic()).await.unwrap();
+    {
+        let s = store.lock().unwrap();
+        assert_eq!(event(&s, &bad.key, &me()).unwrap().write.unwrap().state, "refused");
+        assert!(event(&s, &good.key, &me()).unwrap().write.is_none(), "the next write went out");
+        assert!(objects_by_uid(&s, "neu").unwrap().len() == 1, "the server's changes came in");
+        discard(&s, &bad.key).unwrap();
+        assert!(event(&s, &bad.key, &me()).is_err(), "„Verwerfen“ drops it");
+    }
+    // A server error: tried again a few times, then parked with its error; the pull goes on.
+    fake.lock().unwrap().reject.push(("SUMMARY:Wackelig".into(), 503));
+    let (flaky, _) =
+        create(&store.lock().unwrap(), work, &fields("Wackelig", utc(2026, 11, 6, 9, 0), 30), &me()).unwrap();
+    sync_source(&store, source, &basic()).await.unwrap();
+    assert_eq!(event(&store.lock().unwrap(), &flaky.key, &me()).unwrap().write.unwrap().state, "pending");
+    for _ in 0..MAX_WRITE_ATTEMPTS {
+        sync_source(&store, source, &basic()).await.unwrap();
+    }
+    fake.lock().unwrap().put(
+        caldav::fake::WORK,
+        "neu2.ics",
+        &ics_event("neu2", "Noch eins", "20261105T110000Z", "20261105T120000Z", ""),
+    );
+    sync_source(&store, source, &basic()).await.unwrap();
+    {
+        let s = store.lock().unwrap();
+        let w = event(&s, &flaky.key, &me()).unwrap().write.unwrap();
+        assert_eq!(w.state, "refused");
+        assert!(w.error.as_deref().is_some_and(|e| e.contains("503")), "{w:?}");
+        assert_eq!(objects_by_uid(&s, "neu2").unwrap().len(), 1);
+    }
+    // Without a connection (here: a refused sign-in) nothing is parked: the server never answered.
+    let (later, _) =
+        create(&store.lock().unwrap(), work, &fields("Später", utc(2026, 11, 7, 9, 0), 30), &me()).unwrap();
+    let refused = Access::Basic { user: "maria".into(), password: "falsch".into() };
+    for _ in 0..MAX_WRITE_ATTEMPTS + 2 {
+        assert!(sync_source(&store, source, &refused).await.is_err());
+    }
+    assert_eq!(event(&store.lock().unwrap(), &later.key, &me()).unwrap().write.unwrap().state, "pending");
+}
+
+#[test]
+fn every_appointment_of_a_subscription_has_its_own_key() {
+    let s = with_account();
+    let src = add_source(&s, SourceKind::Ics, "Feiertage", "https://x.example/", "", None).unwrap();
+    let cal = upsert_calendar(&s, src, "ics", "Feiertage", None, false).unwrap();
+    let file = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\n\
+BEGIN:VEVENT\r\nUID:a\r\nDTSTART;VALUE=DATE:20261225\r\nSUMMARY:1. Weihnachtstag\r\nEND:VEVENT\r\n\
+BEGIN:VEVENT\r\nUID:b\r\nDTSTART;VALUE=DATE:20261226\r\nSUMMARY:2. Weihnachtstag\r\nEND:VEVENT\r\n\
+BEGIN:VEVENT\r\nUID:c\r\nDTSTART;VALUE=DATE:20270101\r\nSUMMARY:Neujahr\r\nEND:VEVENT\r\n\
+BEGIN:VEVENT\r\nUID:w\r\nDTSTART:20261228T090000Z\r\nDURATION:PT1H\r\nRRULE:FREQ=DAILY;COUNT=2\r\nSUMMARY:Serie A\r\nEND:VEVENT\r\n\
+BEGIN:VEVENT\r\nUID:v\r\nDTSTART:20261228T090000Z\r\nDURATION:PT1H\r\nRRULE:FREQ=DAILY;COUNT=2\r\nSUMMARY:Serie B\r\nEND:VEVENT\r\n\
+END:VCALENDAR\r\n";
+    put_object(&s, cal, "ics", None, "ics", file).unwrap();
+    let evs = events(&s, utc(2026, 12, 1, 0, 0), utc(2027, 2, 1, 0, 0), &me(), false).unwrap();
+    assert_eq!(evs.len(), 7);
+    let mut keys: Vec<&str> = evs.iter().map(|e| e.key.as_str()).collect();
+    keys.sort();
+    keys.dedup();
+    assert_eq!(keys.len(), 7, "{keys:?}");
+    for e in &evs {
+        let opened = event(&s, &e.key, &me()).unwrap();
+        assert_eq!((opened.title.as_str(), opened.start), (e.title.as_str(), e.start));
+    }
+}
+
+#[tokio::test]
+async fn the_users_other_addresses_from_the_calendar_server() {
+    let (fake, base) = dav_server().await;
+    fake.lock().unwrap().addresses = vec!["mailto:maria.muster@example.org".into(), "/principals/user/".into()];
+    let meeting = ics_event(
+        "own-alias",
+        "Planung",
+        "20261103T090000Z",
+        "20261103T100000Z",
+        "ORGANIZER:mailto:Maria.Muster@example.org\r\nATTENDEE:mailto:lea@example.org\r\n",
+    );
+    fake.lock().unwrap().put(caldav::fake::WORK, "p.ics", &meeting);
+    let store = Mutex::new(with_account());
+    let source = add_source(&store.lock().unwrap(), SourceKind::Caldav, "Dav", &base, "maria", None).unwrap();
+    sync_source(&store, source, &basic()).await.unwrap();
+    let s = store.lock().unwrap();
+    let mine = my_addresses(&s).unwrap();
+    assert_eq!(mine, ["maria@example.org", "maria.muster@example.org"]);
+    let ev = events(&s, week().0, week().1, &mine, false).unwrap().remove(0);
+    assert_eq!(ev.editable, Editability::Confirm, "organized under the server's address: the user's own");
+    drop(s);
+    remove_source(&store.lock().unwrap(), source).unwrap();
+    assert_eq!(my_addresses(&store.lock().unwrap()).unwrap(), ["maria@example.org"]);
+}
+
+type JmapServer = Arc<Mutex<(crate::imap::fake::FakeImap, crate::jmap::fake::FakeJmapState)>>;
+
+async fn jmap_server(cals: jmap::fake::FakeJmapCalendars) -> (JmapServer, crate::jmap::JmapClient) {
+    use crate::imap::fake::FakeImap;
+    use crate::jmap::fake::{FakeJmapState, authorized};
+    let mut state = FakeJmapState::new("maria@example.org", false);
+    state.calendars = Some(cals);
+    let server: JmapServer = Arc::new(Mutex::new((FakeImap::default().with_all_folders(), state)));
+    let s2 = server.clone();
+    let base: Arc<Mutex<String>> = Arc::default();
+    let b = base.clone();
+    let port = serve(Arc::new(move |method: &str, target: &str, headers: &[(String, String)], body: &[u8]| {
+        if !authorized(headers, "maria@example.org", "pw") {
+            return Reply::status(401, "{}");
+        }
+        let base = b.lock().unwrap().clone();
+        let mut g = s2.lock().unwrap();
+        let (fake, jmap) = &mut *g;
+        let r = jmap.handle(fake, method, target, body, &base);
+        Reply { status: r.status, content_type: r.content_type, body: r.body, location: r.location, headers: vec![] }
+    }))
+    .await;
+    *base.lock().unwrap() = format!("http://127.0.0.1:{port}");
+    let auth = crate::jmap::JmapAuth::Basic { user: "maria@example.org".into(), password: "pw".into() };
+    let client =
+        crate::jmap::JmapClient::connect(&format!("http://127.0.0.1:{port}/jmap/session"), &auth).await.unwrap();
+    (server, client)
+}
+
+#[tokio::test]
+async fn jmap_reads_every_page_and_misses_nothing_changed_meanwhile() {
+    let mut cals = jmap::fake::FakeJmapCalendars::default();
+    for i in 0..7 {
+        cals.put(json!({"@type": "Event", "calendarIds": {"cal1": true}, "title": format!("Termin {i}"),
+            "start": format!("2026-11-0{}T09:00:00", 2 + i % 5), "timeZone": "Etc/UTC", "duration": "PT1H"}));
+    }
+    // The server gives three ids per query, and another client adds one while the first is read.
+    cals.query_limit = Some(3);
+    cals.during_query = Some(json!({"@type": "Event", "calendarIds": {"cal1": true}, "title": "Dazwischen",
+        "start": "2026-11-06T15:00:00", "timeZone": "Etc/UTC", "duration": "PT1H"}));
+    let (server, client) = jmap_server(cals).await;
+    server.lock().unwrap().1.aliases = vec!["M.Muster@example.org".into()];
+    let store = Mutex::new(with_account());
+    let source = add_source(&store.lock().unwrap(), SourceKind::Jmap, "Fastmail", "", "", Some(1)).unwrap();
+    let access = Access::Jmap(Box::new(client));
+    sync_source(&store, source, &access).await.unwrap();
+    let count = |store: &Mutex<Store>| events(&store.lock().unwrap(), week().0, week().1, &me(), false).unwrap().len();
+    assert!(count(&store) >= 7, "every page: {}", count(&store));
+    sync_source(&store, source, &access).await.unwrap();
+    let titles: Vec<String> = events(&store.lock().unwrap(), week().0, week().1, &me(), false)
+        .unwrap()
+        .into_iter()
+        .map(|e| e.title)
+        .collect();
+    assert_eq!(titles.len(), 8, "{titles:?}");
+    assert!(titles.contains(&"Dazwischen".to_string()));
+    // A full read again (the state is lost): nothing that is there is taken away.
+    let cal = calendars(&store.lock().unwrap()).unwrap().into_iter().find(|c| c.name == "Persönlich").unwrap().id;
+    set_sync_state(&store.lock().unwrap(), cal, Some("not-a-state"), None).unwrap();
+    sync_source(&store, source, &access).await.unwrap();
+    assert_eq!(count(&store), 8);
+    // The account's sender identities count as the user's addresses.
+    assert_eq!(my_addresses(&store.lock().unwrap()).unwrap(), ["maria@example.org", "m.muster@example.org"]);
+}
+
+#[tokio::test]
+async fn jmap_meeting_changes_and_answers_go_through_the_server() {
+    let mut cals = jmap::fake::FakeJmapCalendars::default();
+    let own = cals.put(json!({"@type": "Event", "calendarIds": {"cal1": true}, "title": "Kickoff",
+        "start": "2026-11-05T09:00:00", "timeZone": "Etc/UTC", "duration": "PT1H",
+        "participants": {
+            "o": {"@type": "Participant", "email": "maria@example.org", "roles": {"owner": true}},
+            "l": {"@type": "Participant", "email": "lea@example.org", "roles": {"attendee": true}, "participationStatus": "needs-action"}
+        }}));
+    let invited = cals.put(json!({"@type": "Event", "calendarIds": {"cal1": true}, "uid": "inv-1", "title": "Planung",
+        "start": "2026-11-04T13:00:00", "timeZone": "Etc/UTC", "duration": "PT1H",
+        "participants": {
+            "j": {"@type": "Participant", "email": "jonas@example.org", "roles": {"owner": true}},
+            "m": {"@type": "Participant", "email": "maria@example.org", "roles": {"attendee": true}, "participationStatus": "needs-action"}
+        }}));
+    let (server, client) = jmap_server(cals).await;
+    let store = Mutex::new(with_account());
+    let source = add_source(&store.lock().unwrap(), SourceKind::Jmap, "Fastmail", "", "", Some(1)).unwrap();
+    let access = Access::Jmap(Box::new(client));
+    sync_source(&store, source, &access).await.unwrap();
+    // A confirmed change of the user's meeting: the server tells the attendees.
+    let o = objects_by_uid(&store.lock().unwrap(), &format!("{own}@jmap.example")).unwrap().remove(0);
+    let key = format!("{}|{}|", o.calendar_id, o.id);
+    assert_eq!(event(&store.lock().unwrap(), &key, &me()).unwrap().editable, Editability::Confirm);
+    update(
+        &store.lock().unwrap(),
+        &key,
+        &Fields { start: Some(utc(2026, 11, 5, 10, 0)), ..Fields::default() },
+        true,
+        &me(),
+    )
+    .unwrap();
+    let out = sync_source(&store, source, &access).await.unwrap();
+    assert!(out.notify.is_empty(), "no mail of the app's own");
+    let last_set = server.lock().unwrap().1.calendars.as_ref().unwrap().sets.last().cloned().unwrap();
+    assert_eq!(last_set["sendSchedulingMessages"], json!(true), "{last_set}");
+    // An answer to an invitation: written to the user's participant.
+    let o = objects_by_uid(&store.lock().unwrap(), "inv-1").unwrap().remove(0);
+    let data = o.data.replace("BEGIN:VCALENDAR\r\n", "BEGIN:VCALENDAR\r\nMETHOD:REQUEST\r\n");
+    let inv = crate::itip::parse(&data, &me()).unwrap();
+    crate::itip::file(&store.lock().unwrap(), &data, &inv, crate::itip::Answer::Tentative, o.calendar_id).unwrap();
+    sync_source(&store, source, &access).await.unwrap();
+    let there = server.lock().unwrap().1.calendars.as_ref().unwrap().events[&invited].clone();
+    assert_eq!(there["participants"]["m"]["participationStatus"], json!("tentative"), "{there}");
+    assert_eq!(there["participants"]["j"]["roles"]["owner"], json!(true), "the rest stays");
+    let last_set = server.lock().unwrap().1.calendars.as_ref().unwrap().sets.last().cloned().unwrap();
+    assert_eq!(last_set["sendSchedulingMessages"], json!(false), "the app mails the answer itself");
+    // The next round keeps the answer.
+    sync_source(&store, source, &access).await.unwrap();
+    let o = objects_by_uid(&store.lock().unwrap(), "inv-1").unwrap().remove(0);
+    assert!(o.data.contains("PARTSTAT=TENTATIVE"), "{}", o.data);
+}
