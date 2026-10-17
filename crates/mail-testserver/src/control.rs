@@ -31,6 +31,16 @@
 //! * `/dav/…`: a CardDAV address book with the account's user name and password;
 //!   `POST /dav-card?name=lea` (a vCard as the body) adds a card
 //! * `GET /sieve`: the ManageSieve server's scripts and the active one
+//! * `/caldav/…`, `/.well-known/caldav`: two CalDAV calendars (`work`, `home`) with the account's
+//!   user name and password; `POST /caldav-event?calendar=work&name=a.ics` (iCalendar as the body)
+//!   puts an appointment as another client would, `GET /caldav-state` lists the objects and the
+//!   writes the app made
+//! * `/graph/v1.0/…`: Microsoft Graph's calendar endpoints (`calendar::graph::fake`) for an
+//!   account signed in through the identity provider; `POST /graph-event?calendar=C1` (Graph's
+//!   event JSON) puts one
+//! * `GET /pgp/public`: Jonas's OpenPGP key; `GET /pgp/sent?i=0`: what Jonas reads in sent
+//!   message 0; `POST /pgp/deliver?subject=…` (text as the body): a signed and encrypted message
+//!   from Jonas into the inbox
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -224,6 +234,48 @@ async fn handle(stream: TcpStream, shared: Arc<Shared>) -> std::io::Result<()> {
         stream.write_all(text.as_bytes()).await?;
         return stream.flush().await;
     }
+    if path == "/caldav" || path.starts_with("/caldav/") || path == "/.well-known/caldav" {
+        let auth = headers.iter().find(|(k, _)| k == "authorization").map(|(_, v)| v.clone());
+        let (status, extra, text) = shared.caldav.lock().unwrap().handle(
+            &method,
+            &target,
+            auth.as_deref(),
+            &headers,
+            &String::from_utf8_lossy(&body),
+        );
+        let mut stream = r.into_inner();
+        let more: String = extra.iter().map(|(k, v)| format!("{k}: {v}\r\n")).collect();
+        let head = format!(
+            "HTTP/1.1 {status} X\r\nContent-Type: application/xml; charset=utf-8\r\nContent-Length: {}\r\n{more}Connection: close\r\n\r\n",
+            text.len()
+        );
+        stream.write_all(head.as_bytes()).await?;
+        stream.write_all(text.as_bytes()).await?;
+        return stream.flush().await;
+    }
+    if path.starts_with("/graph/v1.0/") {
+        let authorized = headers.iter().any(|(k, v)| k == "authorization" && v.starts_with("Bearer "));
+        let base = format!("http://127.0.0.1:{}/graph/v1.0", *shared.control.lock().unwrap());
+        let (status, text) = if authorized {
+            shared.graph_calendar.lock().unwrap().handle(
+                &method,
+                target.trim_start_matches("/graph"),
+                &headers,
+                &body,
+                &base,
+            )
+        } else {
+            (401, "{}".into())
+        };
+        let mut stream = r.into_inner();
+        let head = format!(
+            "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            text.len()
+        );
+        stream.write_all(head.as_bytes()).await?;
+        stream.write_all(text.as_bytes()).await?;
+        return stream.flush().await;
+    }
     if path.starts_with("/jmap") || path == "/.well-known/jmap" {
         return crate::jmap::handle(r, &method, &target, &headers, body, shared).await;
     }
@@ -279,6 +331,73 @@ async fn handle(stream: TcpStream, shared: Arc<Shared>) -> std::io::Result<()> {
             let name = q.get("name").cloned().unwrap_or_else(|| "card".into());
             shared.carddav.lock().unwrap().put(&name, &String::from_utf8_lossy(&body));
             ("200 OK", "text/plain", b"ok".to_vec())
+        }
+        ("POST", "/caldav-event") => {
+            let cal =
+                format!("/caldav/calendars/user/{}/", q.get("calendar").cloned().unwrap_or_else(|| "work".into()));
+            let name = q.get("name").cloned().unwrap_or_else(|| "event.ics".into());
+            let mut c = shared.caldav.lock().unwrap();
+            if c.calendars.contains_key(&cal) {
+                let href = c.put(&cal, &name, &String::from_utf8_lossy(&body));
+                ("200 OK", "application/json", json!({ "href": href }).to_string().into_bytes())
+            } else {
+                ("404 Not Found", "text/plain", b"no such calendar".to_vec())
+            }
+        }
+        ("GET", "/caldav-state") => {
+            let c = shared.caldav.lock().unwrap();
+            let calendars: serde_json::Map<String, serde_json::Value> = c
+                .calendars
+                .iter()
+                .map(|(k, cal)| {
+                    let objects: serde_json::Map<String, serde_json::Value> =
+                        cal.objects.iter().map(|(h, (_, d))| (h.clone(), json!(d))).collect();
+                    (k.clone(), serde_json::Value::Object(objects))
+                })
+                .collect();
+            let writes: Vec<serde_json::Value> = c.writes.iter().map(|(m, p)| json!([m, p])).collect();
+            ("200 OK", "application/json", json!({ "calendars": calendars, "writes": writes }).to_string().into_bytes())
+        }
+        ("POST", "/graph-event") => {
+            let cal = q.get("calendar").cloned().unwrap_or_else(|| "C1".into());
+            match serde_json::from_slice::<serde_json::Value>(&body) {
+                Ok(e) => {
+                    let id = shared.graph_calendar.lock().unwrap().put(&cal, e);
+                    ("200 OK", "application/json", json!({ "id": id }).to_string().into_bytes())
+                }
+                Err(e) => ("400 Bad Request", "text/plain", e.to_string().into_bytes()),
+            }
+        }
+        ("GET", "/pgp/public") => ("200 OK", "text/plain", shared.peer.lock().unwrap().public().as_bytes().to_vec()),
+        ("GET", "/pgp/sent") => {
+            let i: usize = q.get("i").and_then(|v| v.parse().ok()).unwrap_or(0);
+            let sent = shared.sent.lock().unwrap().get(i).cloned();
+            match sent {
+                Some(m) => {
+                    let v = shared.peer.lock().unwrap().read(&m.raw, &m.from);
+                    ("200 OK", "application/json", v.to_string().into_bytes())
+                }
+                None => ("404 Not Found", "text/plain", b"no such message".to_vec()),
+            }
+        }
+        ("POST", "/pgp/deliver") => {
+            let subject = q.get("subject").cloned().unwrap_or_else(|| "Verschlüsselt".into());
+            let sent: Vec<(String, Vec<u8>)> =
+                shared.sent.lock().unwrap().iter().map(|m| (m.from.clone(), m.raw.clone())).collect();
+            let now =
+                std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
+            let letter = {
+                let peer = shared.peer.lock().unwrap();
+                peer.learn_from(&sent);
+                peer.letter(&shared.user, &subject, &String::from_utf8_lossy(&body), now)
+            };
+            match letter {
+                Ok(raw) => {
+                    let uid = shared.with(|f| f.deliver("INBOX", &raw, now));
+                    ("200 OK", "application/json", json!({ "uid": uid }).to_string().into_bytes())
+                }
+                Err(e) => ("409 Conflict", "text/plain", e.into_bytes()),
+            }
         }
         ("GET", "/sieve") => {
             let s = shared.sieve.lock().unwrap();

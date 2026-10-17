@@ -106,6 +106,9 @@ pub struct JmapClient {
     /// `maxObjectsInGet` of the server.
     pub max_get: usize,
     pub can_submit: bool,
+    /// The session's primary account per capability (calendars live in their own).
+    primary_accounts: std::collections::HashMap<String, String>,
+    capabilities: Vec<String>,
 }
 
 fn http_error(e: reqwest::Error) -> Error {
@@ -187,7 +190,17 @@ impl JmapClient {
             account_id,
             max_get,
             can_submit: s.capabilities.contains_key(SUBMISSION),
+            capabilities: s.capabilities.keys().cloned().collect(),
+            primary_accounts: s.primary_accounts,
         })
+    }
+
+    /// The primary account of a capability the session offers (`None`: not offered).
+    pub fn primary_account(&self, capability: &str) -> Option<String> {
+        if !self.capabilities.iter().any(|c| c == capability) {
+            return None;
+        }
+        self.primary_accounts.get(capability).cloned().or_else(|| Some(self.account_id.clone()))
     }
 
     pub fn has_push(&self) -> bool {
@@ -197,9 +210,21 @@ impl JmapClient {
     /// Several method calls in one request; the answers in order (an `error` answer is an
     /// [`Error::Imap`] in its place).
     pub async fn call_many(&self, calls: Vec<(&str, Value)>) -> Result<Vec<Result<Value>>> {
+        self.call_many_using(&[CORE, MAIL, SUBMISSION], calls).await
+    }
+
+    /// One method call with the capabilities it uses (its `accountId` given by the caller).
+    pub async fn call_using(&self, using: &[&str], name: &str, args: Value) -> Result<Value> {
+        self.call_many_using(using, vec![(name, args)])
+            .await?
+            .pop()
+            .unwrap_or_else(|| Err(Error::Imap("NO jmap".into())))
+    }
+
+    async fn call_many_using(&self, using: &[&str], calls: Vec<(&str, Value)>) -> Result<Vec<Result<Value>>> {
         let method_calls: Vec<Value> =
             calls.iter().enumerate().map(|(i, (name, args))| json!([name, args, format!("c{i}")])).collect();
-        let body = json!({ "using": [CORE, MAIL, SUBMISSION], "methodCalls": method_calls });
+        let body = json!({ "using": using, "methodCalls": method_calls });
         let r = self
             .http
             .post(&self.api_url)

@@ -121,6 +121,43 @@ pub struct Settings {
     /// Profile pictures from Gravatar. Off by default: it tells Gravatar which addresses write
     /// to the user.
     pub gravatar: bool,
+    /// The calendar: where new appointments go, their length, the work week.
+    pub calendar: CalendarSettings,
+    /// Mail from an address with an own OpenPGP key carries it in an `Autocrypt` header, so
+    /// replies can be encrypted.
+    pub autocrypt: bool,
+    /// New messages are signed when there is an own key or certificate (`pgp`, `smime`, none).
+    pub sign_by_default: Option<crate::crypto::Method>,
+    /// „An Arcalo senden“: the mail becomes a page or a task in Arcalo (through its `arcalo`
+    /// command), else a Markdown file is saved.
+    pub arcalo_target: ArcaloTarget,
+}
+
+/// The calendar's settings.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CalendarSettings {
+    /// Where new appointments go (a calendar id); the first writable one when it is gone.
+    pub default_calendar: Option<i64>,
+    /// Length of an appointment made with a double click or N, in minutes.
+    pub entry_minutes: u32,
+    /// The days of the work week, 1 (Monday) to 7.
+    pub workdays: Vec<u8>,
+}
+
+impl Default for CalendarSettings {
+    fn default() -> Self {
+        CalendarSettings { default_calendar: None, entry_minutes: 30, workdays: vec![1, 2, 3, 4, 5] }
+    }
+}
+
+/// What „An Arcalo senden“ makes.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ArcaloTarget {
+    #[default]
+    Page,
+    Task,
 }
 
 impl Default for Settings {
@@ -150,6 +187,10 @@ impl Default for Settings {
             ai: crate::ai::AiSettings::default(),
             bimi: true,
             gravatar: false,
+            calendar: CalendarSettings::default(),
+            autocrypt: true,
+            sign_by_default: None,
+            arcalo_target: ArcaloTarget::Page,
         }
     }
 }

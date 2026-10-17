@@ -34,6 +34,9 @@ pub struct Draft {
     /// edited (the shell fetches them).
     #[serde(default)]
     pub forwarded: Vec<i64>,
+    /// Signed and/or encrypted with OpenPGP or S/MIME.
+    #[serde(default)]
+    pub protect: Option<crate::crypto::Protect>,
 }
 
 /// A file read for sending.

@@ -39,12 +39,16 @@ pub const MS_SCOPES: &[&str] = &[
     "profile",
 ];
 
-/// Microsoft Graph, for what IMAP does not offer: the inbox rules (MailboxSettings.ReadWrite)
-/// and the contacts with their pictures (Contacts.Read). Asked for consent together with
+/// Microsoft Graph, for what IMAP does not offer: the inbox rules (MailboxSettings.ReadWrite),
+/// the contacts with their pictures (Contacts.Read) and the calendars (Calendars.ReadWrite,
+/// also for answering invitations). Asked for consent together with
 /// [`MS_SCOPES`] (a token is for one resource, so these come with their own refresh,
 /// [`graph_config`]).
-pub const MS_GRAPH_SCOPES: &[&str] =
-    &["https://graph.microsoft.com/MailboxSettings.ReadWrite", "https://graph.microsoft.com/Contacts.Read"];
+pub const MS_GRAPH_SCOPES: &[&str] = &[
+    "https://graph.microsoft.com/MailboxSettings.ReadWrite",
+    "https://graph.microsoft.com/Contacts.Read",
+    "https://graph.microsoft.com/Calendars.ReadWrite",
+];
 
 /// The redirect of the Android and iOS apps (registered in the Entra app as a mobile redirect
 /// URI; used from milestone 3 on, docs/microsoft.md).
@@ -588,7 +592,13 @@ mod tests {
         let g = f.clone();
         let port = testhttp::serve(Arc::new(move |method, target, _h, body| {
             let r = g.lock().unwrap().handle(method, target, body);
-            Reply { status: r.status, content_type: r.content_type, body: r.body, location: r.location }
+            Reply {
+                status: r.status,
+                content_type: r.content_type,
+                body: r.body,
+                location: r.location,
+                headers: vec![],
+            }
         }))
         .await;
         (port, f)

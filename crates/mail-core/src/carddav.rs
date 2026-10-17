@@ -521,7 +521,13 @@ mod tests {
         let port = serve(Arc::new(move |method: &str, path: &str, headers: &[(String, String)], body: &[u8]| {
             let auth = headers.iter().find(|(k, _)| k == "authorization").map(|(_, v)| v.as_str());
             let (status, text) = f.lock().unwrap().handle(method, path, auth, &String::from_utf8_lossy(body));
-            Reply { status, content_type: "application/xml".into(), body: text.into_bytes(), location: None }
+            Reply {
+                status,
+                content_type: "application/xml".into(),
+                body: text.into_bytes(),
+                location: None,
+                headers: vec![],
+            }
         }))
         .await;
         let base = format!("http://127.0.0.1:{port}/dav");

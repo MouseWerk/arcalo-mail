@@ -200,10 +200,21 @@ impl Graph {
         })
     }
 
-    async fn send(&self, method: reqwest::Method, path: &str, body: Option<&Value>) -> Result<(u16, Vec<u8>)> {
+    /// A request with extra headers; the status and the body as they are, so a caller can read a
+    /// `412` (the calendar's writes) or a `410` (an expired delta link).
+    pub async fn exchange(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<&Value>,
+        headers: &[(&str, &str)],
+    ) -> Result<(u16, Vec<u8>)> {
         let url = if path.starts_with("http") { path.to_string() } else { format!("{}{path}", self.base) };
         network::check_https_url(&url)?;
         let mut req = self.http.request(method, &url).bearer_auth(&self.token);
+        for (k, v) in headers {
+            req = req.header(*k, *v);
+        }
         if let Some(b) = body {
             req = req.header(reqwest::header::CONTENT_TYPE, "application/json").body(serde_json::to_vec(b)?);
         }
@@ -213,12 +224,17 @@ impl Graph {
         if status == 401 || status == 403 {
             return Err(Error::Invalid(
                 tr!(
-                    "Microsoft erlaubt den Zugriff noch nicht. Melde das Konto in den Einstellungen neu an und erlaube den Zugriff auf Regeln und Kontakte.",
-                    "Microsoft does not allow the access yet. Sign the account in again in Settings and allow access to rules and contacts."
+                    "Microsoft erlaubt den Zugriff noch nicht. Melde das Konto in den Einstellungen neu an und erlaube den Zugriff auf Regeln, Kontakte und Kalender.",
+                    "Microsoft does not allow the access yet. Sign the account in again in Settings and allow access to rules, contacts and calendars."
                 )
                 .into(),
             ));
         }
+        Ok((status, bytes))
+    }
+
+    async fn send(&self, method: reqwest::Method, path: &str, body: Option<&Value>) -> Result<(u16, Vec<u8>)> {
+        let (status, bytes) = self.exchange(method, path, body, &[]).await?;
         if status >= 400 && status != 404 {
             let v: Value = serde_json::from_slice(&bytes).unwrap_or_default();
             let msg = v["error"]["message"].as_str().unwrap_or_default().to_string();
@@ -409,7 +425,7 @@ mod tests {
                         *own.lock().unwrap()
                     ),
                 ),
-                ("GET", "/v1.0/me/contacts/C1/photo/$value") => Reply { status: 200, content_type: "image/png".into(), body: b"\x89PNG\r\n\x1a\nxx".to_vec(), location: None },
+                ("GET", "/v1.0/me/contacts/C1/photo/$value") => Reply { status: 200, content_type: "image/png".into(), body: b"\x89PNG\r\n\x1a\nxx".to_vec(), location: None, headers: vec![] },
                 _ => Reply::status(404, "{}"),
             }
         }))

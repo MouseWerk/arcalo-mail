@@ -8,7 +8,9 @@
 //! The same mailboxes are served over JMAP (RFC 8620/8621, with EventSource push) and an
 //! identity provider for OAuth sign-ins (XOAUTH2 on IMAP and SMTP) on the control port; the
 //! inbox also over POP3. A ManageSieve server keeps uploaded rules, and the control port serves
-//! an OpenAI-compatible AI provider (`/ai/v1/…`) and a CardDAV address book (`/dav/…`).
+//! an OpenAI-compatible AI provider (`/ai/v1/…`), a CardDAV address book (`/dav/…`), two CalDAV
+//! calendars (`/caldav/…`), Graph's calendar endpoints (`/graph/v1.0/…`) and Jonas, who reads
+//! and writes encrypted mail (`/pgp/…`).
 //!
 //! A small HTTP control port lets a test deliver mail, look at the server's state, read what
 //! was sent, make commands fail and take the server offline and back. It listens on loopback
@@ -17,6 +19,7 @@
 mod control;
 mod imap;
 mod jmap;
+pub mod peer;
 mod pop3;
 mod sieve;
 mod smtp;
@@ -110,6 +113,8 @@ pub struct Shared {
     pub connections: Mutex<u32>,
     /// The plain-text IMAP and SMTP ports (for the autoconfig file of the control port).
     pub ports: Mutex<(u16, u16)>,
+    /// The control port (for addresses the fakes hand out).
+    pub control: Mutex<u16>,
     /// A slow server: new connections wait this long before the greeting (milliseconds).
     pub delay_ms: Mutex<u64>,
     /// The identity provider whose access tokens IMAP and SMTP take (XOAUTH2).
@@ -131,6 +136,12 @@ pub struct Shared {
     pub carddav: Mutex<mail_core::carddav::fake::FakeCardDav>,
     /// POP3 sessions so far.
     pub pop3_sessions: Mutex<u32>,
+    /// The CalDAV calendars of the control port (`/caldav/…`).
+    pub caldav: Mutex<mail_core::calendar::caldav::fake::FakeCalDav>,
+    /// Graph's calendars (`/graph/v1.0/…`).
+    pub graph_calendar: Mutex<mail_core::calendar::graph::fake::FakeGraphCalendar>,
+    /// Jonas, the other side of encrypted mail (`peer.rs`).
+    pub peer: Mutex<peer::Peer>,
 }
 
 impl Shared {
@@ -291,6 +302,7 @@ pub async fn start(opts: Options) -> io::Result<Running> {
         tls,
         connections: Mutex::new(0),
         ports: Mutex::new((0, 0)),
+        control: Mutex::new(0),
         delay_ms: Mutex::new(0),
         oauth: Mutex::new(mail_core::oauth::fake::FakeOAuth::new(&opts.user)),
         smtp_auth_disabled: Mutex::new(false),
@@ -301,6 +313,9 @@ pub async fn start(opts: Options) -> io::Result<Running> {
         sieve: Mutex::new(mail_core::sieve::fake::FakeSieve::new(&opts.user, &opts.password)),
         carddav: Mutex::new(mail_core::carddav::fake::FakeCardDav::new(&opts.user, &opts.password)),
         pop3_sessions: Mutex::new(0),
+        caldav: Mutex::new(mail_core::calendar::caldav::fake::FakeCalDav::new(&opts.user, &opts.password)),
+        graph_calendar: Mutex::default(),
+        peer: Mutex::new(peer::Peer::new()),
     });
     let (imap_l, imap) = listen(opts.imap_port).await?;
     let (smtp_l, smtp) = listen(opts.smtp_port).await?;
@@ -321,6 +336,7 @@ pub async fn start(opts: Options) -> io::Result<Running> {
         serve(l, shared.clone(), Kind::Smtp, true);
         smtps = Some(p);
     }
+    *shared.control.lock().unwrap_or_else(|e| e.into_inner()) = control;
     control::serve(control_l, shared.clone());
     Ok(Running { imap, smtp, imaps, smtps, control, pop3, sieve, fingerprint, shared })
 }

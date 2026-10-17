@@ -630,3 +630,90 @@ async fn sieve_rules_and_the_ai_provider_over_the_wire() {
     assert!(pieces > 1);
     assert_eq!(srv.shared.ai.lock().unwrap().requests.len(), 1);
 }
+
+#[tokio::test]
+async fn calendars_over_caldav_on_the_control_port() {
+    use mail_core::calendar::{
+        self, Fields, SourceKind,
+        sync::{Access, sync_source},
+    };
+    let srv = server(all(), false).await;
+    let base = format!("http://127.0.0.1:{}/caldav", srv.control);
+    srv.shared.caldav.lock().unwrap().put(
+        mail_core::calendar::caldav::fake::WORK,
+        "a.ics",
+        "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:a\r\nDTSTART:20261103T090000Z\r\nDTEND:20261103T100000Z\r\nSUMMARY:Planung\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n",
+    );
+    let store = Mutex::new(Store::open_in_memory().unwrap());
+    let source = calendar::add_source(&store.lock().unwrap(), SourceKind::Caldav, "Test", &base, USER, None).unwrap();
+    let access = Access::Basic { user: USER.into(), password: PW.into() };
+    sync_source(&store, source, &access).await.unwrap();
+    let me = vec![USER.to_string()];
+    let from = chrono::DateTime::parse_from_rfc3339("2026-11-02T00:00:00Z").unwrap().with_timezone(&chrono::Utc);
+    let to = from + chrono::Duration::days(7);
+    let list = calendar::events(&store.lock().unwrap(), from, to, &me, false).unwrap();
+    assert_eq!(list.iter().map(|e| e.title.as_str()).collect::<Vec<_>>(), ["Planung"]);
+    let (ev, _) = calendar::create(
+        &store.lock().unwrap(),
+        list[0].calendar_id,
+        &Fields { title: Some("Review".into()), start: Some(from + chrono::Duration::hours(36)), ..Fields::default() },
+        &me,
+    )
+    .unwrap();
+    sync_source(&store, source, &access).await.unwrap();
+    assert!(calendar::event(&store.lock().unwrap(), &ev.key, &me).unwrap().write.is_none());
+    let writes = srv.shared.caldav.lock().unwrap().writes.clone();
+    assert_eq!(writes.len(), 1);
+    assert_eq!(writes[0].0, "PUT");
+}
+
+#[tokio::test]
+async fn jonas_reads_and_writes_encrypted_mail() {
+    use mail_core::crypto::{self, Method, Protect, pgp};
+    let srv = server(all(), false).await;
+    let public = srv.shared.peer.lock().unwrap().public().to_string();
+    let jonas = pgp::read_public(public.as_bytes()).unwrap();
+    // The app: an own key, Jonas's key, a message to him.
+    let (store, id) = store_with_account(plain(srv.imap), plain(srv.smtp));
+    let account = store.account(id).unwrap();
+    let (secret, own) = pgp::generate("Maria", USER).unwrap();
+    let fp = crypto::save_pgp(&store, &own, true, "generated", true).unwrap().fingerprint;
+    crypto::save_pgp(&store, &jonas, false, "imported", false).unwrap();
+    struct One(String, String);
+    impl crypto::Keys for One {
+        fn pgp_secret(&self, fp: &str) -> Option<String> {
+            (fp == self.0).then(|| self.1.clone())
+        }
+        fn smime_secret(&self, _: &str) -> Option<(Vec<u8>, String)> {
+            None
+        }
+    }
+    let keys = One(fp, secret);
+    let d = mail_core::compose::Draft {
+        account_id: id,
+        to: vec!["jonas@example.org".into()],
+        subject: "Geheim".into(),
+        text: "Nur für Jonas.".into(),
+        ..Default::default()
+    };
+    let raw = mail_core::compose::build(&account, &d, &[], "g1@example.org", 1_792_000_000, false).unwrap();
+    let raw = crypto::add_header(&raw, "Autocrypt", &crypto::autocrypt_for(&store, USER).unwrap().unwrap());
+    let sealed = crypto::protect(
+        &store,
+        USER,
+        &raw,
+        &["jonas@example.org".into()],
+        &Protect { method: Method::Pgp, sign: true, encrypt: true },
+        &keys,
+    )
+    .unwrap();
+    let read = srv.shared.peer.lock().unwrap().read(&sealed, USER);
+    assert_eq!(read["decrypted"], true);
+    assert_eq!(read["signature"], "valid");
+    assert!(read["text"].as_str().unwrap().contains("Nur für Jonas."));
+    // Jonas answers, encrypted to the key he learned.
+    let answer = srv.shared.peer.lock().unwrap().letter(USER, "Re: Geheim", "Angekommen.", 1_792_000_100).unwrap();
+    let o = crypto::open(&store, &answer, Some("jonas@example.org"), &keys).unwrap();
+    assert!(o.protection.decrypted);
+    assert_eq!(o.protection.signature.as_deref(), Some("valid"));
+}

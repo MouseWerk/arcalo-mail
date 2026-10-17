@@ -1,6 +1,6 @@
 [package]
 name = "mail-core"
-description = "Local-first core of Arcalo Mail: accounts, the local store with full-text search, parsing, HTML sanitizing, the IMAP and SMTP clients and the sync engine"
+description = "Local-first core of Arcalo Mail: accounts, the local store with full-text search, parsing, HTML sanitizing, the IMAP and SMTP clients, the sync engine, the calendar and signed and encrypted mail"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -12,11 +12,23 @@ repository.workspace = true
 fake = []
 
 [dependencies]
+# S/MIME content encryption (AES-CBC), as CMS uses it.
+aes = "0.8.4"
 # HTML mail: allow-list sanitizing; remote content is removed unless the user allows it.
 ammonia = "4.1.7"
 base64 = "0.22.1"
+cbc = { version = "0.1.2", features = ["alloc", "block-padding"] }
+# Calendar times: zones (IANA, Windows names, VTIMEZONE rules) and series, as in Arcalo.
+chrono = { version = "0.4.45", features = ["serde"] }
+chrono-tz = "0.10.4"
+# S/MIME: CMS signed and enveloped data (RFC 5652), certificates, RSA (`crypto::smime`).
+cms = { version = "0.2.3", features = ["builder"] }
+const-oid = { version = "0.9.6", features = ["db"] }
+der = { version = "0.7.10", features = ["alloc", "oid"] }
 # SRV (RFC 6186) and MX lookups for the account setup, with the system's resolver settings.
 hickory-resolver = { version = "0.26.3", default-features = false, features = ["tokio", "system-config"] }
+# The device's zone by its IANA name, for appointments written here.
+iana-time-zone = "0.1.65"
 # The IMAP response parser; the client (`imap::client`) and its commands are our own.
 imap-proto = "0.17.0"
 # SMTP once the connection stands (`network` does TCP, TLS and STARTTLS itself).
@@ -25,9 +37,18 @@ mail-builder = "0.4.4"
 mail-parser = "0.11.9"
 # imap-proto's parser combinators: tells a half-received answer from a broken one.
 nom = "8.0.0"
+# The user's S/MIME certificate and key from a PKCS#12 file.
+p12-keystore = "0.1.5"
+# OpenPGP (rPGP): keys, PGP/MIME signatures and encryption, Autocrypt (`crypto::pgp`).
+pgp = "0.21.0"
+# Random UIDs and keys (the generator OpenPGP takes).
+rand = "0.8.5"
 # HTTPS for the autoconfig lookups (`network::client_for`), rustls with the platform verifier.
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "socks"] }
 roxmltree = "0.20.0"
+# Recurrence rules of series (RFC 5545), as in Arcalo.
+rrule = "0.14.0"
+rsa = { version = "0.9.10", features = ["sha2"] }
 # The local store: SQLite with FTS5 (part of the bundled build). Arcalo builds SQLCipher instead;
 # Arcalo Mail switches to `bundled-sqlcipher` when encryption at rest lands (docs/plan.md).
 rusqlite = { version = "0.40.2", features = ["bundled"] }
@@ -35,20 +56,33 @@ rustls = { version = "0.23.43", default-features = false, features = ["std", "aw
 rustls-platform-verifier = "0.6.2"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
+# The Web Key Directory's hash (SHA-1 of the address's local part), S/MIME's older digests.
+sha1 = "0.10.6"
 sha2 = "0.10.9"
+spki = "0.7.3"
 thiserror = "2.0.20"
 tokio = { version = "1.53.1", features = ["rt", "net", "io-util", "time", "macros", "sync"] }
 tokio-rustls = { version = "0.26.5", default-features = false, features = ["aws_lc_rs", "tls12"] }
 # Tracker removal reads and rebuilds link addresses (`tracking`).
 url = "2.5.8"
+# S/MIME certificate chains to the system's roots (the same verifier TLS uses).
+webpki = { package = "rustls-webpki", version = "0.103.15" }
+x509-cert = "0.2.5"
 
 # The system proxy of the Windows Internet settings (`network::system_proxy`).
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Registry"] }
 
-# Android: Mozilla's root store for TLS (`network::platform_verifier`), as in Arcalo's companion app.
-[target.'cfg(target_os = "android")'.dependencies]
+# Android: Mozilla's root store for TLS (`network::platform_verifier`), as in Arcalo's companion app,
+# and for S/MIME on both phones.
+[target.'cfg(any(target_os = "android", target_os = "ios"))'.dependencies]
 webpki-root-certs = "1.0.9"
 
+# The system's root certificates for S/MIME on the desktop.
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+rustls-native-certs = "0.8.5"
+
 [dev-dependencies]
+# Test certificates for S/MIME (an authority and a user's certificate, made per test).
+rcgen = { version = "0.14.10", features = ["aws_lc_rs"] }
 tokio = { version = "1.53.1", features = ["rt", "rt-multi-thread", "macros"] }

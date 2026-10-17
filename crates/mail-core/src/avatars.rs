@@ -434,6 +434,7 @@ mod tests {
                 content_type: "image/svg+xml".into(),
                 body: clean.clone().into_bytes(),
                 location: None,
+                headers: vec![],
             },
             _ => Reply::status(404, ""),
         }))

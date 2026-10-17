@@ -35,7 +35,7 @@ async fn serve(server: Server) -> u16 {
         let mut s = server.lock().unwrap();
         let (fake, jmap) = &mut *s;
         let r = jmap.handle(fake, method, target, body, &b.lock().unwrap());
-        Reply { status: r.status, content_type: r.content_type, body: r.body, location: r.location }
+        Reply { status: r.status, content_type: r.content_type, body: r.body, location: r.location, headers: vec![] }
     }))
     .await;
     *base.lock().unwrap() = format!("http://127.0.0.1:{port}");

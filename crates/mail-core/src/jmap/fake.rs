@@ -42,6 +42,8 @@ pub struct FakeJmapState {
     pub user: String,
     /// Part of every state, so states of an earlier server are never taken for current ones.
     epoch: u64,
+    /// Calendars offered (`urn:ietf:params:jmap:calendars`), when set.
+    pub calendars: Option<crate::calendar::jmap::fake::FakeJmapCalendars>,
 }
 
 static EPOCHS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -206,6 +208,11 @@ impl FakeJmapState {
             "uploadUrl": format!("{base}/jmap/upload/{{accountId}}/"),
             "state": "1",
         });
+        if self.calendars.is_some() {
+            let cal = crate::calendar::jmap::CALENDARS;
+            s["capabilities"][cal] = json!({});
+            s["primaryAccounts"][cal] = json!(ACCOUNT);
+        }
         if self.push {
             s["eventSourceUrl"] =
                 json!(format!("{base}/jmap/events?types={{types}}&closeafter={{closeafter}}&ping={{ping}}"));
@@ -327,6 +334,11 @@ impl FakeJmapState {
     }
 
     fn method(&mut self, fake: &mut FakeImap, name: &str, args: &Value) -> Result<Value, Value> {
+        if name.starts_with("Calendar")
+            && let Some(c) = self.calendars.as_mut()
+        {
+            return c.method(name, args);
+        }
         let (email_state, mailbox_state) = self.states(fake);
         let ids_arg = |a: &Value| -> Option<Vec<String>> {
             a.get("ids")

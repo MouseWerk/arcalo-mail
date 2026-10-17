@@ -65,6 +65,10 @@ pub enum Service {
     Contacts,
     /// Profile pictures: a sender's BIMI logo, Gravatar when switched on.
     Pictures,
+    /// Calendars: CalDAV servers, ICS subscriptions (Microsoft's calendars go through Graph).
+    Calendar,
+    /// OpenPGP keys of recipients from their domain's Web Key Directory, only when the user asks.
+    Keys,
 }
 
 /// Opening the TCP connection and the TLS handshake together.
@@ -501,7 +505,9 @@ impl Service {
             | Service::Pop3
             | Service::Sieve
             | Service::Contacts
-            | Service::Pictures => "mail",
+            | Service::Pictures
+            | Service::Calendar
+            | Service::Keys => "mail",
             Service::Ai => "ai",
             Service::OAuthMicrosoft | Service::OAuthGoogle => "sign_in",
             Service::Autoconfig => "setup",
@@ -1591,6 +1597,8 @@ pub(crate) mod tests {
             pub content_type: String,
             pub body: Vec<u8>,
             pub location: Option<String>,
+            /// More headers of the answer (`ETag`, `DAV`).
+            pub headers: Vec<(String, String)>,
         }
 
         impl Reply {
@@ -1600,6 +1608,7 @@ pub(crate) mod tests {
                     content_type: "application/json".into(),
                     body: body.as_bytes().to_vec(),
                     location: None,
+                    headers: vec![],
                 }
             }
         }
@@ -1643,7 +1652,10 @@ pub(crate) mod tests {
                                 return;
                             }
                             let reply = handle(&method, &target, &headers, &body);
-                            let location = reply.location.map(|l| format!("Location: {l}\r\n")).unwrap_or_default();
+                            let mut location = reply.location.map(|l| format!("Location: {l}\r\n")).unwrap_or_default();
+                            for (k, v) in &reply.headers {
+                                location.push_str(&format!("{k}: {v}\r\n"));
+                            }
                             let head = format!(
                                 "HTTP/1.1 {} X\r\nContent-Type: {}\r\nContent-Length: {}\r\n{location}\r\n",
                                 reply.status,
