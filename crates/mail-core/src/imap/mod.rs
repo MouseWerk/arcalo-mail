@@ -115,13 +115,10 @@ impl Role {
         matches!(self, Role::All | Role::Flagged | Role::Important)
     }
 
-    /// From the SPECIAL-USE attributes, else from common names of servers without them.
-    pub fn detect(name: &str, attributes: &[String]) -> Option<Role> {
-        if name.eq_ignore_ascii_case("INBOX") {
-            return Some(Role::Inbox);
-        }
-        for a in attributes {
-            let r = match a.to_ascii_lowercase().as_str() {
+    /// From the SPECIAL-USE attributes (RFC 6154), if any.
+    pub fn from_attributes(attributes: &[String]) -> Option<Role> {
+        attributes.iter().find_map(|a| {
+            Some(match a.to_ascii_lowercase().as_str() {
                 "\\inbox" => Role::Inbox,
                 "\\sent" => Role::Sent,
                 "\\drafts" => Role::Drafts,
@@ -131,12 +128,24 @@ impl Role {
                 "\\all" => Role::All,
                 "\\flagged" => Role::Flagged,
                 "\\important" => Role::Important,
-                _ => continue,
-            };
-            return Some(r);
-        }
-        let leaf = name.rsplit(['/', '.']).next().unwrap_or(name).to_lowercase();
-        Some(match leaf.as_str() {
+                _ => return None,
+            })
+        })
+    }
+
+    /// From the common names of servers without SPECIAL-USE: a folder at the top (or right
+    /// below INBOX, as servers with the „INBOX.“ namespace keep everything), never one further
+    /// down: „Kunden/Spam“ is the user's own.
+    pub fn from_name(name: &str, delimiter: Option<char>) -> Option<Role> {
+        let leaf = match delimiter {
+            Some(d) => match name.split_once(d) {
+                None => name,
+                Some((top, rest)) if top.eq_ignore_ascii_case("INBOX") && !rest.contains(d) => rest,
+                Some(_) => return None,
+            },
+            None => name,
+        };
+        Some(match leaf.to_lowercase().as_str() {
             "sent" | "sent items" | "sent messages" | "gesendet" | "gesendete elemente" | "gesendete objekte" => {
                 Role::Sent
             }
@@ -147,6 +156,35 @@ impl Role {
             _ => return None,
         })
     }
+
+    /// The role of one folder on its own: INBOX, its attributes, else its name.
+    pub fn detect(name: &str, delimiter: Option<char>, attributes: &[String]) -> Option<Role> {
+        if name.eq_ignore_ascii_case("INBOX") {
+            return Some(Role::Inbox);
+        }
+        Role::from_attributes(attributes).or_else(|| Role::from_name(name, delimiter))
+    }
+}
+
+/// The roles of a whole `LIST` answer, in its order: what the attributes say, and a role by
+/// name only where no folder carries that role's attribute, and for one folder per role.
+pub fn roles(entries: &[MailboxEntry]) -> Vec<Option<Role>> {
+    let marked: Vec<Role> = entries.iter().filter_map(|e| Role::from_attributes(&e.attributes)).collect();
+    let mut taken: Vec<Role> = vec![];
+    entries
+        .iter()
+        .map(|e| {
+            if e.name.eq_ignore_ascii_case("INBOX") {
+                return Some(Role::Inbox);
+            }
+            if let Some(r) = Role::from_attributes(&e.attributes) {
+                return Some(r);
+            }
+            let guess = Role::from_name(&e.name, e.delimiter).filter(|r| !marked.contains(r) && !taken.contains(r))?;
+            taken.push(guess);
+            Some(guess)
+        })
+        .collect()
 }
 
 /// One folder of a `LIST` answer.
@@ -163,7 +201,7 @@ impl MailboxEntry {
     }
 
     pub fn role(&self) -> Option<Role> {
-        Role::detect(&self.name, &self.attributes)
+        Role::detect(&self.name, self.delimiter, &self.attributes)
     }
 }
 
@@ -382,7 +420,9 @@ mod tests {
         assert_eq!(e("INBOX", &[]).role(), Some(Role::Inbox));
         assert_eq!(e("Whatever", &["\\HasNoChildren", "\\Sent"]).role(), Some(Role::Sent));
         assert_eq!(e("[Gmail]/All Mail", &["\\All"]).role(), Some(Role::All));
-        assert_eq!(e("INBOX.Gesendete Elemente", &[]).role(), Some(Role::Sent));
+        let dotted = MailboxEntry { delimiter: Some('.'), ..e("INBOX.Gesendete Elemente", &[]) };
+        assert_eq!(dotted.role(), Some(Role::Sent));
+        assert_eq!(e("Kunden/Spam", &[]).role(), None, "a user's folder further down");
         assert_eq!(e("Papierkorb", &[]).role(), Some(Role::Trash));
         assert_eq!(e("Projekte", &[]).role(), None);
         assert!(!e("[Gmail]", &["\\Noselect"]).selectable());

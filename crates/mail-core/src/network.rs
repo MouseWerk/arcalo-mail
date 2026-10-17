@@ -286,13 +286,19 @@ pub enum Problem {
         proxy: String,
         detail: String,
     },
+    /// The server turned the sign-in away for now, not for the password: its authentication
+    /// is down (`[UNAVAILABLE]`), too many sessions (`[LIMIT]`), or another program holds the
+    /// mailbox (`[INUSE]`, POP3's `[IN-USE]`). It works again by itself.
+    Busy {
+        detail: String,
+    },
 }
 
 impl Problem {
     /// Whether a later attempt may work without the user doing anything.
     pub fn is_transient(&self) -> bool {
         matches!(self, Problem::Dns { .. } | Problem::Refused { .. } | Problem::Timeout { .. } | Problem::Offline)
-            || matches!(self, Problem::Protocol { .. } | Problem::Proxy { .. })
+            || matches!(self, Problem::Protocol { .. } | Problem::Proxy { .. } | Problem::Busy { .. })
     }
 
     /// Whether the user has to sign in again (or change the password) before it can work.
@@ -351,6 +357,10 @@ impl fmt::Display for Problem {
                     "The proxy {proxy} refused the connection: {detail}"
                 )
             }
+            Problem::Busy { detail } => trf!(
+                "Der Server lässt die Anmeldung gerade nicht zu; das liegt nicht am Passwort ({detail}).",
+                "The server does not take the sign-in right now; it is not the password ({detail})."
+            ),
         };
         f.write_str(&s)
     }
@@ -390,6 +400,10 @@ pub fn auth_problem(server_text: &str) -> Problem {
         "freischalten",
     ];
     let detail = server_text.trim().to_string();
+    // RFC 5530 (IMAP) and RFC 3206 (POP3): the server's own trouble, not the password.
+    if ["[unavailable]", "[inuse]", "[in-use]", "[limit]", "[serverbug]", "[sys/temp]"].iter().any(|c| t.contains(c)) {
+        return Problem::Busy { detail };
+    }
     if t.contains("5.7.139") || t.contains("smtpclientauthentication is disabled") {
         return Problem::SmtpAuthDisabled { detail };
     }

@@ -475,6 +475,13 @@ impl Session {
                 let q = args.get(i + 2).map(Tok::text).unwrap_or_default();
                 self.fake(|f| f.do_search(&Search::MessageId(q)))
             }
+            // Messages marked for removal (another client's „mark as deleted“).
+            "DELETED" => {
+                let f = self.shared.fake.lock().unwrap();
+                let m = self.selected.as_ref().and_then(|s| f.mailboxes.get(s));
+                Ok(m.map(|m| m.messages.iter().filter(|(_, x)| x.flags.deleted).map(|(u, _)| *u).collect())
+                    .unwrap_or_default())
+            }
             _ => Ok(vec![]),
         };
         match r {

@@ -718,3 +718,30 @@ async fn jonas_reads_and_writes_encrypted_mail() {
     assert!(o.protection.decrypted);
     assert_eq!(o.protection.signature.as_deref(), Some("valid"));
 }
+
+/// Without UIDPLUS a plain EXPUNGE removes every message marked `\Deleted`: messages another
+/// client only marked (its „mark as deleted“ model, undo still possible there) must stay.
+#[tokio::test]
+async fn without_uidplus_a_move_leaves_messages_others_marked_deleted() {
+    let caps = Capabilities { uidplus: false, moves: false, ..all() };
+    let srv = server(caps, false).await;
+    srv.shared.with(|f| {
+        f.deliver("INBOX", &msg("a@x", "Marked by another client", "x"), 1_792_135_800);
+        f.deliver("INBOX", &msg("b@x", "Archived here", "x"), 1_792_135_900);
+        f.deliver("INBOX", &msg("c@x", "Untouched", "x"), 1_792_136_000);
+        f.set_flags("INBOX", 1, mail_core::imap::Flags { deleted: true, ..Default::default() });
+    });
+    let mut c = ImapSession::connect(&plain(srv.imap), USER, PW).await.unwrap();
+    c.select("INBOX", None).await.unwrap();
+    c.move_to(&[2], "Trash").await.unwrap();
+    let (left, marked) = srv.shared.with(|f| {
+        let m = &f.mailboxes["INBOX"].messages;
+        (f.subjects("INBOX"), m.get(&1).is_some_and(|x| x.flags.deleted))
+    });
+    assert_eq!(left, ["Marked by another client", "Untouched"]);
+    assert!(marked, "still marked for the other client");
+    assert_eq!(srv.shared.with(|f| f.subjects("Trash")), ["Archived here"]);
+    // Deleting for good works the same way.
+    c.expunge(&[3]).await.unwrap();
+    assert_eq!(srv.shared.with(|f| f.subjects("INBOX")), ["Marked by another client"]);
+}

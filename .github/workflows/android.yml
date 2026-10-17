@@ -8,9 +8,9 @@ name: Android
 # (installable for a test, never an update of a release install) and without an AAB.
 #
 # A release with the update key (TAURI_SIGNING_PRIVATE_KEY) compiles the update check of the
-# GitHub APK in (ARCALO_MAIL_UPDATER_PUBKEY, from plugins.updater.pubkey in tauri.conf.json) and
-# signs the APK for it; the release turns that into android-latest.json. The same binary in the
-# AAB never checks: a copy installed from Google Play is recognized by its installer
+# GitHub APK in (the feature apk-updates and ARCALO_MAIL_UPDATER_PUBKEY, from plugins.updater.pubkey
+# in tauri.conf.json) and signs the APK for it; the release turns that into android-latest.json.
+# The AAB for Google Play is a build of its own without both: it holds no update check at all
 # (src-tauri/src/mobile/apknotice.rs).
 
 on:
@@ -124,14 +124,21 @@ jobs:
           fi
       # The Android project is committed (src-tauri/gen/android); Tauri writes its generated parts
       # (the Gradle settings, the assets, the Kotlin glue) on every build.
-      - name: Build (signed APK and AAB)
+      # Google Play: without the update notice and without the update key (Play updates the app;
+      # its policy allows no other way). Built first and set aside, the APK build follows.
+      - name: Build the AAB for Google Play (no update check)
         if: env.SIGNED == '1'
         working-directory: src-tauri
-        run: cargo tauri android build --apk --aab --target aarch64 --target armv7 --target x86_64
-      - name: Build (debug-signed APK)
-        if: env.SIGNED != '1'
+        run: |
+          unset ARCALO_MAIL_UPDATER_PUBKEY
+          cargo tauri android build --aab --target aarch64 --target armv7 --target x86_64
+          mkdir -p "$RUNNER_TEMP/aab"
+          aab=$(find gen/android/app/build/outputs/bundle -name '*.aab' | head -n 1)
+          test -n "$aab"
+          mv "$aab" "$RUNNER_TEMP/aab/"
+      - name: Build the APK (with the update check of the GitHub release)
         working-directory: src-tauri
-        run: cargo tauri android build --apk --target aarch64 --target armv7 --target x86_64
+        run: cargo tauri android build --apk --features apk-updates --target aarch64 --target armv7 --target x86_64
       - name: Name the files
         run: |
           mkdir -p dist-android
@@ -139,7 +146,7 @@ jobs:
           apk=$(find src-tauri/gen/android/app/build/outputs/apk -name '*.apk' | head -n 1)
           test -n "$apk"
           cp "$apk" "dist-android/$name.apk"
-          aab=$(find src-tauri/gen/android/app/build/outputs/bundle -name '*.aab' 2>/dev/null | head -n 1)
+          aab=$(find "$RUNNER_TEMP/aab" -name '*.aab' 2>/dev/null | head -n 1)
           if [ -n "$aab" ]; then cp "$aab" "dist-android/$name.aab"; fi
           ls -l dist-android
       # The update signature (minisign, the desktop's key) with the version in its signed comment;

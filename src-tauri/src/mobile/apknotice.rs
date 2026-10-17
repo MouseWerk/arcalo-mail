@@ -5,9 +5,10 @@
 //! before it replaces the app (`mail_core::update_android`).
 //!
 //! Never for a copy from Google Play (or another store): the installer package Android names for
-//! the app decides it, and such a copy never asks the feed. Only release builds with the update
-//! key compiled in (`ARCALO_MAIL_UPDATER_PUBKEY`, as on the desktop) check at all; other builds
-//! never contact the feed.
+//! the app decides it, and such a copy never asks the feed; when Android cannot say, the notice
+//! stays off. Only the GitHub APK's build has the check at all: the feature `apk-updates` with the
+//! update key compiled in (`ARCALO_MAIL_UPDATER_PUBKEY`, as on the desktop). The AAB for Google Play
+//! is built without both, so it holds no update check; other builds never contact the feed.
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -34,9 +35,16 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// The compiled-in public key of the update signatures (release builds only).
+/// Whether this build has the update check (the GitHub APK's build only).
+const UPDATE_CHECK: bool = cfg!(feature = "apk-updates");
+
+/// The compiled-in public key of the update signatures (the GitHub APK's release build only).
 pub fn pubkey() -> Option<&'static str> {
-    mail_core::update::configured_pubkey(option_env!("ARCALO_MAIL_UPDATER_PUBKEY"))
+    #[cfg(feature = "apk-updates")]
+    let key = option_env!("ARCALO_MAIL_UPDATER_PUBKEY");
+    #[cfg(not(feature = "apk-updates"))]
+    let key: Option<&'static str> = None;
+    mail_core::update::configured_pubkey(key)
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
@@ -113,7 +121,8 @@ impl Notice {
         let mut prefs: Prefs =
             std::fs::read_to_string(&prefs_path).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
         let current = app.package_info().version.to_string();
-        let store = super::android::installed().is_ok_and(|i| core::from_store(i.installer.as_deref()));
+        // Without an answer from Android the copy counts as a store's: the notice stays off.
+        let store = core::from_store_or_unknown(super::android::installed().as_ref().map(|i| i.installer.as_deref()));
         let (updated_from, record) = core::whats_new_from(prefs.whats_new_seen.as_deref(), &current);
         let notes =
             prefs.notes.as_ref().filter(|(v, _)| *v == current).map(|(_, n)| mail_core::update::notes_for_users(n));
@@ -186,7 +195,7 @@ impl Drop for Busy<'_> {
 /// Asks the feed. Runs on a worker thread; a second call while one runs only answers the status.
 pub fn check(app: &AppHandle, manual: bool) -> Status {
     let n = app.state::<Notice>();
-    if !n.snapshot().enabled || n.busy.swap(true, Ordering::SeqCst) {
+    if !UPDATE_CHECK || !n.snapshot().enabled || n.busy.swap(true, Ordering::SeqCst) {
         return n.snapshot();
     }
     let _busy = Busy(&n.busy);
@@ -266,7 +275,7 @@ pub fn check(app: &AppHandle, manual: bool) -> Status {
 
 /// Checks after the start, then whenever a day has passed.
 pub fn spawn_scheduler(app: AppHandle) {
-    if !app.state::<Notice>().snapshot().enabled {
+    if !UPDATE_CHECK || !app.state::<Notice>().snapshot().enabled {
         return;
     }
     std::thread::spawn(move || {

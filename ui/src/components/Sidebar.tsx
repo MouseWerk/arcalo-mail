@@ -74,6 +74,8 @@ type Props = {
   current: number | null;
   showingOutbox: boolean;
   outboxCount: number;
+  /** Something in the queue failed or was refused and waits. */
+  outboxWaiting?: boolean;
   onSelect: (m: Mailbox) => void;
   onOutbox: () => void;
   onCompose: () => void;
@@ -124,6 +126,7 @@ export function Sidebar({
   current,
   showingOutbox,
   outboxCount,
+  outboxWaiting = false,
   onSelect,
   onOutbox,
   onCompose,
@@ -222,6 +225,11 @@ export function Sidebar({
                       >
                         <Icon size={16} strokeWidth={1.75} aria-hidden />
                         <span className="folder-name">{folderLabel(m, t)}</span>
+                        {m.sync_error && (
+                          <span className="folder-alert" title={t("folder.syncError", { error: m.sync_error })} aria-label={t("folder.syncError", { error: m.sync_error })}>
+                            <CircleAlert size={14} strokeWidth={1.75} aria-hidden />
+                          </span>
+                        )}
                         {count > 0 && (
                           <span className="count" aria-label={t("nav.unread", { n: count })}>
                             {count}
@@ -249,8 +257,8 @@ export function Sidebar({
           <section className="account">
             <ul className="folders">
               <li className="folder-item">
-                <button type="button" className="folder" aria-current={showingOutbox ? "page" : undefined} onClick={onOutbox}>
-                  <Upload size={16} strokeWidth={1.75} aria-hidden />
+                <button type="button" className="folder" aria-current={showingOutbox ? "page" : undefined} onClick={onOutbox} title={outboxWaiting ? t("outbox.someWait") : undefined}>
+                  {outboxWaiting ? <CircleAlert size={16} strokeWidth={1.75} aria-hidden className="folder-alert-icon" /> : <Upload size={16} strokeWidth={1.75} aria-hidden />}
                   <span className="folder-name">{t("folder.outbox")}</span>
                   <span className="count">{outboxCount}</span>
                 </button>

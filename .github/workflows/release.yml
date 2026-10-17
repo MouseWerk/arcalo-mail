@@ -17,8 +17,10 @@ name: Release
 #   before it is published) and android-latest.json (the GitHub APK's feed).
 #
 # Prerequisites, checked before anything is tagged: the public update key in
-# src-tauri/tauri.conf.json (plugins.updater.pubkey, not the placeholder) and the secrets
-# TAURI_SIGNING_PRIVATE_KEY and TAURI_SIGNING_PRIVATE_KEY_PASSWORD. Normal CI does not need them.
+# src-tauri/tauri.conf.json (plugins.updater.pubkey, not the placeholder), the secrets
+# TAURI_SIGNING_PRIVATE_KEY and TAURI_SIGNING_PRIVATE_KEY_PASSWORD, and the variable
+# ARCALO_MAIL_MS_CLIENT_ID (the Microsoft sign-in; a release without it only when the variable
+# ARCALO_MAIL_RELEASE_WITHOUT_MICROSOFT is `true`). Normal CI does not need them.
 #
 # Started by pushing a tag `v1.2.3`, by „Run workflow“ with a version (the tag `v<version>` is
 # created on the selected branch, with docs/releases/v<version>.md as its message; an existing tag
@@ -58,9 +60,10 @@ env:
   ARCALO_MAIL_MS_CLIENT_ID: ${{ vars.ARCALO_MAIL_MS_CLIENT_ID }}
 
 jobs:
-  # The update key must be set up before a release: without it nobody could ever be updated.
+  # The update key must be set up before a release: without it nobody could ever be updated. And
+  # the Microsoft sign-in, which the release promises (docs/decisions.md).
   prerequisites:
-    name: Update key
+    name: Update key and Microsoft sign-in
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -88,6 +91,18 @@ jobs:
             echo "::warning::TAURI_SIGNING_PRIVATE_KEY_PASSWORD is empty: fine only for a key made without a password."
           fi
           echo "Update key found."
+      - name: Microsoft client id
+        env:
+          WITHOUT_MICROSOFT: ${{ vars.ARCALO_MAIL_RELEASE_WITHOUT_MICROSOFT }}
+        run: |
+          if [ -n "$ARCALO_MAIL_MS_CLIENT_ID" ]; then
+            echo "Microsoft client id found."
+          elif [ "$WITHOUT_MICROSOFT" = "true" ]; then
+            echo "::warning title=No Microsoft sign-in::ARCALO_MAIL_MS_CLIENT_ID is not set: this release has no Microsoft sign-in (allowed by ARCALO_MAIL_RELEASE_WITHOUT_MICROSOFT=true)."
+          else
+            echo "::error title=Microsoft client id missing::Set the repository variable ARCALO_MAIL_MS_CLIENT_ID (docs/microsoft.md). A release without Microsoft sign-in needs the repository variable ARCALO_MAIL_RELEASE_WITHOUT_MICROSOFT=true."
+            exit 1
+          fi
 
   tag:
     name: Tag

@@ -213,6 +213,7 @@ describe("milestone 2", () => {
   it("explains the Microsoft and proxy problems", () => {
     expect(explain({ kind: "admin_consent", detail: "AADSTS65001" }).title).toBe("problem.adminConsent");
     expect(explain({ kind: "smtp_auth_disabled", detail: "535 5.7.139" }).hint).toBe("problem.smtpAuthDisabledHint");
+    expect(explain({ kind: "busy", detail: "[IN-USE] Mailbox is locked" }).title).toBe("problem.busy");
     const p = explain({ kind: "proxy", proxy: "http://proxy:3128", detail: "403" });
     expect([p.title, p.vars.proxy, p.detail]).toEqual(["problem.proxy", "http://proxy:3128", "403"]);
     expect(hintKey("google_app_password")).toBeNull();

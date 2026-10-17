@@ -59,12 +59,22 @@ fn strip_prefix(s: &str) -> Option<&str> {
     PREFIXES.contains(&word).then_some(rest)
 }
 
+/// The threads of the messages that refer to a Message-ID (replies that came before it),
+/// through the index of `message_refs`: one lookup, whatever the size of the mailbox.
+pub const REPLIES: &str = "SELECT DISTINCT m.thread_id FROM message_refs r JOIN messages m ON m.id = r.message_id
+     WHERE r.account_id = ?1 AND r.ref = ?2 AND m.id <> ?3";
+
 /// Gives the stored message `id` its thread.
 pub fn assign(store: &Store, account_id: i64, id: i64, p: &ParsedMessage) -> Result<()> {
     let conn = store.conn();
     let mut related: Vec<String> = p.references.clone();
     if let Some(r) = &p.in_reply_to {
         related.push(r.clone());
+    }
+    let mut refs =
+        conn.prepare_cached("INSERT OR IGNORE INTO message_refs (message_id, account_id, ref) VALUES (?1, ?2, ?3)")?;
+    for r in related.iter().filter(|r| !r.is_empty()) {
+        refs.execute(params![id, account_id, r])?;
     }
     let mut threads: Vec<i64> = vec![];
     // Parents and ancestors that are already here.
@@ -81,10 +91,7 @@ pub fn assign(store: &Store, account_id: i64, id: i64, p: &ParsedMessage) -> Res
         for t in st.query_map(params![account_id, own, id], |row| row.get::<_, i64>(0))? {
             threads.push(t?);
         }
-        let mut replies = conn.prepare_cached(
-            "SELECT DISTINCT thread_id FROM messages WHERE account_id = ?1 AND id <> ?3
-               AND (in_reply_to = ?2 OR EXISTS (SELECT 1 FROM json_each(messages.refs) WHERE value = ?2))",
-        )?;
+        let mut replies = conn.prepare_cached(REPLIES)?;
         for t in replies.query_map(params![account_id, own, id], |row| row.get::<_, i64>(0))? {
             threads.push(t?);
         }
@@ -193,5 +200,22 @@ mod tests {
         for id in [reply1, reply2, root] {
             assert!(ids.contains(&id), "{id} not in {ids:?}");
         }
+    }
+
+    /// The replies of a new message are found through an index, not by reading every message
+    /// of the account (a first sync of a large mailbox would take hours).
+    #[test]
+    fn replies_are_looked_up_through_an_index() {
+        let (s, _, _) = store_with_inbox();
+        let plan: Vec<String> = s
+            .conn()
+            .prepare(&format!("EXPLAIN QUERY PLAN {}", super::REPLIES))
+            .unwrap()
+            .query_map(rusqlite::params![1, "a@x", 0], |r| r.get::<_, String>(3))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert!(plan.iter().all(|step| !step.starts_with("SCAN")), "{plan:?}");
+        assert!(plan.iter().any(|step| step.contains("message_refs_ref")), "{plan:?}");
     }
 }

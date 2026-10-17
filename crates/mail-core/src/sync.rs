@@ -21,7 +21,7 @@ use serde::Serialize;
 use tokio::sync::Notify;
 
 use crate::error::{Error, Result};
-use crate::imap::{Capabilities, IdleOutcome, ImapClient, QresyncParams, Search, SelectInfo, UidRange};
+use crate::imap::{Capabilities, IdleOutcome, ImapClient, MailboxEntry, QresyncParams, Search, SelectInfo, UidRange};
 use crate::parse::{AttachmentInfo, ParsedMessage, parse, snippet_of};
 use crate::store::{PartialBody, Store, SyncState};
 use crate::tr;
@@ -131,6 +131,15 @@ pub async fn sync_mailbox<C: ImapClient>(
     let mut report =
         SyncReport { mailbox_id, strategy, added: 0, updated: 0, removed: 0, new_unread: vec![], new: vec![] };
     let known_next = local.uid_next.unwrap_or(1);
+    // Messages whose flag change has not reached the server yet keep what the user did here.
+    let pending = crate::outbox::pending_flag_uids(store, mb.account_id, &mb.name)?;
+    let set_flags = |uid: u32, flags: &crate::imap::Flags, modseq: Option<u64>| -> Result<bool> {
+        if pending.contains(&uid) {
+            return Ok(false);
+        }
+        store.set_flags(mailbox_id, uid, flags, modseq)?;
+        Ok(true)
+    };
     let new = match strategy {
         Strategy::Full => {
             report.removed = store.uids(mailbox_id)?.len();
@@ -141,8 +150,9 @@ pub async fn sync_mailbox<C: ImapClient>(
             report.removed = store.remove_uids(mailbox_id, &selected.vanished)?;
             store.batch(|| {
                 for c in selected.changed.iter().filter(|c| c.uid < known_next) {
-                    store.set_flags(mailbox_id, c.uid, &c.flags, c.modseq)?;
-                    report.updated += 1;
+                    if set_flags(c.uid, &c.flags, c.modseq)? {
+                        report.updated += 1;
+                    }
                 }
                 Ok(())
             })?;
@@ -157,8 +167,9 @@ pub async fn sync_mailbox<C: ImapClient>(
                     .await?;
                 store.batch(|| {
                     for c in &changes {
-                        store.set_flags(mailbox_id, c.uid, &c.flags, c.modseq)?;
-                        report.updated += 1;
+                        if set_flags(c.uid, &c.flags, c.modseq)? {
+                            report.updated += 1;
+                        }
                     }
                     Ok(())
                 })?;
@@ -174,8 +185,9 @@ pub async fn sync_mailbox<C: ImapClient>(
             let changes = client.fetch_flags(UidRange { from: 1, to: None }, None).await?;
             store.batch(|| {
                 for c in changes.iter().filter(|c| c.uid < known_next) {
-                    store.set_flags(mailbox_id, c.uid, &c.flags, c.modseq)?;
-                    report.updated += 1;
+                    if set_flags(c.uid, &c.flags, c.modseq)? {
+                        report.updated += 1;
+                    }
                 }
                 Ok(())
             })?;
@@ -208,13 +220,29 @@ async fn remove_gone<C: ImapClient>(client: &mut C, store: &Store, mailbox_id: i
     store.remove_uids(mailbox_id, &gone)
 }
 
-/// Syncs the folder list of an account.
+/// Syncs the folder list of an account. Folders created or renamed here that the queue has not
+/// brought to the server yet stay as they are here (the LIST does not know them, or still has
+/// the old name).
 pub async fn sync_folders<C: ImapClient>(client: &mut C, store: &Store, account_id: i64) -> Result<()> {
     let entries = client.list().await?;
-    for e in &entries {
-        store.upsert_mailbox(account_id, e)?;
+    let (waiting, leaving) = crate::outbox::pending_folders(store, account_id)?;
+    let under = |name: &str, root: &str, delim: Option<char>| {
+        name == root || delim.is_some_and(|d| name.strip_prefix(root).is_some_and(|rest| rest.starts_with(d)))
+    };
+    let entries: Vec<MailboxEntry> =
+        entries.into_iter().filter(|e| !leaving.iter().any(|l| under(&e.name, l, e.delimiter))).collect();
+    let roles = crate::imap::roles(&entries);
+    for (e, role) in entries.iter().zip(roles) {
+        store.upsert_mailbox_with_role(account_id, e, role)?;
     }
-    store.retain_mailboxes(account_id, &entries.iter().map(|e| e.name.clone()).collect::<Vec<_>>())
+    let mut keep: Vec<String> = entries.iter().map(|e| e.name.clone()).collect();
+    for m in store.mailboxes(account_id)? {
+        let delim = m.delimiter.as_deref().and_then(|d| d.chars().next());
+        if waiting.iter().any(|w| under(&m.name, w, delim)) {
+            keep.push(m.name);
+        }
+    }
+    store.retain_mailboxes(account_id, &keep)
 }
 
 /// Syncs the folder list of an account and then every folder, the inbox first.
@@ -464,11 +492,13 @@ pub fn reconnect_delay(attempt: u32) -> Duration {
 pub struct SyncMachine {
     pub state: State,
     online: bool,
+    /// Rounds that failed in a row (connecting worked each time): the wait grows with them.
+    failed_rounds: u32,
 }
 
 impl Default for SyncMachine {
     fn default() -> Self {
-        SyncMachine { state: State::Offline, online: true }
+        SyncMachine { state: State::Offline, online: true, failed_rounds: 0 }
     }
 }
 
@@ -481,6 +511,7 @@ impl SyncMachine {
             (S::NeedsSignIn, Event::Reconnect) => (S::NeedsSignIn, vec![]),
             (_, Event::Reconnect) => {
                 self.online = true;
+                self.failed_rounds = 0;
                 (S::Connecting { attempt: 1 }, vec![A::Disconnect, A::Connect])
             }
             (_, Event::NetworkDown) => {
@@ -502,10 +533,18 @@ impl SyncMachine {
             }
             (S::Backoff { attempt }, Event::Timer) => (S::Connecting { attempt: attempt + 1 }, vec![A::Connect]),
             (S::Backoff { .. }, Event::Retry) => (S::Connecting { attempt: 1 }, vec![A::Connect]),
-            (S::Syncing { idle: true }, Event::SyncDone) => (S::Idling, vec![A::Idle]),
-            (S::Syncing { idle: false }, Event::SyncDone) => (S::Polling, vec![A::Wait(POLL_INTERVAL)]),
+            (S::Syncing { idle: true }, Event::SyncDone) => {
+                self.failed_rounds = 0;
+                (S::Idling, vec![A::Idle])
+            }
+            (S::Syncing { idle: false }, Event::SyncDone) => {
+                self.failed_rounds = 0;
+                (S::Polling, vec![A::Wait(POLL_INTERVAL)])
+            }
             (S::Syncing { .. }, Event::SyncFailed) => {
-                (S::Backoff { attempt: 1 }, vec![A::Disconnect, A::Wait(reconnect_delay(1))])
+                self.failed_rounds += 1;
+                let attempt = self.failed_rounds;
+                (S::Backoff { attempt }, vec![A::Disconnect, A::Wait(reconnect_delay(attempt))])
             }
             (S::Idling, Event::Idle(IdleOutcome::Changed | IdleOutcome::Interrupted)) => {
                 (S::Syncing { idle: true }, vec![A::Sync])
@@ -515,7 +554,9 @@ impl SyncMachine {
                 (S::Syncing { idle: true }, vec![A::Sync])
             }
             (S::Idling, Event::SyncFailed) => {
-                (S::Backoff { attempt: 1 }, vec![A::Disconnect, A::Wait(reconnect_delay(1))])
+                self.failed_rounds += 1;
+                let attempt = self.failed_rounds;
+                (S::Backoff { attempt }, vec![A::Disconnect, A::Wait(reconnect_delay(attempt))])
             }
             (S::Polling, Event::Timer) | (S::Polling, Event::Retry) => (S::Syncing { idle: false }, vec![A::Sync]),
             (state, _) => (state, vec![]),
@@ -856,5 +897,103 @@ Content-Transfer-Encoding: base64\r\n\r\nJVBERi0xLjQK\r\n--X--\r\n";
         assert_eq!(m.on(Event::Reconnect), vec![Action::Disconnect, Action::Connect], "a new network is up");
         m.on(Event::ConnectFailed { auth: true });
         assert_eq!(m.on(Event::Reconnect), vec![], "waits for the password");
+    }
+
+    /// A sync before the queue reached the server keeps what the user changed here.
+    #[tokio::test]
+    async fn a_sync_before_the_replay_keeps_local_flags() {
+        for caps in [Capabilities::default(), Capabilities { qresync: false, ..all_caps() }] {
+            let (mut server, store, account) = setup(caps);
+            sync_account(&mut server, &store, account).await.unwrap();
+            let ib = inbox(&store, account);
+            let id = store.messages(ib, 10, 0).unwrap()[0].id;
+            crate::actions::set_flags(&store, &[id], Some(true), Some(true)).unwrap();
+            // Something else changed on the server meanwhile (CONDSTORE then fetches flags).
+            server.set_flags("INBOX", 1, Flags { answered: true, ..Flags::default() });
+            server.set_flags("INBOX", 2, Flags { answered: true, ..Flags::default() });
+            server.set_flags("INBOX", 3, Flags { answered: true, ..Flags::default() });
+            sync_mailbox(&mut server, &store, caps, ib).await.unwrap();
+            let m = &store.summaries(&[id]).unwrap()[0];
+            assert!(m.seen && m.flagged, "{caps:?}: {m:?}");
+        }
+    }
+
+    /// Folders created or renamed here wait for the server; a folder sync in between neither
+    /// drops them nor brings the old name back.
+    #[tokio::test]
+    async fn folders_waiting_for_the_server_survive_a_folder_sync() {
+        let (mut server, store, account) = setup(all_caps());
+        server.do_create("Alt").unwrap();
+        sync_account(&mut server, &store, account).await.unwrap();
+        crate::actions::create_folder(&store, account, None, "Projekte").unwrap();
+        let alt = store.mailbox_by_name(account, "Alt").unwrap().unwrap();
+        crate::actions::rename_folder(&store, alt.id, "Neu").unwrap();
+        sync_folders(&mut server, &store, account).await.unwrap();
+        let names: Vec<String> = store.mailboxes(account).unwrap().into_iter().map(|m| m.name).collect();
+        assert!(names.contains(&"Projekte".to_string()), "{names:?}");
+        assert!(names.contains(&"Neu".to_string()) && !names.contains(&"Alt".to_string()), "{names:?}");
+    }
+
+    /// Roles by name only where the server marks no folder with that role, and never for a
+    /// user's folder further down: deleting there moves to the real trash.
+    #[tokio::test]
+    async fn special_folders_by_name_only_where_the_server_does_not_say() {
+        use crate::imap::fake::FakeMailbox;
+        let (mut server, store, account) = setup(all_caps());
+        for name in ["Archiv", "Archiv/Papierkorb", "Kunden", "Kunden/Spam", "Projekt.Trash"] {
+            server.mailboxes.insert(name.into(), FakeMailbox::new(&[]));
+        }
+        sync_account(&mut server, &store, account).await.unwrap();
+        let role = |name: &str| store.mailbox_by_name(account, name).unwrap().unwrap().role;
+        assert_eq!(store.mailbox_by_role(account, Role::Trash).unwrap().unwrap().name, "Trash");
+        assert_eq!(role("Archiv/Papierkorb"), None);
+        assert_eq!(role("Kunden/Spam"), None);
+        assert_eq!(role("Projekt.Trash"), None);
+        assert_eq!(role("Archiv"), Some(Role::Archive), "no folder marked \\Archive: the name says it");
+        server.deliver("Kunden/Spam", &sample("k@x", "Kundenmail", None, "x"), 1_760_000_500);
+        let spam = store.mailbox_by_name(account, "Kunden/Spam").unwrap().unwrap();
+        sync_mailbox(&mut server, &store, all_caps(), spam.id).await.unwrap();
+        let id = store.messages(spam.id, 10, 0).unwrap()[0].id;
+        crate::actions::delete(&store, &[id]).unwrap();
+        let kinds: Vec<String> = crate::outbox::entries(&store).unwrap().into_iter().map(|e| e.kind).collect();
+        assert_eq!(kinds, ["move"], "to the trash, not deleted for good");
+
+        // A server without SPECIAL-USE: the names count, top level (and below INBOX) only.
+        let (mut plain, store, account) = setup(Capabilities::default());
+        plain.mailboxes.clear();
+        for name in ["INBOX", "INBOX/Gesendet", "Papierkorb", "Kunden/Spam", "Spam", "Archiv/Papierkorb"] {
+            plain.mailboxes.insert(name.into(), FakeMailbox::new(&[]));
+        }
+        sync_account(&mut plain, &store, account).await.unwrap();
+        let role = |name: &str| store.mailbox_by_name(account, name).unwrap().unwrap().role;
+        assert_eq!(role("INBOX/Gesendet"), Some(Role::Sent));
+        assert_eq!(role("Papierkorb"), Some(Role::Trash));
+        assert_eq!(role("Spam"), Some(Role::Junk));
+        assert_eq!(role("Kunden/Spam"), None);
+        assert_eq!(role("Archiv/Papierkorb"), None);
+    }
+
+    /// Failed rounds wait longer each time, also when connecting works (a folder or the
+    /// server failing in the middle of a round).
+    #[test]
+    fn repeated_sync_failures_wait_longer() {
+        let mut m = SyncMachine::default();
+        m.on(Event::Start);
+        let mut waits = vec![];
+        for _ in 0..4 {
+            m.on(Event::Connected { caps: all_caps() });
+            let a = m.on(Event::SyncFailed);
+            waits.extend(a.into_iter().filter_map(|a| if let Action::Wait(d) = a { Some(d.as_secs()) } else { None }));
+            m.on(Event::Timer);
+        }
+        assert_eq!(waits, [5, 10, 20, 40]);
+        m.on(Event::Connected { caps: all_caps() });
+        m.on(Event::SyncDone);
+        m.on(Event::Idle(IdleOutcome::Changed));
+        assert_eq!(
+            m.on(Event::SyncFailed),
+            vec![Action::Disconnect, Action::Wait(Duration::from_secs(5))],
+            "a good round resets it"
+        );
     }
 }

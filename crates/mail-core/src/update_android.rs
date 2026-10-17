@@ -34,6 +34,12 @@ pub fn from_store(installer: Option<&str>) -> bool {
     installer.map(str::trim).is_some_and(|i| STORES.contains(&i))
 }
 
+/// [`from_store`] for what Android said (`Err`: the question failed). Without an answer the
+/// app counts as a store's: the update notice stays off rather than showing in a Play install.
+pub fn from_store_or_unknown<E>(installer: std::result::Result<Option<&str>, E>) -> bool {
+    installer.map_or(true, from_store)
+}
+
 /// `android-latest.json`: the release's version, its APK and how that APK is signed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AndroidRelease {
@@ -258,6 +264,10 @@ mod tests {
         assert!(!from_store(None), "installed by hand: the APK of the release");
         assert!(!from_store(Some("com.google.android.packageinstaller")));
         assert!(!from_store(Some("com.android.chrome")));
+        // Android could not say: the notice stays off (a Play install must never show it).
+        assert!(from_store_or_unknown::<String>(Err("no answer".into())));
+        assert!(!from_store_or_unknown::<String>(Ok(None)));
+        assert!(from_store_or_unknown::<String>(Ok(Some("com.android.vending"))));
     }
 
     #[test]

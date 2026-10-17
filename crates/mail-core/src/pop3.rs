@@ -112,7 +112,17 @@ impl Client {
         }
         let r = c.command(&format!("PASS {password}")).await?;
         if !r.starts_with("+OK") {
-            return Err(Problem::Auth { detail: r.trim_start_matches("-ERR").trim().to_string() }.into());
+            let detail = r.trim_start_matches("-ERR").trim().to_string();
+            // Another session holds the maildrop (RFC 2449 `[IN-USE]`, or said in words).
+            let t = detail.to_lowercase();
+            if t.contains("lock") && (t.contains("maildrop") || t.contains("mailbox")) {
+                return Err(Problem::Busy { detail }.into());
+            }
+            return Err(match network::auth_problem(&detail) {
+                p @ Problem::Busy { .. } => p,
+                _ => Problem::Auth { detail },
+            }
+            .into());
         }
         Ok(c)
     }
@@ -400,6 +410,12 @@ impl Pop3Session {
         let s = Pop3Session { store: Mutex::new(store), account, server, user, password, policy, selected: None, poll };
         s.refresh().await?;
         Ok(s)
+    }
+
+    /// The local folders only, without a visit (the on-demand connection: what it reads is
+    /// here already, and a second session would collide with the worker's visits).
+    pub fn local(store: Store, account: i64, server: Server, user: String, password: String, policy: Policy) -> Self {
+        Pop3Session { store: Mutex::new(store), account, server, user, password, policy, selected: None, poll: POLL }
     }
 
     async fn refresh(&self) -> Result<Visit> {
@@ -717,17 +733,22 @@ impl ImapClient for Pop3Session {
         })
     }
 
+    /// Renames a folder and the folders below it, as an IMAP server does.
     async fn rename(&mut self, from: &str, to: &str) -> Result<()> {
         self.with(|s| {
-            s.conn().execute(
-                "UPDATE pop3_folders SET name = ?3 WHERE account_id = ?1 AND name = ?2",
-                params![self.account, from, to],
-            )?;
-            s.conn().execute(
-                "UPDATE pop3_messages SET mailbox = ?3 WHERE account_id = ?1 AND mailbox = ?2",
-                params![self.account, from, to],
-            )?;
-            Ok(())
+            s.batch(|| {
+                // The folder itself and every `from/…` (`/` is the delimiter): the prefix replaced.
+                for (table, col) in [("pop3_folders", "name"), ("pop3_messages", "mailbox")] {
+                    s.conn().execute(
+                        &format!(
+                            "UPDATE {table} SET {col} = ?3 || substr({col}, length(?2) + 1)
+                             WHERE account_id = ?1 AND ({col} = ?2 OR substr({col}, 1, length(?2) + 1) = ?2 || '/')"
+                        ),
+                        params![self.account, from, to],
+                    )?;
+                }
+                Ok(())
+            })
         })
     }
 
@@ -790,6 +811,18 @@ impl crate::engine::Connector for Pop3Connector {
         .await
     }
 
+    async fn imap_on_demand(&self) -> Result<Pop3Session> {
+        let store = Store::open(&self.db)?;
+        Ok(Pop3Session::local(
+            store,
+            self.account_id,
+            self.pop3.clone(),
+            self.username.clone(),
+            self.password(),
+            self.policy,
+        ))
+    }
+
     async fn send(&self, from: &str, to: &[String], raw: &[u8]) -> Result<()> {
         smtp::send_with(&self.smtp, &self.username, &Credential::Password(self.password()), from, to, raw).await
     }
@@ -818,6 +851,8 @@ pub mod fake {
         state: State,
         /// Every command, for the tests.
         pub log: Vec<String>,
+        /// Another session holds the maildrop (RFC 2449 `[IN-USE]`): PASS is refused for now.
+        pub in_use: bool,
     }
 
     #[derive(Debug, Clone, PartialEq, Eq)]
@@ -843,7 +878,14 @@ pub mod fake {
 
     impl FakePop3 {
         pub fn new(user: &str, password: &str) -> Self {
-            FakePop3 { user: user.into(), password: password.into(), messages: vec![], state: State::User, log: vec![] }
+            FakePop3 {
+                user: user.into(),
+                password: password.into(),
+                messages: vec![],
+                state: State::User,
+                log: vec![],
+                in_use: false,
+            }
         }
 
         pub fn greeting(&self) -> String {
@@ -874,6 +916,10 @@ pub mod fake {
                 (State::User, "USER") => {
                     self.state = State::Pass(arg);
                     ("+OK\r\n".into(), false)
+                }
+                (State::Pass(_), "PASS") if self.in_use => {
+                    self.state = State::User;
+                    ("-ERR [IN-USE] Mailbox is locked by another POP3 session\r\n".into(), false)
                 }
                 (State::Pass(u), "PASS") => {
                     if u.eq_ignore_ascii_case(&self.user) && arg == self.password {
@@ -1116,6 +1162,90 @@ mod tests {
         assert!(!c.files_sent());
         let mut session = c.imap().await.unwrap();
         assert_eq!(session.list().await.unwrap().len(), 5);
+        let _ = std::fs::remove_dir_all(db.parent().unwrap());
+    }
+
+    /// Another session holds the maildrop (a phone polling the same account): no reason to ask
+    /// for the password, the next attempt follows by itself.
+    #[tokio::test]
+    async fn a_locked_maildrop_is_no_wrong_password() {
+        let (fake, db, _) = setup(Policy { leave_on_server: true, delete_after_days: None });
+        fake.lock().unwrap().in_use = true;
+        let port = serve(fake.clone()).await;
+        let server = Server::new("127.0.0.1", port, Security::Plain);
+        let e = Client::connect(&server, "maria@example.org", "geheim").await.err().unwrap();
+        let sign_in = matches!(&e, Error::Connection(p) if p.needs_sign_in());
+        assert!(!sign_in && crate::engine::is_transient(&e), "{e:?}");
+        fake.lock().unwrap().in_use = false;
+        let e = Client::connect(&server, "maria@example.org", "falsch").await.err().unwrap();
+        assert!(matches!(&e, Error::Connection(p) if p.needs_sign_in()), "{e:?}");
+        let _ = std::fs::remove_dir_all(db.parent().unwrap());
+    }
+
+    /// The on-demand connection (a body, an attachment) reads the local folders: it does not
+    /// visit the server, where it would collide with the worker's own visit.
+    #[tokio::test]
+    async fn the_on_demand_connection_does_not_visit_the_server() {
+        let (fake, db, account) = setup(Policy { leave_on_server: true, delete_after_days: None });
+        let port = serve(fake.clone()).await;
+        let server = Server::new("127.0.0.1", port, Security::Plain);
+        let c = Pop3Connector::new(
+            &Account {
+                transport: Transport::Pop3 {
+                    pop3: server,
+                    smtp: Server::new("127.0.0.1", 1, Security::Plain),
+                    username: "maria@example.org".into(),
+                    auth: crate::account::Auth::Password,
+                    leave_on_server: true,
+                    delete_after_days: None,
+                },
+                ..account.clone()
+            },
+            "geheim".into(),
+            db.clone(),
+        )
+        .unwrap();
+        let mut main = c.imap().await.unwrap();
+        let logins = || fake.lock().unwrap().log.iter().filter(|l| l.starts_with("USER")).count();
+        assert_eq!(logins(), 1);
+        let mut demand = c.imap_on_demand().await.unwrap();
+        demand.select("INBOX", None).await.unwrap();
+        assert_eq!(demand.uids().await.unwrap(), [1, 2]);
+        assert_eq!(logins(), 1, "no second session");
+        main.logout().await.unwrap();
+        let _ = std::fs::remove_dir_all(db.parent().unwrap());
+    }
+
+    /// Renaming a folder takes its subfolders along, as on an IMAP server.
+    #[tokio::test]
+    async fn renaming_a_folder_takes_its_subfolders_along() {
+        let (fake, db, account) = setup(Policy { leave_on_server: true, delete_after_days: None });
+        let port = serve(fake.clone()).await;
+        let server = Server::new("127.0.0.1", port, Security::Plain);
+        let policy = Policy { leave_on_server: true, delete_after_days: None };
+        let mut s = Pop3Session::open(
+            Store::open(&db).unwrap(),
+            account.id,
+            server,
+            "maria@example.org".into(),
+            "geheim".into(),
+            policy,
+            POLL,
+        )
+        .await
+        .unwrap();
+        s.create("Projekte").await.unwrap();
+        s.create("Projekte/Kunde A").await.unwrap();
+        s.create("Projekte-alt").await.unwrap();
+        s.select("INBOX", None).await.unwrap();
+        s.move_to(&[1], "Projekte/Kunde A").await.unwrap();
+        s.rename("Projekte", "Arbeit").await.unwrap();
+        let names: Vec<String> = s.list().await.unwrap().into_iter().map(|e| e.name).collect();
+        assert!(names.contains(&"Arbeit/Kunde A".to_string()), "{names:?}");
+        assert!(names.contains(&"Projekte-alt".to_string()), "{names:?}");
+        assert!(!names.iter().any(|n| n.starts_with("Projekte/") || n == "Projekte"), "{names:?}");
+        s.select("Arbeit/Kunde A", None).await.unwrap();
+        assert_eq!(s.uids().await.unwrap().len(), 1, "the messages came along");
         let _ = std::fs::remove_dir_all(db.parent().unwrap());
     }
 

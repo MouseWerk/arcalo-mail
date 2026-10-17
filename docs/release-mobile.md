@@ -19,10 +19,13 @@ A tag `vMAJOR.MINOR.PATCH` is the version: the Android versionName is `1.0.0` an
 number as the build number. The files are the run's artifacts `arcalo-mail-android` (`ArcaloMail_<version>_android.apk`
 and `.aab`) and `arcalo-mail-ios`.
 
-The release (`release.yml`, [release.md](release.md)) builds the APK and the AAB of its tag, attaches the release-signed
-APK with `android-latest.json` to the GitHub release (the app installed from there tells about newer versions; a copy
-from Google Play never checks), keeps the AAB as the run's artifact `arcalo-mail-android`, and uploads the iOS build
-to TestFlight. Google Play gets the AAB by hand until a Play service account is set up (see the end of this page).
+The release (`release.yml`, [release.md](release.md)) builds the APK and the AAB of its tag, attaches the
+release-signed APK with `android-latest.json` to the GitHub release (the app installed from there tells about newer
+versions; a copy from Google Play never checks, and when Android cannot name the installer the notice stays off),
+keeps the AAB as the run's artifact `arcalo-mail-android`, and uploads the iOS build to TestFlight. The AAB is a build
+of its own without the update notice (no feature `apk-updates`, no update key): it holds no code that looks for
+updates, as Play's policy wants. Google Play gets the AAB by hand until a Play service account is set up (see the end
+of this page).
 The listing texts, the privacy policy text and the data safety answers are in [store/](store/).
 
 ## Android: Google Play
