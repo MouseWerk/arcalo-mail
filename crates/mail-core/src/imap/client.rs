@@ -579,6 +579,34 @@ fn uid_of(attrs: &[AttributeValue<'_>]) -> Option<u32> {
     attrs.iter().find_map(|a| if let AttributeValue::Uid(u) = a { Some(*u) } else { None })
 }
 
+/// One folder of a `LIST` answer: its name decoded (modified UTF-7) exactly as the server sends
+/// it, brackets and all (Gmail's „[Gmail]/…“ and labels like „[Notion]“ alike).
+fn list_entry(l: &imap_proto::MailboxListData<'_>) -> MailboxEntry {
+    MailboxEntry {
+        name: utf7::decode(&l.name),
+        delimiter: l.delimiter.as_ref().and_then(|d| d.chars().next()),
+        attributes: l
+            .name_attributes
+            .iter()
+            .map(|a| match a {
+                NameAttribute::NoInferiors => "\\Noinferiors".to_string(),
+                NameAttribute::NoSelect => "\\Noselect".into(),
+                NameAttribute::Marked => "\\Marked".into(),
+                NameAttribute::Unmarked => "\\Unmarked".into(),
+                NameAttribute::All => "\\All".into(),
+                NameAttribute::Archive => "\\Archive".into(),
+                NameAttribute::Drafts => "\\Drafts".into(),
+                NameAttribute::Flagged => "\\Flagged".into(),
+                NameAttribute::Junk => "\\Junk".into(),
+                NameAttribute::Sent => "\\Sent".into(),
+                NameAttribute::Trash => "\\Trash".into(),
+                NameAttribute::Extension(e) => e.to_string(),
+                _ => String::new(),
+            })
+            .collect(),
+    }
+}
+
 impl ImapClient for ImapSession {
     async fn capabilities(&mut self) -> Result<Capabilities> {
         Ok(self.caps)
@@ -595,29 +623,7 @@ impl ImapClient for ImapSession {
             .data
             .iter()
             .filter_map(|d| match d {
-                Response::MailboxData(MailboxDatum::List(l)) => Some(MailboxEntry {
-                    name: utf7::decode(&l.name),
-                    delimiter: l.delimiter.as_ref().and_then(|d| d.chars().next()),
-                    attributes: l
-                        .name_attributes
-                        .iter()
-                        .map(|a| match a {
-                            NameAttribute::NoInferiors => "\\Noinferiors".to_string(),
-                            NameAttribute::NoSelect => "\\Noselect".into(),
-                            NameAttribute::Marked => "\\Marked".into(),
-                            NameAttribute::Unmarked => "\\Unmarked".into(),
-                            NameAttribute::All => "\\All".into(),
-                            NameAttribute::Archive => "\\Archive".into(),
-                            NameAttribute::Drafts => "\\Drafts".into(),
-                            NameAttribute::Flagged => "\\Flagged".into(),
-                            NameAttribute::Junk => "\\Junk".into(),
-                            NameAttribute::Sent => "\\Sent".into(),
-                            NameAttribute::Trash => "\\Trash".into(),
-                            NameAttribute::Extension(e) => e.to_string(),
-                            _ => String::new(),
-                        })
-                        .collect(),
-                }),
+                Response::MailboxData(MailboxDatum::List(l)) => Some(list_entry(l)),
                 _ => None,
             })
             .collect())
@@ -998,6 +1004,35 @@ mod tests {
     fn uid_sets() {
         assert_eq!(uid_set(&[5, 1, 2, 3, 9, 7, 8]), "1:3,5,7:9");
         assert_eq!(uid_set(&[4]), "4");
+    }
+
+    /// Folder names with brackets keep them: Gmail's system folders under „[Gmail]“ (with the
+    /// localized names of the German interface) and labels of other apps such as „[Notion]“,
+    /// quoted, as atoms and as literals.
+    #[test]
+    fn list_names_keep_their_brackets() {
+        let entry = |line: &[u8]| {
+            let (_, resp) = Response::parse(line).unwrap();
+            let Response::MailboxData(MailboxDatum::List(l)) = resp else { panic!("{resp:?}") };
+            list_entry(&l)
+        };
+        for (line, name) in [
+            (&b"* LIST (\\HasNoChildren) \"/\" \"[Notion]\"\r\n"[..], "[Notion]"),
+            (b"* LIST (\\HasNoChildren) \"/\" [Notion]\r\n", "[Notion]"),
+            (b"* LIST (\\HasNoChildren) \"/\" {8}\r\n[Notion]\r\n", "[Notion]"),
+            (b"* LIST (\\HasChildren) \"/\" \"[Notion]/Inbox\"\r\n", "[Notion]/Inbox"),
+            (b"* LIST (\\HasNoChildren \\Drafts) \"/\" \"[Gmail]/Entw&APw-rfe\"\r\n", "[Gmail]/Entwürfe"),
+            (b"* LIST (\\HasNoChildren) \"/\" \"Entw&APw-rfe\"\r\n", "Entwürfe"),
+        ] {
+            let e = entry(line);
+            assert_eq!(e.name, name);
+            assert_eq!(e.delimiter, Some('/'));
+        }
+        let drafts = entry(b"* LIST (\\HasNoChildren \\Drafts) \"/\" \"[Gmail]/Entw&APw-rfe\"\r\n");
+        assert_eq!(drafts.role(), Some(Role::Drafts));
+        // A label of its own with the same name is a folder, not a second Drafts.
+        let label = entry(b"* LIST (\\HasNoChildren) \"/\" \"Entw&APw-rfe\"\r\n");
+        assert_eq!(roles(&[drafts, label]), [Some(Role::Drafts), None]);
     }
 
     #[test]
