@@ -1696,7 +1696,9 @@ export function App() {
       window.removeEventListener(LAYERS_EVENT, onLayers);
     };
   }, [touch]);
-  useEffect(() => syncBack.current(), [touch, step, settingsNav]);
+  // Before the screen is painted: a Back right after a screen showed finds its entry (after
+  // the paint it came too late, and Back at the bottom of the history leaves the app).
+  useLayoutEffect(() => syncBack.current(), [touch, step, settingsNav]);
 
   // ---------------------------------------------------------------- swipes and pull to refresh
 
