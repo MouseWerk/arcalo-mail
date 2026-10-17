@@ -525,12 +525,19 @@ impl Store {
         }
         let has_attachments = p.attachments.iter().any(|a| !a.inline && !a.is_protocol())
             || h.header.windows(15).any(|w| w.eq_ignore_ascii_case(b"multipart/mixed"));
+        let dmarc_pass = match (p.list.authentication.as_deref(), p.from.as_ref()) {
+            (Some(auth), Some(from)) => self.account(account_id).is_ok_and(|a| {
+                crate::avatars::dmarc_passed(auth, &from.email, &crate::avatars::own_authservers(&a))
+            }),
+            _ => false,
+        };
         self.conn.execute(
             "INSERT INTO messages (account_id, mailbox_id, uid, modseq, message_id, in_reply_to, refs, subject,
                from_name, from_email, to_json, cc_json, date, internal_date, size, seen, answered, flagged, draft,
-               keywords, has_attachments, snippet, reply_to_json, base_subject, category, list_id, unsubscribe, one_click)
+               keywords, has_attachments, snippet, reply_to_json, base_subject, category, list_id, unsubscribe, one_click,
+               dmarc_pass)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24,
-               ?25, ?26, ?27, ?28)",
+               ?25, ?26, ?27, ?28, ?29)",
             params![
                 account_id,
                 mailbox_id,
@@ -560,6 +567,7 @@ impl Store {
                 p.list.list_id,
                 p.list.unsubscribe,
                 p.list.one_click,
+                dmarc_pass,
             ],
         )?;
         let id = self.conn.last_insert_rowid();

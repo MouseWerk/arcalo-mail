@@ -116,7 +116,8 @@ pub struct Settings {
     pub bundles: bool,
     /// The AI assistant: providers, which account's mail each may see, the automatic parts.
     pub ai: crate::ai::AiSettings,
-    /// Profile pictures from BIMI: a sender's verified brand logo, fetched once per domain.
+    /// Profile pictures from BIMI: a sender's verified brand logo, fetched once per organizational
+    /// domain, only for senders whose mail passed DMARC at the user's provider (`avatars::lookup`).
     pub bimi: bool,
     /// Profile pictures from Gravatar. Off by default: it tells Gravatar which addresses write
     /// to the user.

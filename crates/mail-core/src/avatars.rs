@@ -92,7 +92,75 @@ fn kept(store: &Store, key: &str, at: i64) -> Result<Option<Option<Image>>> {
     })
 }
 
+/// The authentication servers of the user's own provider for an account, as organizational
+/// domains: an `Authentication-Results` with one of these ids is the provider's (RFC 8601
+/// section 5: a receiving server removes fields with its own id that came from outside). An
+/// empty entry: the provider writes no id (Microsoft).
+pub fn own_authservers(account: &crate::account::Account) -> Vec<String> {
+    use crate::account::{Provider, Transport};
+    let mut out = vec![];
+    if let Some(d) = crate::account::domain_of(&account.email) {
+        out.push(org_domain(&d));
+    }
+    match &account.transport {
+        Transport::Imap { imap: server, .. } | Transport::Pop3 { pop3: server, .. } => {
+            out.push(org_domain(&server.host.to_ascii_lowercase()))
+        }
+        Transport::Jmap { session_url, .. } => {
+            if let Some(h) = url::Url::parse(session_url).ok().and_then(|u| u.host_str().map(str::to_ascii_lowercase)) {
+                out.push(org_domain(&h));
+            }
+        }
+        Transport::Graph => {}
+    }
+    match account.provider {
+        Provider::Google => out.push("google.com".into()),
+        Provider::Microsoft => out.push(String::new()),
+        _ => {}
+    }
+    if out.iter().any(|d| d == "gmail.com" || d == "googlemail.com") {
+        out.push("google.com".into());
+    }
+    if out.iter().any(|d| d == "fastmail.com") {
+        out.push("messagingengine.com".into());
+    }
+    if out.iter().any(|d| ["outlook.com", "hotmail.com", "live.com", "office365.com"].contains(&d.as_str())) {
+        out.push(String::new());
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// Whether an `Authentication-Results` value (the newest one of a message) says, from one of
+/// the user's own authentication servers (`own`, [`own_authservers`]), that the message passed
+/// DMARC for the domain of its From (`from`).
+pub fn dmarc_passed(authentication: &str, from: &str, own: &[String]) -> bool {
+    let Some(from_domain) = crate::account::domain_of(from) else { return false };
+    let mut parts = authentication.split(';').map(str::trim);
+    let first = parts.next().unwrap_or_default();
+    // The authserv-id comes first (`mx.google.com`, maybe with a version); Microsoft writes the
+    // first result right away.
+    let (id, results): (String, Vec<&str>) = if first.contains('=') {
+        (String::new(), std::iter::once(first).chain(parts).collect())
+    } else {
+        let id = first.split_whitespace().next().unwrap_or_default().to_ascii_lowercase();
+        (if id.is_empty() { id } else { org_domain(&id) }, parts.collect())
+    };
+    if !own.contains(&id) {
+        return false;
+    }
+    results.iter().any(|r| {
+        let lower = r.to_ascii_lowercase();
+        lower.starts_with("dmarc=pass")
+            && lower.split_whitespace().any(|w| w.strip_prefix("header.from=").is_some_and(|d| d.trim_end_matches(';') == from_domain))
+    })
+}
+
 /// The picture of an address as far as the store knows it. `bimi`, `gravatar`: the settings.
+/// A BIMI logo only for a sender with mail here that passed DMARC as the user's provider found
+/// (never Junk), looked up for its organizational domain, so a sender cannot learn from a
+/// per-recipient subdomain who opened the list.
 pub fn lookup(store: &Store, email: &str, bimi: bool, gravatar: bool) -> Result<Lookup> {
     let email = email.trim().to_ascii_lowercase();
     let card: Option<(Option<String>, Option<Vec<u8>>)> = store
@@ -109,9 +177,21 @@ pub fn lookup(store: &Store, email: &str, bimi: bool, gravatar: bool) -> Result<
     }
     let at = now();
     let mut fetch = vec![];
-    let domain = crate::account::domain_of(&email);
+    let domain = crate::account::domain_of(&email).map(|d| org_domain(&d));
+    let authenticated = bimi
+        && domain.is_some()
+        && store
+            .conn()
+            .query_row(
+                "SELECT EXISTS (SELECT 1 FROM messages m JOIN mailboxes b ON b.id = m.mailbox_id
+                   WHERE m.from_email = ?1 COLLATE NOCASE AND m.dmarc_pass = 1
+                     AND COALESCE(b.role, '') NOT IN ('junk', 'trash'))",
+                [&email],
+                |r| r.get::<_, bool>(0),
+            )
+            .unwrap_or(false);
     let sources: Vec<(Source, &'static str)> = [
-        (bimi && domain.is_some()).then(|| (Source::Bimi(domain.clone().unwrap_or_default()), "bimi")),
+        authenticated.then(|| (Source::Bimi(domain.clone().unwrap_or_default()), "bimi")),
         gravatar.then(|| (Source::Gravatar(email.clone()), "gravatar")),
     ]
     .into_iter()
@@ -335,7 +415,7 @@ where
     if !dmarc_enforced(&dmarc) {
         return Ok(None);
     }
-    let Some(bytes) = get_limited(&location, MAX_SVG).await? else { return Ok(None) };
+    let Some(bytes) = get_limited(&location, MAX_SVG, true).await? else { return Ok(None) };
     match check_svg(&bytes) {
         Ok(svg) => Ok(Some(("image/svg+xml".into(), svg.into_bytes()))),
         Err(e) => {
@@ -350,8 +430,14 @@ pub async fn fetch_bimi_dns(domain: &str) -> Result<Option<(String, Vec<u8>)>> {
     fetch_bimi(domain, |name| async move { network::txt(&name).await }).await
 }
 
-async fn get_limited(url: &str, max: usize) -> Result<Option<Vec<u8>>> {
-    network::check_https_url(url)?;
+/// Fetches a picture up to `max` bytes; `from_mail`: the address came from a sender (a BIMI
+/// record), so it must point at a public host.
+async fn get_limited(url: &str, max: usize, from_mail: bool) -> Result<Option<Vec<u8>>> {
+    if from_mail {
+        network::check_mail_url(url, false)?;
+    } else {
+        network::check_https_url(url)?;
+    }
     let client = network::client_for(Service::Pictures)?;
     let mut resp = client.get(url).send().await.map_err(|e| Error::Network(e.to_string()))?;
     if !resp.status().is_success() {
@@ -377,7 +463,7 @@ pub fn gravatar_url(email: &str) -> String {
 
 /// Fetches a Gravatar (only when the user switched Gravatar on).
 pub async fn fetch_gravatar(email: &str) -> Result<Option<(String, Vec<u8>)>> {
-    let Some(bytes) = get_limited(&gravatar_url(email), MAX_IMAGE).await? else { return Ok(None) };
+    let Some(bytes) = get_limited(&gravatar_url(email), MAX_IMAGE, false).await? else { return Ok(None) };
     Ok(sniff(&bytes).filter(|m| *m != "image/svg+xml").map(|m| (m.to_string(), bytes)))
 }
 
@@ -452,16 +538,23 @@ mod tests {
         // fetch itself is checked against the test server through `get_limited` below.
         assert!(fetch_bimi("lax.example", txt).await.unwrap().is_none(), "DMARC not enforced");
         assert!(fetch_bimi("other.example", txt).await.unwrap().is_none(), "no record");
-        let got = get_limited(&format!("http://127.0.0.1:{port}/logo.svg"), MAX_SVG).await.unwrap().unwrap();
+        crate::network::allow_loopback_for_tests();
+        let got = get_limited(&format!("http://127.0.0.1:{port}/logo.svg"), MAX_SVG, true).await.unwrap().unwrap();
         assert!(check_svg(&got).is_ok());
-        assert!(get_limited(&format!("http://127.0.0.1:{port}/logo.svg"), 10).await.unwrap().is_none(), "too large");
+        assert!(get_limited(&format!("http://127.0.0.1:{port}/logo.svg"), 10, true).await.unwrap().is_none(), "too large");
 
-        let (s, _, _) = crate::store::tests::store_with_inbox();
+        let (s, _, inbox) = crate::store::tests::store_with_inbox();
+        // Only senders whose mail passed DMARC at the user's provider get their logo.
+        assert_eq!(lookup_of(&s, "info@shop.example"), Lookup::None, "no authenticated mail yet");
+        for (uid, from) in [(1, "info@shop.example"), (2, "news@shop.example"), (3, "news@mail.shop.example")] {
+            authenticated_mail(&s, inbox, uid, from);
+        }
         let src = Source::Bimi("shop.example".into());
         assert_eq!(lookup_of(&s, "info@shop.example"), Lookup::Fetch(vec![src.clone()]));
         keep(&s, &src, Some(&("image/svg+xml".into(), got.clone()))).unwrap();
         let Lookup::Found(p) = lookup_of(&s, "news@shop.example") else { panic!("kept per domain") };
         assert_eq!(p.source, "bimi");
+        assert!(matches!(lookup_of(&s, "news@mail.shop.example"), Lookup::Found(_)), "the organizational domain's");
         keep(&s, &Source::Bimi("plain.example".into()), None).unwrap();
         assert_eq!(lookup_of(&s, "a@plain.example"), Lookup::None, "„none“ is kept too");
         assert_eq!(
@@ -473,6 +566,43 @@ mod tests {
 
     fn lookup_of(s: &Store, email: &str) -> Lookup {
         lookup(s, email, true, false).unwrap()
+    }
+
+    /// A mail from `from` that passed DMARC as the test account's provider (example.org) wrote.
+    fn authenticated_mail(s: &Store, inbox: i64, uid: u32, from: &str) {
+        let domain = from.split('@').nth(1).unwrap();
+        let raw = format!(
+            "Authentication-Results: mx.example.org; dkim=pass header.d={domain}; dmarc=pass (p=REJECT) header.from={domain}\r\nFrom: <{from}>\r\nTo: maria@example.org\r\nSubject: x\r\n\r\nx\r\n"
+        );
+        let p = crate::parse::parse(raw.as_bytes()).unwrap();
+        s.insert_message(inbox, &crate::store::tests::header(uid, raw.as_bytes()), &p).unwrap();
+    }
+
+    #[test]
+    fn bimi_needs_dmarc_from_the_users_own_provider() {
+        let own = vec!["example.org".to_string()];
+        let ar = "mx.example.org; spf=pass smtp.mailfrom=shop.example; dmarc=pass (p=REJECT) header.from=shop.example";
+        assert!(dmarc_passed(ar, "info@shop.example", &own));
+        assert!(!dmarc_passed(ar, "info@other.example", &own), "aligned with the From only");
+        assert!(!dmarc_passed(&ar.replace("dmarc=pass", "dmarc=fail"), "info@shop.example", &own));
+        assert!(!dmarc_passed(&ar.replace("mx.example.org", "mx.evil.example"), "info@shop.example", &own), "not the provider's");
+        let microsoft = "spf=pass (sender IP is 1.2.3.4) smtp.mailfrom=shop.example; dkim=pass header.d=shop.example; dmarc=pass action=none header.from=shop.example;compauth=pass reason=100";
+        assert!(dmarc_passed(microsoft, "info@shop.example", &[String::new()]));
+        assert!(!dmarc_passed(microsoft, "info@shop.example", &own), "an id-less result only for Microsoft accounts");
+        // A spoofed sender (no pass), mail in Junk: no logo.
+        let (s, account, inbox) = crate::store::tests::store_with_inbox();
+        let spoofed = "Authentication-Results: mx.example.org; dmarc=fail header.from=paypal.com\r\nFrom: <service@paypal.com>\r\nSubject: x\r\n\r\nx\r\n";
+        let p = crate::parse::parse(spoofed.as_bytes()).unwrap();
+        s.insert_message(inbox, &crate::store::tests::header(1, spoofed.as_bytes()), &p).unwrap();
+        assert_eq!(lookup_of(&s, "service@paypal.com"), Lookup::None);
+        let junk = s
+            .upsert_mailbox(account, &crate::imap::MailboxEntry { name: "Junk".into(), delimiter: Some('/'), attributes: vec!["\\Junk".into()] })
+            .unwrap();
+        authenticated_mail(&s, junk, 1, "x@track.example");
+        assert_eq!(lookup_of(&s, "x@track.example"), Lookup::None);
+        // A per-recipient subdomain: looked up for the organizational domain.
+        authenticated_mail(&s, inbox, 2, "x@r-4711.track.example");
+        assert_eq!(lookup_of(&s, "x@r-4711.track.example"), Lookup::Fetch(vec![Source::Bimi("track.example".into())]));
     }
 
     #[test]

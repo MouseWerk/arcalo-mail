@@ -19,3 +19,7 @@ INSERT INTO pgp_key_emails (fingerprint, email, source, prefer_encrypt, seen_at)
 -- message of their sender.
 ALTER TABLE smime_certs ADD COLUMN trusted INTEGER NOT NULL DEFAULT 0;
 UPDATE smime_certs SET trusted = 1 WHERE own = 1;
+
+-- The message passed DMARC for the domain of its From, as the user's own provider wrote in its
+-- `Authentication-Results`: only then does the sender's BIMI logo show.
+ALTER TABLE messages ADD COLUMN dmarc_pass INTEGER NOT NULL DEFAULT 0;

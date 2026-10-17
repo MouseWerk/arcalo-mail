@@ -819,7 +819,7 @@ export const de: Record<TKey, Msg> = {
   "contacts.microsoftHint": "Deine Microsoft-Kontakte mit ihren Bildern.",
   "contacts.pictures": "Profilbilder",
   "contacts.bimi": "Markenlogos (BIMI)",
-  "contacts.bimiHint": "Das geprüfte Logo, das eine Firma für ihre Mail-Domain veröffentlicht, einmal pro Domain geholt und auf diesem Gerät gespeichert.",
+  "contacts.bimiHint": "Das geprüfte Logo, das eine Firma für ihre Mail-Domain veröffentlicht – nur für Absender, deren Mail dein Anbieter als echt bestätigt hat (DMARC). Einmal pro Domain geholt und auf diesem Gerät gespeichert.",
   "contacts.gravatar": "Gravatar",
   "contacts.gravatarHint": "Aus, bis du es einschaltest: eine Anfrage verrät Gravatar, welche Adressen dir schreiben.",
   "contacts.forgetPictures": "Gespeicherte Bilder",

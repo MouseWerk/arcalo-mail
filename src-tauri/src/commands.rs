@@ -933,21 +933,22 @@ pub enum Unsubscribed {
     Link { url: String },
 }
 
-/// „Abbestellen“ for a sender: one click (RFC 8058) through `mail_core::network`, else an
-/// e-mail through the account, else the page to confirm.
+/// What „Abbestellen“ on a message would do, for the question before it (the address or page
+/// shown as it is).
 #[tauri::command]
-pub async fn unsubscribe(state: State<'_, AppState>, sender: String) -> Res<Unsubscribed> {
-    let (account, header, one_click) = mail_core::unsubscribe::latest(&state.store(), &sender)?;
-    let method = mail_core::unsubscribe::best(&header, one_click).ok_or_else(|| {
-        Error::Invalid(
-            mail_core::tr!(
-                "Für diesen Absender gibt es keine Abmeldeadresse.",
-                "This sender gives no way to unsubscribe."
-            )
-            .into(),
-        )
-    })?;
-    match method {
+pub fn unsubscribe_plan(state: State<'_, AppState>, message_id: i64) -> Res<mail_core::unsubscribe::Plan> {
+    mail_core::unsubscribe::plan(&state.store(), message_id)
+}
+
+/// „Abbestellen“ on a message, the way the user confirmed (`method`, from
+/// [`unsubscribe_plan`]): one click (RFC 8058) through `mail_core::network`, an e-mail through the
+/// account, or the page to open. The message is read again; anything else than what was
+/// confirmed is refused.
+#[tauri::command]
+pub async fn unsubscribe(state: State<'_, AppState>, message_id: i64, method: Method) -> Res<Unsubscribed> {
+    let plan = mail_core::unsubscribe::confirmed_plan(&state.store(), message_id, &method)?;
+    let (account, sender) = (plan.account_id, plan.sender);
+    match plan.method {
         Method::OneClick { url } => {
             mail_core::unsubscribe::post_one_click(&url).await?;
             mail_core::unsubscribe::record(&state.store(), &sender, "one_click")?;

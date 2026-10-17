@@ -821,7 +821,7 @@ export const en = {
   "contacts.microsoftHint": "Your Microsoft contacts with their pictures.",
   "contacts.pictures": "Profile pictures",
   "contacts.bimi": "Brand logos (BIMI)",
-  "contacts.bimiHint": "The verified logo a company publishes for its mail domain, fetched once per domain and kept on this device.",
+  "contacts.bimiHint": "The verified logo a company publishes for its mail domain – only for senders whose mail your provider confirmed as genuine (DMARC). Fetched once per domain and kept on this device.",
   "contacts.gravatar": "Gravatar",
   "contacts.gravatarHint": "Off by default: asking Gravatar tells it which addresses write to you.",
   "contacts.forgetPictures": "Kept pictures",

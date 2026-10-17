@@ -86,6 +86,10 @@ pub struct ListHeaders {
     pub precedence: Option<String>,
     /// `Auto-Submitted` other than `no` (RFC 3834): written by a machine.
     pub auto_submitted: bool,
+    /// The newest (topmost) `Authentication-Results` (RFC 8601): what the receiving server found
+    /// ([`crate::avatars::dmarc_passed`] reads it).
+    #[serde(default)]
+    pub authentication: Option<String>,
 }
 
 /// One line of a header as sent: folded lines joined, surrounding blanks removed.
@@ -107,6 +111,7 @@ fn list_headers(m: &mail_parser::Message<'_>) -> ListHeaders {
         list_post: raw_header(m, "List-Post").is_some_and(|v| !v.eq_ignore_ascii_case("NO")),
         precedence: raw_header(m, "Precedence").map(|v| v.to_ascii_lowercase()),
         auto_submitted: raw_header(m, "Auto-Submitted").is_some_and(|v| !v.trim().eq_ignore_ascii_case("no")),
+        authentication: raw_header(m, "Authentication-Results"),
     }
 }
 

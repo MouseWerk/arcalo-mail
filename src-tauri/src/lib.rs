@@ -640,6 +640,7 @@ pub fn run() {
             commands::blocked_senders,
             commands::subscriptions,
             commands::unsubscribe,
+            commands::unsubscribe_plan,
             commands::unsubscribed_by_link,
             commands::set_pinned,
             commands::set_read_later,

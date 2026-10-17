@@ -106,31 +106,121 @@ pub fn check_server(server: &Server) -> Result<()> {
     Ok(())
 }
 
-/// Checks an HTTP address: `https://` with a host; `http://` only to this computer (tests,
-/// the OAuth redirect listener).
-pub fn check_https_url(url: &str) -> Result<()> {
+/// An `http(s)` address as the HTTP client reads it (WHATWG URL parsing). A backslash is
+/// refused outright: the parser reads it as a slash, so `http://a\\@b/` goes to `a`.
+fn web_url(url: &str) -> Option<url::Url> {
     let u = url.trim();
-    let (scheme, rest) = u.split_once("://").unwrap_or(("", u));
-    let host = rest.split(['/', '?', '#']).next().unwrap_or_default();
-    let host = host.rsplit_once('@').map_or(host, |(_, h)| h);
-    let host_only = if host.starts_with('[') {
-        host.split_inclusive(']').next().unwrap_or(host)
-    } else {
-        host.split(':').next().unwrap_or(host)
+    if u.contains('\\') {
+        return None;
+    }
+    let parsed = url::Url::parse(u).ok()?;
+    (matches!(parsed.scheme(), "http" | "https") && parsed.host_str().is_some_and(|h| !h.is_empty())).then_some(parsed)
+}
+
+fn not_secure(url: &str) -> Error {
+    Error::Network(trf!(
+        "„{url}“ ist keine sichere Adresse (https:// erwartet).",
+        "“{url}” is not a secure address (https:// expected).",
+        url = url.trim()
+    ))
+}
+
+/// Checks an HTTP address: `https://` with a host; `http://` only to this computer (tests,
+/// the OAuth redirect listener). Decided on the address as parsed.
+pub fn check_https_url(url: &str) -> Result<()> {
+    let ok = web_url(url).is_some_and(|u| match u.scheme() {
+        "https" => true,
+        _ => is_loopback(u.host_str().unwrap_or_default()),
+    });
+    if ok { Ok(()) } else { Err(not_secure(url)) }
+}
+
+/// An address no mail may point the app at: this computer, the local network, link-local and
+/// other special ranges.
+fn private_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v) => {
+            let o = v.octets();
+            v.is_loopback()
+                || v.is_private()
+                || v.is_link_local()
+                || v.is_unspecified()
+                || v.is_broadcast()
+                || v.is_multicast()
+                || v.is_documentation()
+                || o[0] == 0
+                || (o[0] == 100 && (64..128).contains(&o[1]))
+                || (o[0] == 198 && (o[1] == 18 || o[1] == 19))
+                || o[0] >= 240
+        }
+        IpAddr::V6(v) => {
+            let s = v.segments();
+            v.is_loopback()
+                || v.is_unspecified()
+                || v.is_multicast()
+                || (s[0] & 0xfe00) == 0xfc00
+                || (s[0] & 0xffc0) == 0xfe80
+                || v.to_ipv4_mapped().is_some_and(|m| private_ip(IpAddr::V4(m)))
+        }
+    }
+}
+
+/// Names of this computer and the local network.
+fn local_name(host: &str) -> bool {
+    let h = host.trim_end_matches('.').to_ascii_lowercase();
+    !h.contains('.')
+        || ["localhost", "local", "lan", "home", "internal", "intranet", "corp", "home.arpa", "localdomain"]
+            .iter()
+            .any(|suffix| h == *suffix || h.ends_with(&format!(".{suffix}")))
+}
+
+#[cfg(test)]
+thread_local! {
+    static LOOPBACK_FOR_TESTS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Tests of this crate: mail addresses on this computer count (this thread only).
+#[cfg(test)]
+pub fn allow_loopback_for_tests() {
+    LOOPBACK_FOR_TESTS.with(|c| c.set(true));
+}
+
+fn loopback_for_tests() -> bool {
+    #[cfg(test)]
+    {
+        LOOPBACK_FOR_TESTS.with(|c| c.get())
+    }
+    #[cfg(not(test))]
+    false
+}
+
+/// Checks an address a mail supplied (a newsletter's unsubscribe address): `https://` to a
+/// public host, without user name or password; `http://` too when it only opens in the browser
+/// (`page`). Never this computer or the local network, so a mail cannot make the app (or a click
+/// of the user) talk to a router or a local service. `ARCALO_MAIL_TEST_LOOPBACK=1` lets the e2e
+/// tests use their server on this computer.
+pub fn check_mail_url(url: &str, page: bool) -> Result<()> {
+    let Some(u) = web_url(url) else { return Err(not_secure(url)) };
+    let host = u.host_str().unwrap_or_default();
+    let loopback_test = (loopback_for_tests() || std::env::var("ARCALO_MAIL_TEST_LOOPBACK").is_ok_and(|v| v == "1"))
+        && is_loopback(host);
+    if loopback_test && u.username().is_empty() && u.password().is_none() {
+        return Ok(());
+    }
+    let public = match u.host() {
+        Some(url::Host::Ipv4(ip)) => !private_ip(IpAddr::V4(ip)),
+        Some(url::Host::Ipv6(ip)) => !private_ip(IpAddr::V6(ip)),
+        Some(url::Host::Domain(d)) => !local_name(d),
+        None => false,
     };
-    let ok = !host_only.is_empty()
-        && match scheme.to_ascii_lowercase().as_str() {
-            "https" => true,
-            "http" => is_loopback(host_only),
-            _ => false,
-        };
-    if ok {
+    let scheme_ok = u.scheme() == "https" || page;
+    if public && scheme_ok && u.username().is_empty() && u.password().is_none() {
         Ok(())
     } else {
         Err(Error::Network(trf!(
-            "„{url}“ ist keine sichere Adresse (https:// erwartet).",
-            "“{url}” is not a secure address (https:// expected).",
-            url = u
+            "„{url}“ ist keine Adresse, die eine Nachricht nutzen darf.",
+            "“{url}” is not an address a message may use.",
+            url = url.trim()
         )))
     }
 }
@@ -1403,8 +1493,14 @@ pub fn client_for(service: Service) -> Result<HttpClient> {
         .timeout(timeout)
         .connect_timeout(Duration::from_secs(8))
         .user_agent(concat!("ArcaloMail/", env!("CARGO_PKG_VERSION")))
-        .redirect(reqwest::redirect::Policy::custom(|a| {
-            if a.previous().len() >= 5 || check_https_url(a.url().as_str()).is_err() { a.stop() } else { a.follow() }
+        .redirect(reqwest::redirect::Policy::custom(move |a| {
+            // Addresses a mail supplied (an unsubscribe link, a sender's logo) never redirect to
+            // this computer or the local network.
+            let ok = match service {
+                Service::Unsubscribe | Service::Pictures => check_mail_url(a.url().as_str(), false).is_ok(),
+                _ => check_https_url(a.url().as_str()).is_ok(),
+            };
+            if a.previous().len() >= 5 || !ok { a.stop() } else { a.follow() }
         }))
         .build()
         .map_err(|e| Error::Network(e.to_string()))
@@ -1703,6 +1799,47 @@ pub(crate) mod tests {
         {
             assert!(check_https_url(bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn urls_are_read_as_the_http_client_reads_them() {
+        // A backslash is a slash to the client: the host is evil.example, over plain HTTP.
+        for bad in ["http://evil.example\\@127.0.0.1/unsub", "https://a\\b@x.org/", "http:/\\127.0.0.1/"] {
+            assert!(check_https_url(bad).is_err(), "{bad}");
+        }
+        assert!(check_https_url("http://evil.example@127.0.0.1/").is_ok(), "the host is this computer");
+        assert!(check_https_url("http://127.0.0.1@evil.example/").is_err(), "the host is evil.example");
+    }
+
+    #[test]
+    fn addresses_from_mail_go_to_public_hosts_only() {
+        for ok in ["https://news.example/u?id=7", "https://lists.example.org:8443/x"] {
+            assert!(check_mail_url(ok, false).is_ok(), "{ok}");
+        }
+        for bad in [
+            "http://news.example/u",
+            "https://user:pw@news.example/u",
+            "https://news.example@127.0.0.1/",
+            "https://127.0.0.1/",
+            "https://localhost/",
+            "https://printer.local/",
+            "https://192.168.1.1/",
+            "https://10.0.0.8/",
+            "https://172.16.0.1/",
+            "https://169.254.169.254/latest",
+            "https://100.64.0.1/",
+            "https://[::1]/",
+            "https://[fe80::1]/",
+            "https://[fd00::1]/",
+            "https://[::ffff:192.168.0.1]/",
+            "https://0.0.0.0/",
+            "https://intranet/",
+            "https://evil.example\\@news.example/",
+        ] {
+            assert!(check_mail_url(bad, false).is_err(), "{bad}");
+        }
+        assert!(check_mail_url("http://news.example/page", true).is_ok(), "a page to open may be http");
+        assert!(check_mail_url("http://192.168.1.1/page", true).is_err());
     }
 
     #[test]
