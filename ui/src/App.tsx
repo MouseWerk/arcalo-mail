@@ -66,6 +66,7 @@ import type {
   TimeCounts,
   Undo,
   WaitingSender,
+  UnsubscribePlan,
 } from "./lib/types";
 import { Sidebar, folderIcon, folderLabel, listedFolder, type FolderAction, type ViewEntry } from "./components/Sidebar";
 import { MessageList, type BulkAction } from "./components/MessageList";
@@ -152,7 +153,7 @@ export function App() {
   // A bundle of the newsletters tab opened as a stream of the sender's issues.
   const [stream, setStream] = useState<{ sender: string; name: string } | null>(null);
   const [when, setWhen] = useState<When | null>(null);
-  const [confirm, setConfirm] = useState<{ title: string; text: string; confirm: string; run: () => void } | null>(null);
+  const [confirm, setConfirm] = useState<{ title: string; text: string; detail?: string; confirm: string; run: () => void } | null>(null);
   const [view, setView] = useState<View>("list");
   const [list, setList] = useState<ListState>({ key: "", total: 0, pages: {}, loading: true });
   const [query, setQuery] = useState("");
@@ -678,25 +679,28 @@ export function App() {
 
   /** „Abbestellen“: asks first (one click and e-mail), then does it; a list that only has a web
    *  page asks before it opens. */
-  const unsubscribe = (sender: string, name: string, method: "one_click" | "mailto" | "link" | null) => {
+  /**
+   * „Abbestellen“ on a message: the backend reads its `List-Unsubscribe`, the user sees exactly
+   * what happens (the address the e-mail goes to, the address of the one click, the page) and
+   * confirms; the backend then does only that.
+   */
+  const unsubscribe = async (messageId: number, name: string) => {
+    let plan: UnsubscribePlan;
+    try {
+      plan = await api.unsubscribePlan(messageId);
+    } catch (e) {
+      showToast({ title: t("subs.unsubscribeFailed"), detail: String(e), tone: "danger" });
+      return;
+    }
+    const m = plan.method;
     const run = async () => {
-      setUnsubBusy(sender);
+      setUnsubBusy(plan.sender);
       try {
-        const r = await api.unsubscribe(sender);
-        if (r.kind === "link")
-          setConfirm({
-            title: t("subs.linkTitle"),
-            text: r.url,
-            confirm: t("subs.openPage"),
-            run: () =>
-              void openExternal(r.url).then(() =>
-                api.unsubscribedByLink(sender).then(() => {
-                  reloadSmart();
-                  reloadViews();
-                }),
-              ),
-          });
-        else showToast({ title: r.kind === "done" ? t("subs.done", { name }) : t("subs.sent", { to: r.to }), tone: "success", duration: 4000 });
+        const r = await api.unsubscribe(messageId, m);
+        if (r.kind === "link") {
+          await openExternal(r.url);
+          await api.unsubscribedByLink(plan.sender);
+        } else showToast({ title: r.kind === "done" ? t("subs.done", { name }) : t("subs.sent", { to: r.to }), tone: "success", duration: 4000 });
         reloadSmart();
         reloadViews();
       } catch (e) {
@@ -705,15 +709,10 @@ export function App() {
         setUnsubBusy(null);
       }
     };
-    if (method === "link") return void run();
-    setConfirm({ title: t("subs.confirmTitle", { name }), text: method === "mailto" ? t("subs.confirmMailto") : t("subs.confirmOneClick"), confirm: t("subs.unsubscribe"), run: () => void run() });
-  };
-
-  /** How a message's `List-Unsubscribe` would go, for the question before it. */
-  const methodOf = (v: MessageView): "one_click" | "mailto" | "link" => {
-    const h = v.unsubscribe ?? "";
-    if (v.one_click && /<(https:\/\/|http:\/\/(127\.0\.0\.1|localhost)[:/])/i.test(h)) return "one_click";
-    return /<mailto:/i.test(h) ? "mailto" : "link";
+    if (m.kind === "link") setConfirm({ title: t("subs.linkTitle"), text: t("subs.confirmLink"), detail: m.url, confirm: t("subs.openPage"), run: () => void run() });
+    else if (m.kind === "mailto")
+      setConfirm({ title: t("subs.confirmTitle", { name }), text: t("subs.confirmMailtoTo", { to: m.to, subject: m.subject }), confirm: t("subs.unsubscribe"), run: () => void run() });
+    else setConfirm({ title: t("subs.confirmTitle", { name }), text: t("subs.confirmOneClick"), detail: m.url, confirm: t("subs.unsubscribe"), run: () => void run() });
   };
 
   const moreMenu = (anchor?: DOMRect) => {
@@ -781,7 +780,7 @@ export function App() {
     const listView = loadedViews().find((v) => v.unsubscribe);
     if (listView?.summary.from) {
       const from = listView.summary.from;
-      items.push("separator", { label: t("read.unsubscribe"), icon: <MailMinus size={14} aria-hidden />, onSelect: () => unsubscribe(from.email, displayName(from, currentLang()), methodOf(listView)) });
+      items.push("separator", { label: t("read.unsubscribe"), icon: <MailMinus size={14} aria-hidden />, onSelect: () => void unsubscribe(listView.summary.id, displayName(from, currentLang())) });
     }
     const target = focusView && "summary" in focusView ? focusView.summary.id : latest.summary.id;
     items.push(
@@ -1641,7 +1640,7 @@ export function App() {
             list={subs}
             busy={unsubBusy}
             onOpen={(s) => openMessages({ id: s.message_id, mailbox_id: 0, uid: 0, thread_id: 0, subject: "", from: { name: s.name, email: s.sender }, date: s.last, snippet: "", seen: true, flagged: false, answered: false, has_attachments: false, thread_count: 1, account_id: 0 })}
-            onUnsubscribe={(s) => unsubscribe(s.sender, s.name || s.sender, s.method)}
+            onUnsubscribe={(s) => void unsubscribe(s.message_id, s.name || s.sender)}
             onShowFolders={() => setView("folders")}
           />
         ) : !results && place.kind === "calendar" ? (
@@ -1803,7 +1802,7 @@ export function App() {
               </div>
             ) : undefined
           }
-          onUnsubscribe={(v) => v.summary.from && unsubscribe(v.summary.from.email, displayName(v.summary.from, currentLang()), methodOf(v))}
+          onUnsubscribe={(v) => v.summary.from && void unsubscribe(v.summary.id, displayName(v.summary.from, currentLang()))}
           onMark={onMark}
           onContact={(a) => setContact({ email: a.email, name: a.name })}
           assistant={
@@ -1921,7 +1920,7 @@ export function App() {
           onClose={() => setWhen(null)}
         />
       )}
-      {confirm && <ConfirmDialog title={confirm.title} text={confirm.text} confirm={confirm.confirm} onConfirm={confirm.run} onClose={() => setConfirm(null)} />}
+      {confirm && <ConfirmDialog title={confirm.title} text={confirm.text} detail={confirm.detail} confirm={confirm.confirm} onConfirm={confirm.run} onClose={() => setConfirm(null)} />}
       {sendCheck?.kind === "unlock" && <PassphraseDialog above fingerprint={sendCheck.fingerprint} onDone={sendCheck.go} onClose={() => setSendCheck(null)} />}
       {sendCheck?.kind === "plain" && (
         <ConfirmDialog

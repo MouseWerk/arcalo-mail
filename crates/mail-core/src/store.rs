@@ -526,9 +526,9 @@ impl Store {
         let has_attachments = p.attachments.iter().any(|a| !a.inline && !a.is_protocol())
             || h.header.windows(15).any(|w| w.eq_ignore_ascii_case(b"multipart/mixed"));
         let dmarc_pass = match (p.list.authentication.as_deref(), p.from.as_ref()) {
-            (Some(auth), Some(from)) => self.account(account_id).is_ok_and(|a| {
-                crate::avatars::dmarc_passed(auth, &from.email, &crate::avatars::own_authservers(&a))
-            }),
+            (Some(auth), Some(from)) => self
+                .account(account_id)
+                .is_ok_and(|a| crate::avatars::dmarc_passed(auth, &from.email, &crate::avatars::own_authservers(&a))),
             _ => false,
         };
         self.conn.execute(

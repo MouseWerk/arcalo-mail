@@ -42,7 +42,8 @@ before(async () => {
   await deliver({ from: "Laden <shop@laden.example>", subject: "Deine Bestellung 4417", body: "Danke für deine Bestellung." }, 300);
   await deliver({ from: "Lea <lea@example.org>", subject: "Re: Release 1.0", body: "Sieht gut aus.", headers: ["List-Id: <dev.lists.example>", "List-Post: <mailto:dev@lists.example>"] }, 200);
   await deliver({ subject: "Kaffee morgen?", body: "Um zehn?" }, 100);
-  app = await launch();
+  // The unsubscribe address is the test server on this computer, which mail may not point at otherwise.
+  app = await launch({ env: { ARCALO_MAIL_TEST_LOOPBACK: "1" } });
   await addAccount(app, server);
   await app.browser.refresh();
 });

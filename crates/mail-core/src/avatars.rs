@@ -153,7 +153,9 @@ pub fn dmarc_passed(authentication: &str, from: &str, own: &[String]) -> bool {
     results.iter().any(|r| {
         let lower = r.to_ascii_lowercase();
         lower.starts_with("dmarc=pass")
-            && lower.split_whitespace().any(|w| w.strip_prefix("header.from=").is_some_and(|d| d.trim_end_matches(';') == from_domain))
+            && lower
+                .split_whitespace()
+                .any(|w| w.strip_prefix("header.from=").is_some_and(|d| d.trim_end_matches(';') == from_domain))
     })
 }
 
@@ -541,7 +543,10 @@ mod tests {
         crate::network::allow_loopback_for_tests();
         let got = get_limited(&format!("http://127.0.0.1:{port}/logo.svg"), MAX_SVG, true).await.unwrap().unwrap();
         assert!(check_svg(&got).is_ok());
-        assert!(get_limited(&format!("http://127.0.0.1:{port}/logo.svg"), 10, true).await.unwrap().is_none(), "too large");
+        assert!(
+            get_limited(&format!("http://127.0.0.1:{port}/logo.svg"), 10, true).await.unwrap().is_none(),
+            "too large"
+        );
 
         let (s, _, inbox) = crate::store::tests::store_with_inbox();
         // Only senders whose mail passed DMARC at the user's provider get their logo.
@@ -585,7 +590,10 @@ mod tests {
         assert!(dmarc_passed(ar, "info@shop.example", &own));
         assert!(!dmarc_passed(ar, "info@other.example", &own), "aligned with the From only");
         assert!(!dmarc_passed(&ar.replace("dmarc=pass", "dmarc=fail"), "info@shop.example", &own));
-        assert!(!dmarc_passed(&ar.replace("mx.example.org", "mx.evil.example"), "info@shop.example", &own), "not the provider's");
+        assert!(
+            !dmarc_passed(&ar.replace("mx.example.org", "mx.evil.example"), "info@shop.example", &own),
+            "not the provider's"
+        );
         let microsoft = "spf=pass (sender IP is 1.2.3.4) smtp.mailfrom=shop.example; dkim=pass header.d=shop.example; dmarc=pass action=none header.from=shop.example;compauth=pass reason=100";
         assert!(dmarc_passed(microsoft, "info@shop.example", &[String::new()]));
         assert!(!dmarc_passed(microsoft, "info@shop.example", &own), "an id-less result only for Microsoft accounts");
@@ -596,7 +604,14 @@ mod tests {
         s.insert_message(inbox, &crate::store::tests::header(1, spoofed.as_bytes()), &p).unwrap();
         assert_eq!(lookup_of(&s, "service@paypal.com"), Lookup::None);
         let junk = s
-            .upsert_mailbox(account, &crate::imap::MailboxEntry { name: "Junk".into(), delimiter: Some('/'), attributes: vec!["\\Junk".into()] })
+            .upsert_mailbox(
+                account,
+                &crate::imap::MailboxEntry {
+                    name: "Junk".into(),
+                    delimiter: Some('/'),
+                    attributes: vec!["\\Junk".into()],
+                },
+            )
             .unwrap();
         authenticated_mail(&s, junk, 1, "x@track.example");
         assert_eq!(lookup_of(&s, "x@track.example"), Lookup::None);

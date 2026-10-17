@@ -154,6 +154,12 @@ export type Subscription = {
 /** What „Abbestellen“ did. */
 export type Unsubscribed = { kind: "done" } | { kind: "sent"; to: string } | { kind: "link"; url: string };
 
+/** A way out of a list, as the backend read it from one message's `List-Unsubscribe`. */
+export type UnsubscribeMethod = { kind: "one_click"; url: string } | { kind: "mailto"; to: string; subject: string; body: string } | { kind: "link"; url: string };
+
+/** What „Abbestellen“ on a message would do; done only as confirmed. */
+export type UnsubscribePlan = { message_id: number; account_id: number; sender: string; method: UnsubscribeMethod };
+
 /** A message waiting to be sent later. */
 export type Scheduled = { id: number; account_id: number; due_at: number; subject: string; recipients: string; followup_secs: number | null };
 

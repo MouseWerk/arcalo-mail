@@ -34,6 +34,8 @@ import type {
   Subscription,
   TimeCounts,
   Unsubscribed,
+  UnsubscribeMethod,
+  UnsubscribePlan,
   WaitingSender,
   AddressBook,
   AiOutcome,
@@ -172,7 +174,8 @@ export const api = {
   screenerForget: (email: string) => call<void>("screener_forget", { email }, () => void demo.screen(email, null)),
   blockedSenders: () => call<string[]>("blocked_senders", {}, () => demo.blockedSenders()),
   subscriptions: () => call<Subscription[]>("subscriptions", {}, () => demo.subscriptions()),
-  unsubscribe: (sender: string) => call<Unsubscribed>("unsubscribe", { sender }, () => demo.unsubscribe(sender)),
+  unsubscribePlan: (messageId: number) => call<UnsubscribePlan>("unsubscribe_plan", { messageId }, () => demo.unsubscribePlan(messageId)),
+  unsubscribe: (messageId: number, method: UnsubscribeMethod) => call<Unsubscribed>("unsubscribe", { messageId, method }, () => demo.unsubscribe(messageId)),
   unsubscribedByLink: (sender: string) => call<void>("unsubscribed_by_link", { sender }, () => undefined),
 
   setPinned: (ids: number[], on: boolean) => call<void>("set_pinned", { ids, on }, () => demo.mark(ids, "pinned", on)),

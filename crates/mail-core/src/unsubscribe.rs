@@ -258,7 +258,11 @@ mod tests {
         // seeing it (the plan), and a list of recipients is no unsubscribe address.
         assert_eq!(
             best("< mailto:premium@evil.example?subject=SUBSCRIBE%20ALL&body=yes>", true),
-            Some(Method::Mailto { to: "premium@evil.example".into(), subject: "SUBSCRIBE ALL".into(), body: "yes".into() })
+            Some(Method::Mailto {
+                to: "premium@evil.example".into(),
+                subject: "SUBSCRIBE ALL".into(),
+                body: "yes".into()
+            })
         );
         assert_eq!(best("<mailto:a@x.example,b@y.example>", false), None);
         assert_eq!(best("<mailto:a@x.example?cc=b@y.example>", false).map(|m| m.kind()), Some("mailto"));
@@ -276,7 +280,9 @@ mod tests {
     fn the_plan_is_the_viewed_messages() {
         let (store, _, inbox) = crate::store::tests::store_with_inbox();
         let raw = |date: &str, header: &str| {
-            format!("From: News <news@x.example>\r\nTo: me@example.org\r\nSubject: Ausgabe\r\nDate: {date}\r\nList-Unsubscribe: {header}\r\n\r\nText\r\n")
+            format!(
+                "From: News <news@x.example>\r\nTo: me@example.org\r\nSubject: Ausgabe\r\nDate: {date}\r\nList-Unsubscribe: {header}\r\n\r\nText\r\n"
+            )
         };
         let real = raw("Mon, 1 Jun 2026 10:00:00 +0000", "<https://x.example/u?id=1>");
         let p = crate::parse::parse(real.as_bytes()).unwrap();

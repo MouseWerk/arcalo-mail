@@ -150,6 +150,7 @@ export function PromptDialog({
 export function ConfirmDialog({
   title,
   text,
+  detail,
   confirm,
   danger,
   onConfirm,
@@ -158,6 +159,8 @@ export function ConfirmDialog({
 }: {
   title: string;
   text: string;
+  /** Shown as it is below the text (an address the action goes to). */
+  detail?: string;
   confirm: string;
   danger?: boolean;
   onConfirm: () => void;
@@ -190,6 +193,7 @@ export function ConfirmDialog({
       }
     >
       <p className="dialog-text">{text}</p>
+      {detail && <p className="dialog-detail">{detail}</p>}
     </Dialog>
   );
 }

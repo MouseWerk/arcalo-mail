@@ -546,7 +546,7 @@ export const de: Record<TKey, Msg> = {
   "subs.byPage": "Webseite",
   "subs.confirmTitle": "{name} abbestellen?",
   "subs.confirmOneClick": "Arcalo Mail schickt dem Absender die Abmeldung (ein Klick nach RFC 8058). Sonst wird nichts über dich übertragen.",
-  "subs.confirmMailto": "Arcalo Mail sendet von deinem Konto die Abmelde-E-Mail, die die Liste verlangt.",
+  "subs.confirmMailtoTo": "Arcalo Mail sendet von deinem Konto eine E-Mail an {to} mit dem Betreff „{subject}“, wie die Liste es verlangt.",
   "subs.confirmLink": "Diese Liste meldet nur auf ihrer Webseite ab; sie öffnet sich in deinem Browser.",
   "subs.linkTitle": "Abmeldeseite öffnen?",
   "subs.openPage": "Seite öffnen",

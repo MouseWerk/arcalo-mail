@@ -548,7 +548,7 @@ export const en = {
   "subs.byPage": "Web page",
   "subs.confirmTitle": "Unsubscribe from {name}?",
   "subs.confirmOneClick": "Arcalo Mail sends the sender's unsubscribe request (one click, RFC 8058). Nothing else about you goes along.",
-  "subs.confirmMailto": "Arcalo Mail sends the unsubscribe e-mail the list asks for, from your account.",
+  "subs.confirmMailtoTo": "Arcalo Mail sends an e-mail from your account to {to} with the subject “{subject}”, as the list asks.",
   "subs.confirmLink": "This list unsubscribes only on its web page, which opens in your browser.",
   "subs.linkTitle": "Open the unsubscribe page?",
   "subs.openPage": "Open page",

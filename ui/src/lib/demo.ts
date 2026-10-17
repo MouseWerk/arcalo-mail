@@ -27,6 +27,7 @@ import type {
   Subscription,
   TimeCounts,
   Unsubscribed,
+  UnsubscribePlan,
   WaitingSender,
   AiOutcome,
   AiRequest,
@@ -359,8 +360,12 @@ export const demo = {
     visible()
       .filter((x) => x.unsub && x.from)
       .map((x) => ({ sender: x.from!.email, name: x.from!.name, list_id: null, count: 1, last: x.date, method: "one_click", unsubscribed: unsubscribed.get(x.from!.email) ?? null, message_id: x.id })),
-  unsubscribe: (sender: string): Unsubscribed => {
-    unsubscribed.set(sender, now);
+  unsubscribePlan: (messageId: number): UnsubscribePlan => {
+    const sender = messages.find((x) => x.id === messageId)?.from?.email ?? "";
+    return { message_id: messageId, account_id: 1, sender, method: { kind: "one_click", url: "https://news.example/unsubscribe" } };
+  },
+  unsubscribe: (messageId: number): Unsubscribed => {
+    unsubscribed.set(messages.find((x) => x.id === messageId)?.from?.email ?? "", now);
     return { kind: "done" };
   },
   mark: (ids: number[], what: "pinned" | "later", on: boolean) => {
