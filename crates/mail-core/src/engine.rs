@@ -30,8 +30,8 @@ use crate::oauth::TokenSource;
 use crate::outbox::{self, Op, Queued};
 use crate::store::{Store, now};
 use crate::sync::{
-    Action, BACKFILL_PER_ROUND, Event, Gate, IDLE_RENEW, POLL_INTERVAL, State, SyncMachine, SyncOptions, backfill,
-    fetch_attachment, fetch_body, server_search, sync_folders, sync_mailbox_with,
+    Action, BACKFILL_PER_ROUND, Event, FOLDER_FIRST_HEADERS, Gate, IDLE_RENEW, POLL_INTERVAL, State, SyncMachine,
+    SyncOptions, backfill, fetch_attachment, fetch_body, server_search, sync_folders, sync_mailbox_with,
 };
 use crate::{autoconfig, smtp, tr, trf};
 
@@ -63,8 +63,6 @@ pub const ON_DEMAND_TIMEOUT: Duration = Duration::from_secs(30);
 /// An on-demand connection unused this long is made again before the next request: after a
 /// while on a phone it is more likely dead than alive.
 pub const ON_DEMAND_FRESH: Duration = Duration::from_secs(120);
-/// How soon the next round follows while older mail of a folder waits ([`backfill`]).
-pub const BACKFILL_PAUSE: Duration = Duration::from_secs(1);
 
 /// How a [`NetConnector`] signs in.
 enum Secret {
@@ -343,16 +341,98 @@ struct Ctx<C: Connector> {
     store: Rc<Store>,
     connector: Rc<C>,
     sink: Sink,
-    /// Held while the on-demand connection serves the user: the sync waits at its next step.
-    gate: Rc<Gate>,
+    /// Held while the on-demand connection serves the user: the syncs wait at their next step.
+    user_gate: Rc<Gate>,
+    /// Held while the inbox's round runs: the background waits at its next step.
+    inbox_gate: Gate,
     /// Counts the reconnects (sleep, a network change): the on-demand connection of an older
     /// one is dropped.
     network: Rc<Cell<u32>>,
+    /// The worker stops: the background ends at its next step.
+    stopping: Rc<Cell<bool>>,
+    /// A full round asks the background for the other folders.
+    background_full: Cell<bool>,
+    /// The background fetches bodies ahead.
+    background_bodies: Cell<bool>,
+    background_wake: Notify,
+    /// The steps of the last full sync, for „Sync-Details“.
+    sync_log: RefCell<Rc<crate::diag::SyncLog>>,
+    /// Folders changed since the last [`Notice::Changed`] (empty: all), and when it went out.
+    pending: RefCell<(Option<Vec<i64>>, Option<Instant>)>,
 }
 
+/// [`Notice::Changed`] goes out at most this often while a sync stores part after part: the
+/// list reloads once per step, not once per hundred messages of each folder.
+pub const CHANGED_EVERY: Duration = Duration::from_millis(300);
+
 impl<C: Connector> Ctx<C> {
+    fn new(account_id: i64, store: Store, connector: C, sink: Sink) -> Self {
+        Ctx {
+            account_id,
+            store: Rc::new(store),
+            connector: Rc::new(connector),
+            sink,
+            user_gate: Rc::default(),
+            inbox_gate: Gate::default(),
+            network: Rc::default(),
+            stopping: Rc::default(),
+            background_full: Cell::new(false),
+            background_bodies: Cell::new(false),
+            background_wake: Notify::new(),
+            sync_log: RefCell::default(),
+            pending: RefCell::new((None, None)),
+        }
+    }
+
     fn notice(&self, n: Notice) {
         (self.sink)(n)
+    }
+
+    /// Notes changed folders; tells at most every [`CHANGED_EVERY`] (the rest with [`Self::flush`]).
+    fn changed(&self, mailboxes: Vec<i64>) {
+        let due = {
+            let mut p = self.pending.borrow_mut();
+            p.0 = Some(match p.0.take() {
+                None => mailboxes,
+                Some(old) if old.is_empty() || mailboxes.is_empty() => vec![],
+                Some(mut old) => {
+                    old.extend(mailboxes.into_iter().filter(|m| !old.contains(m)).collect::<Vec<_>>());
+                    old
+                }
+            });
+            p.1.is_none_or(|at| at.elapsed() >= CHANGED_EVERY)
+        };
+        if due {
+            self.flush();
+        }
+    }
+
+    /// Tells about the changed folders noted so far.
+    fn flush(&self) {
+        let waiting = {
+            let mut p = self.pending.borrow_mut();
+            let w = p.0.take();
+            if w.is_some() {
+                p.1 = Some(Instant::now());
+            }
+            w
+        };
+        if let Some(mailboxes) = waiting {
+            self.notice(Notice::Changed { account_id: self.account_id, mailboxes });
+        }
+    }
+
+    fn log(&self) -> Rc<crate::diag::SyncLog> {
+        self.sync_log.borrow().clone()
+    }
+
+    /// Starts the steps of a new sync for „Sync-Details“.
+    fn new_log(&self) {
+        *self.sync_log.borrow_mut() = Rc::default();
+    }
+
+    fn publish_log(&self) {
+        crate::diag::set_sync_details(self.account_id, self.log().text());
     }
 
     fn status(&self, status: Status, error: Option<&Error>) {
@@ -650,143 +730,240 @@ async fn replay<C: Connector>(ctx: &Ctx<C>, conn: &mut C::Imap) -> Result<Vec<St
     Ok(touched)
 }
 
-/// One round: the queue, then the folders (all of them, or the inbox and what the queue
-/// touched), the bodies fetched ahead and, with `older`, a part of the older mail that waits.
-async fn sync_round<C: Connector>(
+/// Syncs one folder and tells about it; for the inbox also the Screener, the rules, the
+/// priority and the new mail notice. A folder the server refuses waits for its next try.
+async fn sync_folder<C: Connector>(
     ctx: &Ctx<C>,
     conn: &mut C::Imap,
     caps: Capabilities,
-    full: bool,
-    older: bool,
+    id: i64,
+    settings: &crate::settings::Settings,
+    opts: &SyncOptions<'_>,
+    touched: &[String],
 ) -> Result<()> {
-    // The settings may have changed since the last round.
-    let settings = crate::settings::load(&ctx.store).unwrap_or_default();
-    ctx.store.set_subject_threads(settings.subject_threads);
-    // Each stored part of a first sync shows at once: the newest mail within seconds.
-    let shown = |mailbox: i64| ctx.notice(Notice::Changed { account_id: ctx.account_id, mailboxes: vec![mailbox] });
-    let opts = SyncOptions { first_headers: settings.initial_headers, on_chunk: Some(&shown), gate: Some(&ctx.gate) };
-    let touched = replay(ctx, conn).await?;
-    let mut ids: Vec<i64> = vec![];
-    let mut virtual_folders: Vec<i64> = vec![];
-    if full {
-        sync_folders(conn, &ctx.store, ctx.account_id).await?;
-        ctx.notice(Notice::Changed { account_id: ctx.account_id, mailboxes: vec![] });
-        // Folders that show other folders' mail again (Gmail's All Mail) come last: their
-        // messages find the bodies of the copies synced before them.
-        let mut list: Vec<_> = ctx.store.mailboxes(ctx.account_id)?.into_iter().filter(|m| m.selectable).collect();
-        list.sort_by_key(|m| m.role.is_some_and(Role::is_virtual));
-        virtual_folders = list.iter().filter(|m| m.role.is_some_and(Role::is_virtual)).map(|m| m.id).collect();
-        ids = list.into_iter().map(|m| m.id).collect();
-    } else {
-        ids.extend(ctx.inbox().map(|m| m.id));
-        ids.extend(touched.iter().filter_map(|n| ctx.mailbox_named(n)));
-        ids.dedup();
-    }
-    // Folders the server would not open lately wait for their next try.
-    let at = now();
-    ids.retain(|id| ctx.store.mailbox(*id).is_ok_and(|m| m.sync_retry_at.is_none_or(|t| t <= at)));
     let inbox = ctx.inbox().map(|m| m.id);
-    let ahead = async |conn: &mut C::Imap, id: i64| -> Result<()> {
-        match crate::sync::prefetch_bodies_with(conn, &ctx.store, id, settings.prefetch, Some(&ctx.gate)).await {
-            Ok(n) if n > 0 => ctx.notice(Notice::Changed { account_id: ctx.account_id, mailboxes: vec![id] }),
-            Ok(_) => {}
-            Err(e) if is_transient(&e) => return Err(e),
-            Err(e) => crate::diag::log(&format!("account-{}", ctx.account_id), &format!("folder {id}: {e}")),
+    let r = match sync_mailbox_with(conn, &ctx.store, caps, id, opts).await {
+        Ok(r) => {
+            ctx.store.set_folder_error(id, None)?;
+            r
         }
-        Ok(())
+        Err(e) if is_transient(&e) => return Err(e),
+        // The server refused this folder (no read right, gone since the LIST): the others
+        // go on, the folder shows why it is not up to date.
+        Err(e) => {
+            crate::diag::log(&format!("account-{}", ctx.account_id), &format!("folder {id} skipped: {e}"));
+            ctx.store.set_folder_error(id, Some(&e.to_string()))?;
+            ctx.changed(vec![]);
+            return Ok(());
+        }
     };
-    for &id in &ids {
-        let r = match sync_mailbox_with(conn, &ctx.store, caps, id, &opts).await {
-            Ok(r) => {
-                ctx.store.set_folder_error(id, None)?;
-                r
-            }
-            Err(e) if is_transient(&e) => return Err(e),
-            // The server refused this folder (no read right, gone since the LIST): the others
-            // go on, the folder shows why it is not up to date.
-            Err(e) => {
-                crate::diag::log(&format!("account-{}", ctx.account_id), &format!("folder {id} skipped: {e}"));
-                ctx.store.set_folder_error(id, Some(&e.to_string()))?;
-                ctx.notice(Notice::Changed { account_id: ctx.account_id, mailboxes: vec![] });
-                continue;
-            }
-        };
-        if r.changed() || touched.iter().any(|n| ctx.mailbox_named(n) == Some(id)) {
-            ctx.notice(Notice::Changed { account_id: ctx.account_id, mailboxes: vec![id] });
+    if r.changed() || touched.iter().any(|n| ctx.mailbox_named(n) == Some(id)) {
+        ctx.changed(vec![id]);
+    }
+    let mut screened = vec![];
+    if Some(id) == inbox && r.added > 0 {
+        // Mail of senders the user turned away (the Screener) leaves the inbox at once.
+        let moved = crate::triage::move_blocked(&ctx.store, Some(ctx.account_id))?;
+        if !moved.hidden.is_empty() {
+            ctx.changed(vec![id]);
         }
-        let mut screened = vec![];
-        if Some(id) == inbox && r.added > 0 {
-            // Mail of senders the user turned away (the Screener) leaves the inbox at once.
-            let moved = crate::triage::move_blocked(&ctx.store, Some(ctx.account_id))?;
-            if !moved.hidden.is_empty() {
-                ctx.notice(Notice::Changed { account_id: ctx.account_id, mailboxes: vec![id] });
+        screened = moved.hidden;
+    }
+    // What the Screener moved away is neither news nor the rules' to handle.
+    let new: Vec<i64> = r.new.iter().copied().filter(|m| !screened.contains(m)).collect();
+    let mut new_unread = r.new_unread;
+    new_unread.retain(|m| !screened.contains(m));
+    if Some(id) == inbox && !new.is_empty() {
+        // The local rules first: what they move away or mark read is no news.
+        match crate::rules::run_new(&ctx.store, ctx.account_id, &new) {
+            Ok(ran) if ran.matched > 0 => {
+                new_unread.retain(|m| !ran.removed.contains(m));
+                let still_unread: Vec<i64> =
+                    ctx.store.summaries(&new_unread)?.into_iter().filter(|s| !s.seen).map(|s| s.id).collect();
+                new_unread = still_unread;
+                ctx.changed(vec![id]);
             }
-            screened = moved.hidden;
+            Ok(_) => {}
+            Err(e) => crate::diag::log("rules", &format!("account {}: {e}", ctx.account_id)),
         }
-        // What the Screener moved away is neither news nor the rules' to handle.
-        let new: Vec<i64> = r.new.iter().copied().filter(|m| !screened.contains(m)).collect();
-        let mut new_unread = r.new_unread;
-        new_unread.retain(|m| !screened.contains(m));
-        if Some(id) == inbox && !new.is_empty() {
-            // The local rules first: what they move away or mark read is no news.
-            match crate::rules::run_new(&ctx.store, ctx.account_id, &new) {
-                Ok(ran) if ran.matched > 0 => {
-                    new_unread.retain(|m| !ran.removed.contains(m));
-                    let still_unread: Vec<i64> =
-                        ctx.store.summaries(&new_unread)?.into_iter().filter(|s| !s.seen).map(|s| s.id).collect();
-                    new_unread = still_unread;
-                    ctx.notice(Notice::Changed { account_id: ctx.account_id, mailboxes: vec![id] });
-                }
-                Ok(_) => {}
-                Err(e) => crate::diag::log("rules", &format!("account {}: {e}", ctx.account_id)),
-            }
-            if settings.ai.on()
-                && settings.ai.priority
-                && let Err(e) = crate::ai::priority::mark_new(&ctx.store, &new)
-            {
-                crate::diag::log("priority", &e.to_string());
-            }
-        }
-        if Some(id) == inbox && !new_unread.is_empty() {
-            ctx.notice(Notice::NewMail { account_id: ctx.account_id, messages: new_unread });
-        }
-        // The inbox's first lines and texts right away, before the other folders' headers.
-        if Some(id) == inbox {
-            ahead(conn, id).await?;
+        if settings.ai.on()
+            && settings.ai.priority
+            && let Err(e) = crate::ai::priority::mark_new(&ctx.store, &new)
+        {
+            crate::diag::log("priority", &e.to_string());
         }
     }
-    // The first lines for the list, the text for search, reading offline: the other folders of
-    // a full round.
-    for &id in ids.iter().filter(|id| Some(**id) != inbox && !virtual_folders.contains(id)) {
-        ahead(conn, id).await?;
-    }
-    if older {
-        backfill_round(ctx, conn, &opts).await?;
+    if Some(id) == inbox && !new_unread.is_empty() {
+        ctx.flush();
+        ctx.notice(Notice::NewMail { account_id: ctx.account_id, messages: new_unread });
     }
     Ok(())
 }
 
-/// A part of the older mail that waits ([`BACKFILL_PER_ROUND`] headers): the inbox first, then
-/// the other folders, Gmail's All Mail and the like last.
-async fn backfill_round<C: Connector>(ctx: &Ctx<C>, conn: &mut C::Imap, opts: &SyncOptions<'_>) -> Result<()> {
-    let mut order = backfill_folders(ctx)?;
-    order.sort_by_key(|m| (m.role != Some(Role::Inbox), m.role.is_some_and(Role::is_virtual)));
-    let mut budget = BACKFILL_PER_ROUND;
-    for m in order {
-        if budget == 0 {
+/// Folders the server would not open lately wait for their next try.
+fn due(ctx: &Ctx<impl Connector>, id: i64) -> bool {
+    let at = now();
+    ctx.store.mailbox(id).is_ok_and(|m| m.selectable && m.sync_retry_at.is_none_or(|t| t <= at))
+}
+
+/// Holds a [`Gate`] while it lives.
+struct Held<'a>(&'a Gate);
+
+impl<'a> Held<'a> {
+    fn new(g: &'a Gate) -> Self {
+        g.enter();
+        Held(g)
+    }
+}
+
+impl Drop for Held<'_> {
+    fn drop(&mut self) {
+        self.0.leave();
+    }
+}
+
+/// The inbox's round on the worker's own connection: the queue, the folder list (`full`, or
+/// when the account has no inbox yet), the inbox and the folders the queue touched. What else
+/// there is to do (the other folders, bodies ahead, older mail) is the background's
+/// ([`background`]), so nothing of it delays the inbox; it waits while this runs.
+async fn sync_round<C: Connector>(ctx: &Ctx<C>, conn: &mut C::Imap, caps: Capabilities, full: bool) -> Result<()> {
+    let _inbox_first = Held::new(&ctx.inbox_gate);
+    // The settings may have changed since the last round.
+    let settings = crate::settings::load(&ctx.store).unwrap_or_default();
+    ctx.store.set_subject_threads(settings.subject_threads);
+    let log = ctx.log();
+    // Each stored part shows at once: the newest mail within seconds.
+    let shown = |mailbox: i64| ctx.changed(vec![mailbox]);
+    let gates: [&Gate; 1] = [&ctx.user_gate];
+    let opts = SyncOptions {
+        first_headers: settings.initial_headers,
+        on_chunk: Some(&shown),
+        gates: &gates,
+        log: Some(&*log),
+    };
+    let t = Instant::now();
+    let touched = replay(ctx, conn).await?;
+    if !touched.is_empty() {
+        log.note(tr!("Warteschlange", "queue"), t.elapsed());
+    }
+    if full || ctx.inbox().is_none() {
+        let t = Instant::now();
+        sync_folders(conn, &ctx.store, ctx.account_id).await?;
+        log.note(
+            &format!("LIST ({} {})", ctx.store.mailboxes(ctx.account_id)?.len(), tr!("Ordner", "folders")),
+            t.elapsed(),
+        );
+        ctx.changed(vec![]);
+    }
+    let mut ids: Vec<i64> = ctx.inbox().map(|m| m.id).into_iter().collect();
+    ids.extend(touched.iter().filter_map(|n| ctx.mailbox_named(n)));
+    ids.dedup();
+    ids.retain(|id| due(ctx, *id));
+    for id in ids {
+        sync_folder(ctx, conn, caps, id, &settings, &opts, &touched).await?;
+    }
+    ctx.flush();
+    ctx.publish_log();
+    Ok(())
+}
+
+/// The other folders of a full round on `conn`: the labels and folders first, Gmail's All
+/// Mail, Starred and Important last (their messages find the bodies of the copies synced
+/// before). Their first sync fetches fewer headers than the inbox's.
+async fn other_folders<C: Connector>(
+    ctx: &Ctx<C>,
+    conn: &mut C::Imap,
+    caps: Capabilities,
+    settings: &crate::settings::Settings,
+    opts: &SyncOptions<'_>,
+) -> Result<()> {
+    let inbox = ctx.inbox().map(|m| m.id);
+    let mut list: Vec<_> = ctx.store.mailboxes(ctx.account_id)?.into_iter().filter(|m| Some(m.id) != inbox).collect();
+    list.sort_by_key(|m| m.role.is_some_and(Role::is_virtual));
+    let opts = SyncOptions { first_headers: settings.initial_headers.min(FOLDER_FIRST_HEADERS), ..*opts };
+    for m in list {
+        if ctx.stopping.get() {
             break;
         }
-        match backfill(conn, &ctx.store, m.id, budget, opts).await {
-            Ok(n) => budget = budget.saturating_sub(n as u32),
-            Err(e) if is_transient(&e) => return Err(e),
-            Err(e) => {
-                crate::diag::log(&format!("account-{}", ctx.account_id), &format!("folder {}: {e}", m.id));
-                // The server refuses the folder: it waits for its next try, as in a sync.
-                ctx.store.set_folder_error(m.id, Some(&e.to_string()))?;
-            }
+        if due(ctx, m.id) {
+            sync_folder(ctx, conn, caps, m.id, settings, &opts, &[]).await?;
+            ctx.flush();
         }
     }
     Ok(())
+}
+
+/// Bodies fetched ahead (the first lines, search, reading offline): the inbox first, then the
+/// other folders but Gmail's All Mail and the like (their copies get the bodies of the others).
+async fn bodies_ahead<C: Connector>(
+    ctx: &Ctx<C>,
+    conn: &mut C::Imap,
+    settings: &crate::settings::Settings,
+    gates: &[&Gate],
+    inbox_only: bool,
+) -> Result<()> {
+    let inbox = ctx.inbox().map(|m| m.id);
+    let mut list: Vec<_> = ctx
+        .store
+        .mailboxes(ctx.account_id)?
+        .into_iter()
+        .filter(|m| m.selectable && !m.role.is_some_and(Role::is_virtual))
+        .filter(|m| (Some(m.id) == inbox) == inbox_only)
+        .collect();
+    list.sort_by_key(|m| Some(m.id) != inbox);
+    for m in list {
+        if ctx.stopping.get() || !due(ctx, m.id) {
+            continue;
+        }
+        let t = Instant::now();
+        match crate::sync::prefetch_bodies_with(conn, &ctx.store, m.id, settings.prefetch, gates).await {
+            Ok(n) if n > 0 => {
+                ctx.log()
+                    .note(&format!("{} {}: {n}", tr!("Inhalte", "bodies"), crate::diag::folder_label(&m)), t.elapsed());
+                ctx.changed(vec![m.id]);
+            }
+            Ok(_) => {}
+            Err(e) if is_transient(&e) => return Err(e),
+            Err(e) => crate::diag::log(&format!("account-{}", ctx.account_id), &format!("folder {}: {e}", m.id)),
+        }
+    }
+    ctx.flush();
+    Ok(())
+}
+
+/// One part of the older mail that waits ([`BACKFILL_PER_ROUND`] headers), of the inbox
+/// (`inbox_only`) or of any folder: the inbox first, Gmail's All Mail and the like last.
+/// Returns whether more of it waits.
+async fn backfill_part<C: Connector>(
+    ctx: &Ctx<C>,
+    conn: &mut C::Imap,
+    opts: &SyncOptions<'_>,
+    inbox_only: bool,
+) -> Result<bool> {
+    let mut order = backfill_folders(ctx)?;
+    if inbox_only {
+        order.retain(|m| m.role == Some(Role::Inbox));
+    }
+    if order.is_empty() {
+        return Ok(false);
+    }
+    order.sort_by_key(|m| (m.role != Some(Role::Inbox), m.role.is_some_and(Role::is_virtual)));
+    let m = &order[0];
+    let t = Instant::now();
+    match backfill(conn, &ctx.store, m.id, BACKFILL_PER_ROUND, opts).await {
+        Ok(n) => ctx
+            .log()
+            .note(&format!("{} {}: {n}", tr!("Älteres", "older mail"), crate::diag::folder_label(m)), t.elapsed()),
+        Err(e) if is_transient(&e) => return Err(e),
+        Err(e) => {
+            crate::diag::log(&format!("account-{}", ctx.account_id), &format!("folder {}: {e}", m.id));
+            // The server refuses the folder: it waits for its next try, as in a sync.
+            ctx.store.set_folder_error(m.id, Some(&e.to_string()))?;
+        }
+    }
+    ctx.flush();
+    ctx.publish_log();
+    Ok(backfill_folders(ctx)?.iter().any(|f| !inbox_only || f.role == Some(Role::Inbox)))
 }
 
 /// The folders whose older mail waits and that the server opens (or whose next try is due).
@@ -804,7 +981,107 @@ fn backfill_folders<C: Connector>(ctx: &Ctx<C>) -> Result<Vec<crate::store::Mail
         .collect())
 }
 
-/// Whether older mail of the account still waits for [`backfill_round`].
+/// The background's work on a connection of its own, next to the inbox's: after each full
+/// round the other folders, then the bodies ahead, then the older mail a part at a time. It
+/// steps aside while the inbox's round runs and while the user waits for something
+/// ([`Gate`]s), and starts over when a new full round asks for it.
+async fn background<C: Connector>(ctx: Rc<Ctx<C>>) {
+    let mut conn: Option<C::Imap> = None;
+    let mut caps = Capabilities::default();
+    let mut failures = 0u32;
+    loop {
+        if ctx.stopping.get() {
+            break;
+        }
+        let full = ctx.background_full.replace(false);
+        let older = !backfill_folders(&ctx).map(|f| f.is_empty()).unwrap_or(true);
+        if !full && !older && !ctx.background_bodies.get() {
+            // Woken by the next full round (or to stop).
+            ctx.background_wake.notified().await;
+            continue;
+        }
+        let work = async {
+            if conn.is_none() {
+                let t = Instant::now();
+                let mut c = ctx.connector.imap().await?;
+                caps = c.capabilities().await.unwrap_or_default();
+                ctx.log().note(tr!("Verbindung im Hintergrund", "background connection"), t.elapsed());
+                conn = Some(c);
+            }
+            let c = conn.as_mut().expect("just connected");
+            let settings = crate::settings::load(&ctx.store).unwrap_or_default();
+            let log = ctx.log();
+            let gates: [&Gate; 2] = [&ctx.user_gate, &ctx.inbox_gate];
+            let shown = |mailbox: i64| ctx.changed(vec![mailbox]);
+            let opts = SyncOptions {
+                first_headers: settings.initial_headers,
+                on_chunk: Some(&shown),
+                gates: &gates,
+                log: Some(&*log),
+            };
+            // The inbox's bodies first: what was just listed opens at once, also offline.
+            let bodies = ctx.background_bodies.replace(false) || full;
+            if bodies {
+                bodies_ahead(&ctx, c, &settings, &gates, true).await?;
+                ctx.publish_log();
+            }
+            if full {
+                ctx.inbox_gate.pass().await;
+                other_folders(&ctx, c, caps, &settings, &opts).await?;
+                ctx.publish_log();
+            }
+            if bodies {
+                // The inbox's older mail before the other folders' bodies.
+                while !ctx.stopping.get() && !ctx.background_full.get() {
+                    if !backfill_part(&ctx, c, &opts, true).await? {
+                        break;
+                    }
+                }
+                bodies_ahead(&ctx, c, &settings, &gates, false).await?;
+                ctx.publish_log();
+            }
+            // The older mail, a part at a time, until a full round asks for the folders again.
+            while !ctx.stopping.get() && !ctx.background_full.get() {
+                if !backfill_part(&ctx, c, &opts, false).await? {
+                    break;
+                }
+            }
+            Ok::<(), Error>(())
+        };
+        match work.await {
+            Ok(()) => failures = 0,
+            Err(e) => {
+                crate::diag::log(&format!("account-{}", ctx.account_id), &format!("background: {e}"));
+                conn = None;
+                failures += 1;
+                if !is_transient(&e) {
+                    // A refusal of the server's: the next full round tries again.
+                    ctx.background_full.set(false);
+                    ctx.background_bodies.set(false);
+                    if backfill_waits(&ctx) {
+                        tokio::select! {
+                            _ = ctx.background_wake.notified() => {}
+                            _ = tokio::time::sleep(POLL_INTERVAL) => {}
+                        }
+                    }
+                    continue;
+                }
+                // What the broken connection did not finish is done again on the next.
+                ctx.background_full.set(ctx.background_full.get() || full);
+                ctx.background_bodies.set(true);
+                tokio::select! {
+                    _ = ctx.background_wake.notified() => {}
+                    _ = tokio::time::sleep(crate::sync::reconnect_delay(failures)) => {}
+                }
+            }
+        }
+    }
+    if let Some(mut c) = conn {
+        let _ = c.logout().await;
+    }
+}
+
+/// Whether older mail of the account still waits.
 fn backfill_waits<C: Connector>(ctx: &Ctx<C>) -> bool {
     backfill_folders(ctx).is_ok_and(|f| !f.is_empty())
 }
@@ -853,21 +1130,15 @@ async fn run<C: Connector>(
     mut rx: mpsc::UnboundedReceiver<Command>,
     sink: Sink,
 ) {
-    let ctx = Rc::new(Ctx {
-        account_id,
-        store: Rc::new(store),
-        connector: Rc::new(connector),
-        sink,
-        gate: Rc::default(),
-        network: Rc::default(),
-    });
+    let ctx = Rc::new(Ctx::new(account_id, store, connector, sink));
     let wake = Rc::new(Notify::new());
     let queue: Rc<RefCell<VecDeque<Command>>> = Rc::default();
-    let stop = Rc::new(Cell::new(false));
+    let stop = ctx.stopping.clone();
     let (itx, irx) = mpsc::unbounded_channel::<Command>();
     {
         let (wake, queue, stop) = (wake.clone(), queue.clone(), stop.clone());
-        let (gate, network) = (ctx.gate.clone(), ctx.network.clone());
+        let background = ctx.clone();
+        let (gate, network) = (ctx.user_gate.clone(), ctx.network.clone());
         tokio::task::spawn_local(async move {
             while let Some(cmd) = rx.recv().await {
                 match cmd {
@@ -891,11 +1162,13 @@ async fn run<C: Connector>(
                 }
             }
             stop.set(true);
+            background.background_wake.notify_one();
             queue.borrow_mut().push_back(Command::Stop);
             wake.notify_one();
         });
     }
     tokio::task::spawn_local(on_demand(ctx.clone(), irx));
+    tokio::task::spawn_local(background(ctx.clone()));
     main_loop(&ctx, &wake, &queue, &stop).await;
 }
 
@@ -912,19 +1185,17 @@ pub async fn check_once<C: Connector>(account_id: i64, store: Store, connector: 
             into.lock().unwrap_or_else(|e| e.into_inner()).extend(messages);
         }
     });
-    let ctx = Ctx {
-        account_id,
-        store: Rc::new(store),
-        connector: Rc::new(connector),
-        sink,
-        gate: Rc::default(),
-        network: Rc::default(),
-    };
+    let ctx = Ctx::new(account_id, store, connector, sink);
     let mut conn = ctx.connector.imap().await?;
     let caps = conn.capabilities().await.unwrap_or_default();
     let full = ctx.inbox().is_none();
-    // The older mail of a large folder waits for the app: a background check stays short.
-    let r = sync_round(&ctx, &mut conn, caps, full, false).await;
+    // The other folders only the first time; their bodies and the older mail of a large folder
+    // wait for the app: a background check stays short.
+    let mut r = sync_round(&ctx, &mut conn, caps, full).await;
+    if r.is_ok() && full {
+        let settings = crate::settings::load(&ctx.store).unwrap_or_default();
+        r = other_folders(&ctx, &mut conn, caps, &settings, &SyncOptions::default()).await;
+    }
     let _ = conn.logout().await;
     r?;
     let mut out = found.lock().unwrap_or_else(|e| e.into_inner()).clone();
@@ -940,6 +1211,8 @@ async fn main_loop<C: Connector>(ctx: &Ctx<C>, wake: &Notify, queue: &RefCell<Ve
     let mut last_full: Option<Instant> = None;
     let force_full = Cell::new(true);
     let mut last_error: Option<Error> = None;
+    // The log of the next full sync was started by connecting.
+    let mut fresh_log = false;
     loop {
         if stop.get() {
             if let Some(mut c) = conn.take() {
@@ -959,8 +1232,18 @@ async fn main_loop<C: Connector>(ctx: &Ctx<C>, wake: &Notify, queue: &RefCell<Ve
         match action {
             Action::Connect => {
                 ctx.status(Status::Connecting, None);
+                ctx.new_log();
+                fresh_log = true;
+                let t = Instant::now();
                 match ctx.connector.imap().await {
                     Ok(mut c) => {
+                        let took = c.connect_times();
+                        if took.is_empty() {
+                            ctx.log().note(tr!("Verbinden und Anmelden", "connect and sign in"), t.elapsed());
+                        }
+                        for (what, d) in took {
+                            ctx.log().note(what, d);
+                        }
                         caps = c.capabilities().await.unwrap_or_default();
                         conn = Some(c);
                         last_error = None;
@@ -981,13 +1264,20 @@ async fn main_loop<C: Connector>(ctx: &Ctx<C>, wake: &Notify, queue: &RefCell<Ve
                 let full = force_full.get() || last_full.is_none_or(|t| t.elapsed() >= POLL_INTERVAL);
                 if full {
                     ctx.status(Status::Syncing, None);
+                    if !std::mem::take(&mut fresh_log) {
+                        ctx.new_log();
+                    }
                 }
-                match sync_round(ctx, c, caps, full, true).await {
+                match sync_round(ctx, c, caps, full).await {
                     Ok(()) => {
                         if full {
                             last_full = Some(Instant::now());
                             force_full.set(false);
+                            ctx.background_full.set(true);
                         }
+                        // The other folders, the bodies ahead and the older mail: the background's.
+                        ctx.background_bodies.set(true);
+                        ctx.background_wake.notify_one();
                         ctx.status(Status::Ready, None);
                         actions.extend(m.on(Event::SyncDone));
                     }
@@ -1006,10 +1296,6 @@ async fn main_loop<C: Connector>(ctx: &Ctx<C>, wake: &Notify, queue: &RefCell<Ve
                 let mut timeout = POLL_INTERVAL.saturating_sub(last_full.map_or(Duration::ZERO, |t| t.elapsed()));
                 if let Ok(Some(due)) = outbox::next_due_at(&ctx.store, ctx.account_id) {
                     timeout = timeout.min(Duration::from_secs((due - now()).max(0) as u64 + 1));
-                }
-                // Older mail waits: the next round (and its part of it) follows soon.
-                if backfill_waits(ctx) {
-                    timeout = timeout.min(BACKFILL_PAUSE);
                 }
                 let timeout = timeout.clamp(Duration::from_secs(1), IDLE_RENEW);
                 let known = ctx.inbox();
@@ -1060,9 +1346,6 @@ async fn main_loop<C: Connector>(ctx: &Ctx<C>, wake: &Notify, queue: &RefCell<Ve
                     if let Ok(Some(due)) = outbox::next_due_at(&ctx.store, ctx.account_id) {
                         d = d.min(Duration::from_secs((due - now()).max(0) as u64 + 1));
                     }
-                    if backfill_waits(ctx) {
-                        d = d.min(BACKFILL_PAUSE);
-                    }
                     d.max(Duration::from_secs(1))
                 } else {
                     d
@@ -1098,6 +1381,10 @@ async fn main_loop<C: Connector>(ctx: &Ctx<C>, wake: &Notify, queue: &RefCell<Ve
 /// body that takes longer than [`Connector::on_demand_timeout`] is tried once more on a new one.
 async fn on_demand<C: Connector>(ctx: Rc<Ctx<C>>, mut rx: mpsc::UnboundedReceiver<Command>) {
     let mut conn: Option<C::Imap> = None;
+    // Ready before the first message is opened (connecting and signing in take the longest).
+    if connected(&ctx, &mut conn).await.is_err() {
+        conn = None;
+    }
     let mut last_used = Instant::now();
     let mut network = ctx.network.get();
     while let Some(cmd) = rx.recv().await {
@@ -1164,7 +1451,7 @@ async fn on_demand<C: Connector>(ctx: Rc<Ctx<C>>, mut rx: mpsc::UnboundedReceive
             _ => {}
         }
         last_used = Instant::now();
-        ctx.gate.leave();
+        ctx.user_gate.leave();
     }
     if let Some(mut c) = conn {
         let _ = c.logout().await;
@@ -1357,6 +1644,8 @@ mod tests {
         down_after: Arc<Mutex<Option<usize>>>,
         /// How long one try of an on-demand request may take (the default when not set).
         on_demand_timeout: Arc<Mutex<Option<Duration>>>,
+        /// How long connecting and signing in takes (TLS, login, capabilities).
+        connect_delay: Arc<Mutex<Duration>>,
     }
 
     struct FakeConnector {
@@ -1369,6 +1658,10 @@ mod tests {
         async fn imap(&self) -> Result<SharedFake> {
             if let Some(p) = self.mail.refuse.lock().unwrap().clone() {
                 return Err(Error::Connection(p));
+            }
+            let delay = *self.mail.connect_delay.lock().unwrap();
+            if !delay.is_zero() {
+                tokio::time::sleep(delay).await;
             }
             Ok(self.server.connection())
         }
@@ -1925,8 +2218,9 @@ mod tests {
         s.server.with(|f| f.deliver("Kunden", &sample("k@x", "Auftrag", None, "x"), 1_760_000_050));
         let _w = s.start();
         s.until("ready", |s| s.status() == Some(Status::Ready)).await;
-        let kunden = s.store.mailbox_by_name(s.account, "Kunden").unwrap().unwrap();
-        assert_eq!(kunden.total, 1, "the folder after the refused one is synced");
+        // The folders other than the inbox sync in the background, after „up to date“.
+        let kunden = || s.store.mailbox_by_name(s.account, "Kunden").unwrap().unwrap();
+        s.until("the folder after the refused one is synced", |_| kunden().total == 1).await;
         assert!(
             !s.notices
                 .lock()
@@ -2073,5 +2367,197 @@ mod tests {
         w.fetch_body(id).await.unwrap();
         assert!(s.store.message(id).unwrap().has_body);
         assert!(started.elapsed() < Duration::from_secs(3), "{:?}", started.elapsed());
+    }
+
+    /// A message as Gmail delivers it: a header of about 4 KB (Received, ARC, DKIM, …) and a
+    /// short text.
+    fn gmail_like(i: u32, subject: &str) -> Vec<u8> {
+        let mut h = String::with_capacity(4600);
+        for hop in 0..6 {
+            h.push_str(&format!(
+                "Received: from mail-sor-f{hop}.google.com (mail-sor-f{hop}.google.com. [209.85.220.{hop}])\r\n        \
+by mx.google.com with SMTPS id {i}x{hop}sor.2026.10.17.03.14.15\r\n        for <maria@example.org>\r\n        \
+(Google Transport Security);\r\n        Sat, 17 Oct 2026 03:14:15 -0700 (PDT)\r\n"
+            ));
+        }
+        for name in ["ARC-Seal", "ARC-Message-Signature", "DKIM-Signature", "X-Google-DKIM-Signature"] {
+            h.push_str(&format!("{name}: i=1; a=rsa-sha256; d=example.net; s=20230601; c=relaxed/relaxed;\r\n"));
+            for _ in 0..6 {
+                h.push_str(
+                    "        b=QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVphYmNkZWZnaGlqa2xtbm9wcXJzdHV2d3h5ejAxMjM0NTY3\r\n",
+                );
+            }
+        }
+        h.push_str("Authentication-Results: mx.google.com; dkim=pass header.i=@example.net; spf=pass; dmarc=pass\r\n");
+        format!(
+            "{h}From: Absender {n} <a{n}@example.net>\r\nTo: maria@example.org\r\nSubject: {subject}\r\n\
+Date: Sat, 17 Oct 2026 03:14:15 -0700\r\nMessage-ID: <m{i}@example.net>\r\nMIME-Version: 1.0\r\n\
+Content-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\n\
+Hallo Maria, hier ist Nachricht {i}. {}\r\n",
+            "Ein wenig Text, damit es nach einer echten Nachricht aussieht. ".repeat(6),
+            n = i % 400
+        )
+        .into_bytes()
+    }
+
+    /// A Gmail account as the owner's: `inbox` messages in the inbox, `all` in All Mail (the
+    /// inbox's among them) and `labels` labels with `per_label` of the archived ones each.
+    fn phone_account(inbox: u32, all: u32, labels: u32, per_label: u32) -> FakeImap {
+        let mut f = FakeImap::gmail();
+        let names: Vec<String> = (1..=labels).map(|l| format!("Label {l}")).collect();
+        for n in &names {
+            f.mailboxes.insert(n.clone(), crate::imap::fake::FakeMailbox::new(&[]));
+        }
+        let archived = all - inbox;
+        let start = 1_700_000_000i64;
+        for i in 1..=all {
+            let at = start + i as i64 * 600;
+            let mut into: Vec<&str> = vec![];
+            if i > archived {
+                into.push("INBOX");
+            } else if labels > 0 && i % (archived / (labels * per_label).max(1)).max(1) == 0 {
+                let l = (i as usize / 7) % names.len();
+                if f.mailboxes[&names[l]].messages.len() < per_label as usize {
+                    into.push(names[l].as_str());
+                }
+            }
+            let raw = gmail_like(i, &format!("Mail {i}"));
+            f.deliver_gmail(&raw, at, &into);
+        }
+        f.net = crate::imap::fake::NetProfile::phone();
+        f
+    }
+
+    #[derive(Debug, Default)]
+    struct PhaseTimes {
+        /// „Synchronisiere …“ gone: the status says the account is up to date.
+        ready: Option<Duration>,
+        rows: Option<Duration>,
+        previews: Option<Duration>,
+        open: Option<Duration>,
+        inbox_complete: Option<Duration>,
+        caught_up: Option<Duration>,
+    }
+
+    /// Runs a worker against the phone profile until `until` (or everything caught up) and
+    /// takes the times of the phases as the UI sees them (after the notice that tells it).
+    async fn phone_run(s: &Setup, until: Duration, early: bool) -> PhaseTimes {
+        let mut t = PhaseTimes::default();
+        *s.mail.connect_delay.lock().unwrap() = Duration::from_millis(400);
+        s.notices.lock().unwrap().clear();
+        let w = s.start();
+        let started = Instant::now();
+        let inbox_told = |s: &Setup| s.notices.lock().unwrap().iter().any(|n| matches!(n, Notice::Changed { .. }));
+        let mut opener: Option<tokio::task::JoinHandle<Duration>> = None;
+        while started.elapsed() < until {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            if t.ready.is_none() && s.status() == Some(Status::Ready) {
+                t.ready = Some(started.elapsed());
+            }
+            let Some(ib) = s.store.mailbox_by_role(s.account, Role::Inbox).unwrap() else { continue };
+            let rows = s.store.messages(ib.id, 50, 0).unwrap();
+            if t.rows.is_none() && rows.len() == 50 && inbox_told(s) {
+                t.rows = Some(started.elapsed());
+                // An older message nobody fetched yet, opened while the sync goes on.
+                let id = rows[49].id;
+                let h = w.handle();
+                opener = Some(tokio::spawn(async move {
+                    let at = Instant::now();
+                    h.fetch_body(id).await.unwrap();
+                    at.elapsed()
+                }));
+            }
+            if t.rows.is_some() && t.previews.is_none() && rows.iter().all(|m| !m.snippet.is_empty()) {
+                t.previews = Some(started.elapsed());
+            }
+            if t.open.is_none() && opener.as_ref().is_some_and(|o| o.is_finished()) {
+                t.open = Some(opener.take().unwrap().await.unwrap());
+            }
+            if early && t.rows.is_some() && t.previews.is_some() && t.open.is_some() && t.ready.is_some() {
+                break;
+            }
+            let waiting = s.store.backfill_pending(s.account).unwrap();
+            if t.inbox_complete.is_none() && ib.sync.uid_next.is_some() && !waiting.contains(&ib.id) {
+                t.inbox_complete = Some(started.elapsed());
+            }
+            if t.caught_up.is_none()
+                && waiting.is_empty()
+                && s.store.mailboxes(s.account).unwrap().iter().all(|m| !m.selectable || m.sync.uid_next.is_some())
+            {
+                t.caught_up = Some(started.elapsed());
+                break;
+            }
+        }
+        drop(w);
+        let stopping = Instant::now();
+        while s.status() != Some(Status::Stopped) && stopping.elapsed() < Duration::from_secs(900) {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        println!("stopped after {:?}", stopping.elapsed());
+        t
+    }
+
+    /// The targets on the phone profile (with room for a slow CI machine in a debug build):
+    /// the newest inbox rows within 3 s of adding the account, their preview lines within
+    /// 5 s, a message opened meanwhile within 2 s, the status up to date while the labels and
+    /// All Mail still sync in the background; an app start with the account shows the stored
+    /// mail at once and the new mail within about 2 s.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn phone_profile_targets() {
+        let s = setup_with("phone-targets", phone_account(30_000, 80_000, 40, 400));
+        let slack = 2;
+        let t = phone_run(&s, Duration::from_secs(40), true).await;
+        println!("phone profile: {t:?}");
+        let ok = |d: Option<Duration>, secs: u64| d.is_some_and(|d| d < Duration::from_secs(secs * slack));
+        assert!(ok(t.rows, 3), "first rows: {t:?}");
+        assert!(ok(t.previews, 5), "previews: {t:?}");
+        assert!(ok(t.open, 2), "opening a message: {t:?}");
+        assert!(ok(t.ready, 4), "up to date: {t:?}");
+        // The labels and All Mail did not hold the inbox up: they came after it.
+        s.server.with(|f| {
+            for i in 0..5 {
+                f.deliver_gmail(&gmail_like(900_000 + i, &format!("Neu {i}")), 1_800_000_000 + i as i64, &["INBOX"]);
+            }
+        });
+        let ib = s.inbox();
+        let cached = Instant::now();
+        assert_eq!(s.store.messages(ib, 50, 0).unwrap().len(), 50);
+        assert!(cached.elapsed() < Duration::from_millis(100), "stored mail at once: {:?}", cached.elapsed());
+        *s.mail.connect_delay.lock().unwrap() = Duration::from_millis(400);
+        let w = s.start();
+        let started = Instant::now();
+        while !s.store.messages(ib, 1, 0).unwrap()[0].subject.starts_with("Neu") {
+            assert!(started.elapsed() < Duration::from_secs(2 * slack), "the new mail after a start");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        drop(w);
+    }
+
+    /// The owner's Gmail account on a phone: 30,000 messages in the inbox, 80,000 in All Mail,
+    /// 40 labels, 100 ms per round trip, 2 MB/s. Prints the times of the phases; run with
+    /// `cargo test --release -p mail-core phone_profile -- --ignored --nocapture`.
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "a measurement (minutes): run by hand in a release build"]
+    async fn phone_profile_measurement() {
+        let s = setup_with("phone-bench", phone_account(30_000, 80_000, 40, 400));
+        let first = phone_run(&s, Duration::from_secs(900), false).await;
+        println!("new account: {first:?}");
+        // The app starts again with the account: cached mail at once, then the delta.
+        s.server.with(|f| {
+            for i in 0..10 {
+                f.deliver_gmail(&gmail_like(900_000 + i, &format!("Neu {i}")), 1_800_000_000 + i as i64, &["INBOX"]);
+            }
+        });
+        let ib = s.inbox();
+        let cached = Instant::now();
+        assert_eq!(s.store.messages(ib, 50, 0).unwrap().len(), 50);
+        println!("cached rows read in {:?}", cached.elapsed());
+        *s.mail.connect_delay.lock().unwrap() = Duration::from_millis(400);
+        s.notices.lock().unwrap().clear();
+        let w = s.start();
+        let started = Instant::now();
+        s.until("the new mail", |s| s.store.messages(ib, 1, 0).unwrap()[0].subject.starts_with("Neu")).await;
+        println!("restart: delta in {:?}", started.elapsed());
+        drop(w);
     }
 }

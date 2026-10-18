@@ -314,7 +314,9 @@ pub async fn start(opts: Options) -> io::Result<Running> {
     };
     // Gmail (`X-GM-EXT-1`): its folders below „[Gmail]“ (in German) and labels as folders.
     let fake = if opts.caps.gmail {
-        FakeImap { caps: opts.caps, ..FakeImap::gmail() }
+        let mut f = FakeImap::gmail();
+        f.caps = opts.caps;
+        f
     } else {
         FakeImap::new(opts.caps).with_all_folders()
     };

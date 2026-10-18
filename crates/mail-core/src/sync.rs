@@ -39,7 +39,10 @@ pub const FIRST_BATCH: u32 = 100;
 /// ([`backfill`]). The setting `initial_headers` changes it.
 pub const FIRST_HEADERS: u32 = 1000;
 /// Older headers fetched per round while a folder's older mail waits.
-pub const BACKFILL_PER_ROUND: u32 = 2000;
+pub const BACKFILL_PER_ROUND: u32 = 5000;
+/// Headers the first sync of a folder other than the inbox fetches at most (labels, All Mail):
+/// they are not the first thing anyone looks at, the older mail follows.
+pub const FOLDER_FIRST_HEADERS: u32 = 250;
 /// The newest messages of a folder whose preview line comes with the header.
 pub const PREVIEW_COUNT: usize = 200;
 /// Headers stored per transaction: between two, work the user waits for goes first ([`Gate`]).
@@ -148,28 +151,44 @@ impl Gate {
 pub struct SyncOptions<'a> {
     /// Headers the first sync of a folder fetches (the newest); older mail waits for [`backfill`].
     pub first_headers: u32,
-    /// Called with the folder after each stored part of a first sync or a backfill, so the list
-    /// shows the newest mail before the rest arrived.
+    /// Called with the folder after each stored part (and again when its preview lines came),
+    /// so the list shows the newest mail before the rest arrived.
     pub on_chunk: Option<&'a dyn Fn(i64)>,
-    pub gate: Option<&'a Gate>,
+    /// Waited on before each step: work that goes first (what the user waits for; for the
+    /// background, the inbox).
+    pub gates: &'a [&'a Gate],
+    /// Where the steps' times go („Sync-Details“).
+    pub log: Option<&'a crate::diag::SyncLog>,
 }
 
 impl Default for SyncOptions<'_> {
     fn default() -> Self {
-        SyncOptions { first_headers: FIRST_HEADERS, on_chunk: None, gate: None }
+        SyncOptions { first_headers: FIRST_HEADERS, on_chunk: None, gates: &[], log: None }
     }
 }
 
 impl SyncOptions<'_> {
     async fn pass(&self) {
-        if let Some(g) = self.gate {
+        for g in self.gates {
             g.pass().await;
+        }
+    }
+
+    fn note(&self, what: impl FnOnce() -> String, since: std::time::Instant) {
+        if let Some(log) = self.log {
+            log.note(&what(), since.elapsed());
+        }
+    }
+
+    fn shown(&self, mailbox_id: i64) {
+        if let Some(f) = self.on_chunk {
+            f(mailbox_id);
         }
     }
 }
 
-/// Fetches and stores the headers of one UID range (with the preview lines when `previews`);
-/// returns the ids and whether each is unread.
+/// Fetches and stores the headers of one UID range, shows them, then (with `previews`) their
+/// preview lines; returns the ids and whether each is unread.
 async fn fetch_range<C: ImapClient>(
     client: &mut C,
     store: &Store,
@@ -178,29 +197,45 @@ async fn fetch_range<C: ImapClient>(
     previews: bool,
     opts: &SyncOptions<'_>,
 ) -> Result<Vec<(i64, bool)>> {
-    let headers = client.fetch_headers(range).await?;
-    let previews: std::collections::HashMap<u32, Vec<u8>> = if previews && !headers.is_empty() {
-        client.fetch_previews(range).await?.into_iter().collect()
-    } else {
-        Default::default()
-    };
+    let t = std::time::Instant::now();
+    let mut headers = client.fetch_headers(range).await?;
+    opts.note(|| format!("{} {}", tr!("Kopfzeilen", "headers"), headers.len()), t);
+    let t = std::time::Instant::now();
     let mut added = vec![];
+    let mut parsed: std::collections::HashMap<u32, (i64, ParsedMessage, Vec<u8>)> = Default::default();
     // The newest first, so a pause between two parts leaves the newest stored.
-    let mut headers = headers;
     headers.sort_by_key(|h| std::cmp::Reverse(h.uid));
     for part in headers.chunks(STORE_CHUNK) {
         opts.pass().await;
         store.batch(|| {
             for h in part {
                 // A header that does not parse still gets a row (with an empty subject).
-                let mut p = parse(&h.header).unwrap_or_default();
-                if let Some(body) = previews.get(&h.uid) {
-                    p.snippet = crate::parse::preview(&h.header, body);
+                let p = parse(&h.header).unwrap_or_default();
+                let id = store.insert_message(mailbox_id, h, &p)?;
+                added.push((id, !h.flags.seen));
+                if previews {
+                    parsed.insert(h.uid, (id, p, h.header.clone()));
                 }
-                added.push((store.insert_message(mailbox_id, h, &p)?, !h.flags.seen));
             }
             Ok(())
         })?;
+    }
+    opts.note(|| format!("{} {}", tr!("gespeichert", "stored"), added.len()), t);
+    opts.shown(mailbox_id);
+    if previews && !parsed.is_empty() {
+        let t = std::time::Instant::now();
+        let bodies = client.fetch_previews(range).await?;
+        opts.note(|| format!("{} {}", tr!("Vorschauen", "previews"), bodies.len()), t);
+        store.batch(|| {
+            for (uid, body) in &bodies {
+                if let Some((id, p, header)) = parsed.get_mut(uid) {
+                    p.snippet = crate::parse::preview(header, body);
+                    store.set_preview(*id, p)?;
+                }
+            }
+            Ok(())
+        })?;
+        opts.shown(mailbox_id);
     }
     Ok(added)
 }
@@ -233,9 +268,6 @@ async fn fetch_uids<C: ImapClient>(
         let range = UidRange { from: uids[start], to: Some(uids[end - 1]) };
         let with_previews = uids.len() - end < previews;
         added.extend(fetch_range(client, store, mailbox_id, range, with_previews, opts).await?);
-        if let Some(f) = opts.on_chunk {
-            f(mailbox_id);
-        }
         end = start;
         batch = HEADER_BATCH as usize;
     }
@@ -277,7 +309,9 @@ async fn fetch_first<C: ImapClient>(
         store.set_backfill(mailbox_id, None, 0)?;
         return Ok(vec![]);
     }
+    let t = std::time::Instant::now();
     let all = client.uids().await?;
+    opts.note(|| format!("{} {}", tr!("UID-Liste", "UID list"), all.len()), t);
     let take = all.len().min(opts.first_headers.max(1) as usize);
     let newest = &all[all.len() - take..];
     let added = fetch_uids(client, store, mailbox_id, newest, true, PREVIEW_COUNT, opts).await?;
@@ -302,7 +336,20 @@ pub async fn backfill<C: ImapClient>(
         // Renumbered on the server: the next sync of the folder starts over.
         return Ok(0);
     }
+    let t = std::time::Instant::now();
     let older: Vec<u32> = client.uids().await?.into_iter().filter(|u| *u < below).collect();
+    opts.note(
+        || {
+            format!(
+                "{} {}: {} {}",
+                tr!("Älteres", "older mail"),
+                crate::diag::folder_label(&mb),
+                tr!("UID-Liste", "UID list"),
+                older.len()
+            )
+        },
+        t,
+    );
     let stop = older.len() - older.len().min(max as usize);
     let mut end = older.len();
     let mut added = 0;
@@ -340,9 +387,21 @@ pub async fn sync_mailbox_with<C: ImapClient>(
     let mb = store.mailbox(mailbox_id)?;
     let local = mb.sync;
     let q = qresync_params(local, caps);
+    let t = std::time::Instant::now();
     let selected = client.select(&mb.name, q).await?;
     let server = selected.info;
     let strategy = strategy(local, server, caps, q.is_some());
+    opts.note(
+        || {
+            format!(
+                "SELECT {} ({} {}, {strategy:?})",
+                crate::diag::folder_label(&mb),
+                server.exists,
+                tr!("Nachrichten", "messages")
+            )
+        },
+        t,
+    );
     let mut report =
         SyncReport { mailbox_id, strategy, added: 0, updated: 0, removed: 0, new_unread: vec![], new: vec![] };
     let known_next = local.uid_next.unwrap_or(1);
@@ -522,7 +581,7 @@ pub async fn prefetch_bodies<C: ImapClient>(
     mailbox_id: i64,
     policy: crate::settings::Prefetch,
 ) -> Result<usize> {
-    prefetch_bodies_with(client, store, mailbox_id, policy, None).await
+    prefetch_bodies_with(client, store, mailbox_id, policy, &[]).await
 }
 
 /// [`prefetch_bodies`] that steps aside at the [`Gate`] before each message.
@@ -531,7 +590,7 @@ pub async fn prefetch_bodies_with<C: ImapClient>(
     store: &Store,
     mailbox_id: i64,
     policy: crate::settings::Prefetch,
-    gate: Option<&Gate>,
+    gates: &[&Gate],
 ) -> Result<usize> {
     use crate::settings::Prefetch;
     let ids = match policy {
@@ -550,18 +609,53 @@ pub async fn prefetch_bodies_with<C: ImapClient>(
     let mb = store.mailbox(mailbox_id)?;
     client.select(&mb.name, None).await?;
     let mut fetched = 0;
+    // Whole messages several to a round trip; the large ones (in parts) one by one.
+    let mut small = vec![];
     for &id in &ids {
-        if let Some(g) = gate {
+        let m = store.message(id)?;
+        if m.size <= FULL_FETCH_LIMIT {
+            small.push((m.summary.uid, id));
+        } else {
+            for g in gates {
+                g.pass().await;
+            }
+            // Its copy in another folder brought it meanwhile.
+            if !store.message(id)?.has_body {
+                fetch_selected(client, store, id).await?;
+                fetched += 1;
+            }
+        }
+    }
+    for part in small.chunks(PREFETCH_BATCH) {
+        for g in gates {
             g.pass().await;
         }
-        // Its copy in another folder brought it meanwhile.
-        if store.message(id)?.has_body {
-            continue;
+        let mut wanted = vec![];
+        for &(uid, id) in part {
+            if !store.message(id)?.has_body {
+                wanted.push(uid);
+            }
         }
-        fetch_selected(client, store, id).await?;
-        fetched += 1;
+        for (uid, raw) in client.fetch_messages(&wanted).await? {
+            let Some(&(_, id)) = part.iter().find(|(u, _)| *u == uid) else { continue };
+            store.batch(|| store_whole(store, id, &raw))?;
+            fetched += 1;
+        }
     }
     Ok(fetched)
+}
+
+/// Messages fetched whole per round trip when bodies are fetched ahead.
+pub const PREFETCH_BATCH: usize = 20;
+
+/// Keeps a message fetched whole (up to twice [`FULL_FETCH_LIMIT`] with its raw form, for its
+/// attachments offline) and gives it to its other copies.
+fn store_whole(store: &Store, id: i64, raw: &[u8]) -> Result<()> {
+    let p = parse(raw)?;
+    let keep = raw.len() as u64 <= FULL_FETCH_LIMIT as u64 * 2;
+    store.set_body_raw(id, &p, keep.then_some(raw))?;
+    store.share_body(id)?;
+    Ok(())
 }
 
 /// The most a folder fetches ahead in one round with [`crate::settings::Prefetch::Month`].
@@ -573,11 +667,7 @@ async fn fetch_selected<C: ImapClient>(client: &mut C, store: &Store, message_id
     let parts = if m.size > FULL_FETCH_LIMIT { client.fetch_structure(uid).await? } else { vec![] };
     if parts.len() <= 1 {
         let raw = client.fetch_message(uid).await?;
-        let p = parse(&raw)?;
-        let keep = raw.len() as u64 <= FULL_FETCH_LIMIT as u64 * 2;
-        store.set_body_raw(message_id, &p, keep.then_some(&raw[..]))?;
-        store.share_body(message_id)?;
-        return Ok(());
+        return store_whole(store, message_id, &raw);
     }
     let mut body = PartialBody::default();
     let first = |mime: &str| parts.iter().find(|p| p.mime_type == mime && !p.is_attachment()).cloned();
@@ -1312,7 +1402,7 @@ Message-ID: <m{i}@example.net>\r\nMIME-Version: 1.0\r\nContent-Type: text/plain;
             let top = store.messages(m, 1, 0).unwrap().first().map(|s| s.subject.clone()).unwrap_or_default();
             seen.borrow_mut().push((store.uids(m).unwrap().len(), top));
         };
-        let opts = SyncOptions { first_headers: 1000, on_chunk: Some(&shown), gate: None };
+        let opts = SyncOptions { first_headers: 1000, on_chunk: Some(&shown), ..SyncOptions::default() };
         server.log.clear();
         let r = sync_mailbox_with(&mut server, &store, gmail_caps(), ib, &opts).await.unwrap();
         assert_eq!((r.strategy, r.added), (Strategy::Full, 1000));

@@ -200,6 +200,26 @@ fn body_structure(m: &mail_parser::Message<'_>, id: u32) -> String {
     }
 }
 
+/// The named fields of a header (`HEADER.FIELDS (…)`), folded lines kept, with the blank line.
+fn header_fields(header: &[u8], wanted: &[&str]) -> Vec<u8> {
+    let mut out = vec![];
+    let mut keep = false;
+    for line in header.split_inclusive(|b| *b == b'\n') {
+        if line == b"\r\n" {
+            break;
+        }
+        if !line.starts_with(b" ") && !line.starts_with(b"\t") {
+            let name = line.split(|b| *b == b':').next().unwrap_or_default();
+            keep = wanted.iter().any(|w| w.as_bytes().eq_ignore_ascii_case(name.trim_ascii()));
+        }
+        if keep {
+            out.extend_from_slice(line);
+        }
+    }
+    out.extend_from_slice(b"\r\n");
+    out
+}
+
 /// A literal for a FETCH answer.
 fn literal(out: &mut Vec<u8>, data: &[u8]) {
     out.extend_from_slice(format!("{{{}}}\r\n", data.len()).as_bytes());
@@ -400,6 +420,13 @@ impl Session {
                                 let end =
                                     msg.raw.windows(4).position(|w| w == b"\r\n\r\n").map_or(msg.raw.len(), |p| p + 4);
                                 msg.raw[end..].to_vec()
+                            }
+                            s if s.starts_with("HEADER.FIELDS (") => {
+                                let end =
+                                    msg.raw.windows(4).position(|w| w == b"\r\n\r\n").map_or(msg.raw.len(), |p| p + 4);
+                                let wanted: Vec<&str> =
+                                    s["HEADER.FIELDS (".len()..].trim_end_matches(')').split(' ').collect();
+                                header_fields(&msg.raw[..end], &wanted)
                             }
                             s => {
                                 let (num, mime) = match s.strip_suffix(".MIME") {

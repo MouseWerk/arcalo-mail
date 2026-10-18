@@ -40,6 +40,60 @@ pub fn lines() -> Vec<Line> {
     LOG.lock().unwrap_or_else(|e| e.into_inner()).iter().cloned().collect()
 }
 
+/// The steps of an account's sync with their times, for „Sync-Details“ in the account's
+/// settings: when each began (from the start of the sync) and how long it took. Folders by
+/// their role or number, never by name (nothing of the mail goes in).
+#[derive(Debug)]
+pub struct SyncLog {
+    start: std::time::Instant,
+    lines: std::cell::RefCell<Vec<String>>,
+}
+
+impl Default for SyncLog {
+    fn default() -> Self {
+        SyncLog { start: std::time::Instant::now(), lines: Default::default() }
+    }
+}
+
+/// The most lines a [`SyncLog`] keeps (a long backfill notes only its first parts).
+pub const SYNC_LOG_LINES: usize = 400;
+
+impl SyncLog {
+    /// A step that took `took` and ended now.
+    pub fn note(&self, what: &str, took: std::time::Duration) {
+        let mut lines = self.lines.borrow_mut();
+        if lines.len() >= SYNC_LOG_LINES {
+            return;
+        }
+        let at = self.start.elapsed().saturating_sub(took);
+        lines.push(format!("{:>8.2} s  {:>7} ms  {what}", at.as_secs_f64(), took.as_millis()));
+    }
+
+    pub fn text(&self) -> String {
+        self.lines.borrow().join("\n")
+    }
+}
+
+/// The name of a folder in a [`SyncLog`]: its role, else its number.
+pub fn folder_label(m: &crate::store::Mailbox) -> String {
+    match m.role {
+        Some(r) => r.as_str().to_string(),
+        None => format!("{} {}", crate::tr!("Ordner", "folder"), m.id),
+    }
+}
+
+static SYNC_DETAILS: Mutex<std::collections::BTreeMap<i64, String>> = Mutex::new(std::collections::BTreeMap::new());
+
+/// Keeps the text of an account's last sync („Sync-Details“).
+pub fn set_sync_details(account_id: i64, text: String) {
+    SYNC_DETAILS.lock().unwrap_or_else(|e| e.into_inner()).insert(account_id, text);
+}
+
+/// The text of an account's last sync, if there was one since the app started.
+pub fn sync_details(account_id: i64) -> Option<String> {
+    SYNC_DETAILS.lock().unwrap_or_else(|e| e.into_inner()).get(&account_id).cloned()
+}
+
 /// Removes addresses (`<address>`), tokens and long Base64 or hex runs (`<secret>`) and query
 /// strings of URLs from a text.
 pub fn redact(text: &str) -> String {

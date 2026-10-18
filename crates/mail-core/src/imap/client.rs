@@ -55,6 +55,8 @@ pub struct ImapSession {
     /// Untagged answers that arrived outside a command (or during one that did not ask).
     changed: bool,
     host: String,
+    /// Connecting (TCP, TLS) and signing in (with the capabilities and ENABLE).
+    times: [Duration; 2],
 }
 
 impl std::fmt::Debug for ImapSession {
@@ -219,7 +221,9 @@ impl ImapSession {
 
     /// Connects and signs in with a password or an OAuth access token (AUTHENTICATE XOAUTH2).
     pub async fn connect_with(server: &Server, username: &str, credential: &Credential) -> Result<Self> {
+        let started = std::time::Instant::now();
         let t = network::connect_imap(server).await?;
+        let connected = started.elapsed();
         let mut s = ImapSession {
             stream: t.stream,
             buf: Vec::with_capacity(16 * 1024),
@@ -228,6 +232,7 @@ impl ImapSession {
             raw_caps: vec![],
             changed: false,
             host: server.host.clone(),
+            times: [connected, Duration::ZERO],
         };
         if !t.greeted {
             match s.read_reply(IO_TIMEOUT).await? {
@@ -261,6 +266,7 @@ impl ImapSession {
                 s.command("ENABLE CONDSTORE").await?;
             }
         }
+        s.times[1] = started.elapsed().saturating_sub(connected);
         Ok(s)
     }
 
@@ -585,6 +591,10 @@ impl ImapClient for ImapSession {
         Ok(self.caps)
     }
 
+    fn connect_times(&self) -> Vec<(&'static str, Duration)> {
+        vec![(tr!("Verbinden (TLS)", "connect (TLS)"), self.times[0]), (tr!("Anmelden", "sign in"), self.times[1])]
+    }
+
     async fn list(&mut self) -> Result<Vec<MailboxEntry>> {
         let cmd = if self.caps.special_use { "LIST \"\" \"*\" RETURN (SPECIAL-USE)" } else { "LIST \"\" \"*\"" };
         let mut done = self.command(cmd).await?;
@@ -701,8 +711,9 @@ impl ImapClient for ImapSession {
         let modseq = if self.caps.condstore { " MODSEQ" } else { "" };
         let gmail = if self.caps.gmail { " X-GM-MSGID" } else { "" };
         let cmd = format!(
-            "UID FETCH {}:{to} (UID FLAGS INTERNALDATE RFC822.SIZE BODY.PEEK[HEADER]{modseq}{gmail})",
-            range.from
+            "UID FETCH {}:{to} (UID FLAGS INTERNALDATE RFC822.SIZE BODY.PEEK[HEADER.FIELDS ({})]{modseq}{gmail})",
+            range.from,
+            HEADER_FIELDS.join(" ")
         );
         let done = check(self.command(&cmd).await?, "FETCH")?;
         let mut out = vec![];
@@ -808,6 +819,23 @@ impl ImapClient for ImapSession {
         Err(Error::NotFound(
             tr!("Die Nachricht ist nicht mehr auf dem Server.", "The message is no longer on the server.").into(),
         ))
+    }
+
+    async fn fetch_messages(&mut self, uids: &[u32]) -> Result<Vec<(u32, Vec<u8>)>> {
+        if uids.is_empty() {
+            return Ok(vec![]);
+        }
+        let done = check(self.command(&format!("UID FETCH {} (UID BODY.PEEK[])", uid_set(uids))).await?, "FETCH")?;
+        let mut out = vec![];
+        for attrs in done.data.iter().filter_map(fetch_attrs) {
+            let Some(uid) = uid_of(attrs).filter(|u| uids.contains(u)) else { continue };
+            for a in attrs {
+                if let AttributeValue::BodySection { data: Some(d), .. } | AttributeValue::Rfc822(Some(d)) = a {
+                    out.push((uid, d.to_vec()));
+                }
+            }
+        }
+        Ok(out)
     }
 
     async fn fetch_structure(&mut self, uid: u32) -> Result<Vec<BodyPart>> {

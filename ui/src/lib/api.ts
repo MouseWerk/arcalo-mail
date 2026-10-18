@@ -96,6 +96,8 @@ export const api = {
   updateServers: (id: number, transport: Transport, password: string | null) =>
     call<void>("update_servers", { id, transport, password }, () => undefined),
   removeAccount: (id: number) => call<void>("remove_account", { id }, () => demo.removeAccount(id)),
+  /** The steps of the account's last sync with their times („Sync-Details“), empty before one. */
+  syncDetails: (id: number) => call<string>("sync_details", { id }, () => ""),
   signIn: (id: number, password: string) => call<void>("sign_in", { id, password }, () => undefined),
   microsoftSignIn: (email: string) => call<MicrosoftSignIn>("microsoft_sign_in", { email }, () => demo.microsoftSignIn(email)),
   addMicrosoftAccount: (session: string, name: string) =>
