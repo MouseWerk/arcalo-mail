@@ -53,6 +53,9 @@ export function CommandPalette({ commands, search, onClose }: { commands: Comman
       <div ref={root} className="palette" role="dialog" aria-modal="true" aria-label={t("palette.label")}>
         <input
           className="palette-input"
+          enterKeyHint="go"
+          autoCapitalize="off"
+          autoCorrect="off"
           autoFocus
           value={query}
           placeholder={t("palette.placeholder")}

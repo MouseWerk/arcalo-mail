@@ -8,9 +8,12 @@ import "./styles/security.css";
 import { App } from "./App";
 import { SecurityGate } from "./components/Security";
 import { startSplash } from "./lib/splash";
+import { readSystemBars } from "./lib/viewport";
 
 // The opening animation runs while the app loads and goes once it is ready (lib/splash.ts).
 startSplash();
+// Android: the system bars' insets before the first paint (lib/viewport.ts).
+readSystemBars();
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>

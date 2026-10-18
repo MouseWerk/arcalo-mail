@@ -9,7 +9,7 @@ import { currentLang, useT } from "../lib/i18n";
 import { listDate, now } from "../lib/format";
 import type { AiSource, Destination } from "../lib/types";
 import { PrivacyLine } from "./Assistant";
-import { Spinner } from "./ui";
+import { Select, Spinner } from "./ui";
 
 export function AskView({ on, onOpen, onShowFolders, onSettings }: { on: boolean; onOpen: (s: AiSource) => void; onShowFolders: () => void; onSettings: () => void }) {
   const t = useT();
@@ -65,6 +65,7 @@ export function AskView({ on, onOpen, onShowFolders, onSettings }: { on: boolean
           >
             <textarea
               className="input ask-input"
+              enterKeyHint="send"
               rows={2}
               value={question}
               placeholder={t("ask.placeholder")}
@@ -89,13 +90,13 @@ export function AskView({ on, onOpen, onShowFolders, onSettings }: { on: boolean
           </form>
           <div className="ask-meta">
             {providers.length > 1 && (
-              <select className="select select-sm" value={provider ?? ""} onChange={(e) => setProvider(e.target.value)} aria-label={t("ask.provider")}>
+              <Select className="select select-sm" value={provider ?? ""} onChange={(e) => setProvider(e.target.value)} aria-label={t("ask.provider")}>
                 {providers.map((p) => (
                   <option key={p.provider} value={p.provider ?? ""}>
                     {p.name}
                   </option>
                 ))}
-              </select>
+              </Select>
             )}
             <PrivacyLine dest={dest} />
           </div>

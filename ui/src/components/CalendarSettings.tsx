@@ -11,7 +11,7 @@ import { listDate, now } from "../lib/format";
 import { showToast } from "../lib/toasts";
 import { CAL_PALETTE } from "../lib/calendar";
 import type { AccountInfo, CalendarInfo, CalendarOverview, Settings, StoredKey } from "../lib/types";
-import { ConfirmDialog, Dialog, Segmented, Spinner, Switch } from "./ui";
+import { ConfirmDialog, Dialog, Segmented, Select, Spinner, Switch } from "./ui";
 
 function Row({ label, description, children }: { label: string; description?: string; children: ReactNode }) {
   return (
@@ -84,7 +84,7 @@ function CalDavDialog({ presets, onAdded, onClose }: { presets: [string, string]
     >
       <label className="stack-field">
         <span className="field-label">{t("calset.service")}</span>
-        <select
+        <Select
           className="select"
           value={preset}
           onChange={(e) => {
@@ -99,22 +99,22 @@ function CalDavDialog({ presets, onAdded, onClose }: { presets: [string, string]
             </option>
           ))}
           <option value={presets.length}>{t("calset.otherServer")}</option>
-        </select>
+        </Select>
       </label>
       {withHost ? (
         <label className="stack-field">
           <span className="field-label">{t("calset.host")}</span>
-          <input className="input" value={host} spellCheck={false} placeholder="cloud.example.org" onChange={(e) => setHost(e.target.value.trim())} />
+          <input className="input" value={host} spellCheck={false} autoCapitalize="off" autoCorrect="off" placeholder="cloud.example.org" onChange={(e) => setHost(e.target.value.trim())} />
         </label>
       ) : (
         <label className="stack-field">
           <span className="field-label">{t("calset.address")}</span>
-          <input className="input" value={url} spellCheck={false} onChange={(e) => setUrl(e.target.value.trim())} />
+          <input className="input" value={url} spellCheck={false} autoCapitalize="off" autoCorrect="off" onChange={(e) => setUrl(e.target.value.trim())} />
         </label>
       )}
       <label className="stack-field">
         <span className="field-label">{t("setup.username")}</span>
-        <input className="input" value={user} spellCheck={false} autoComplete="off" onChange={(e) => setUser(e.target.value)} />
+        <input className="input" value={user} spellCheck={false} autoCapitalize="off" autoCorrect="off" autoComplete="off" onChange={(e) => setUser(e.target.value)} />
       </label>
       <label className="stack-field">
         <span className="field-label">{t("calset.appPassword")}</span>
@@ -168,7 +168,7 @@ function IcsDialog({ onAdded, onClose }: { onAdded: () => void; onClose: () => v
     >
       <label className="stack-field">
         <span className="field-label">{t("calset.icsAddress")}</span>
-        <input className="input" value={url} spellCheck={false} placeholder="webcal://…" onChange={(e) => setUrl(e.target.value)} />
+        <input className="input" value={url} spellCheck={false} autoCapitalize="off" autoCorrect="off" placeholder="webcal://…" onChange={(e) => setUrl(e.target.value)} />
         <span className="field-hint">{t("calset.icsPrivate")}</span>
       </label>
       <label className="stack-field">
@@ -325,14 +325,14 @@ export function CalendarSection({ settings, onChange }: { settings: Settings; on
       )}
       <div className="set-card">
         <Row label={t("calset.default")} description={t("calset.defaultHint")}>
-          <select className="select" value={cal.default_calendar ?? o?.default ?? ""} onChange={(e) => setCal({ default_calendar: Number(e.target.value) })} aria-label={t("calset.default")}>
+          <Select className="select" value={cal.default_calendar ?? o?.default ?? ""} onChange={(e) => setCal({ default_calendar: Number(e.target.value) })} aria-label={t("calset.default")}>
             {writable.length === 0 && <option value="">{t("calset.local")}</option>}
             {writable.map((c) => (
               <option key={c.id} value={c.id}>
                 {c.source_name && c.source_name !== c.name ? `${c.name} · ${c.source_name}` : c.name}
               </option>
             ))}
-          </select>
+          </Select>
         </Row>
         <Row label={t("calset.length")} description={t("calset.lengthHint")}>
           <Segmented
@@ -415,7 +415,7 @@ function ImportKeyDialog({ onDone, onClose }: { onDone: () => void; onClose: () 
       <textarea
         className="input crypto-armor"
         value={text}
-        spellCheck={false}
+        spellCheck={false} autoCapitalize="off" autoCorrect="off"
         placeholder="-----BEGIN PGP PUBLIC KEY BLOCK-----"
         onChange={(e) => {
           setText(e.target.value);

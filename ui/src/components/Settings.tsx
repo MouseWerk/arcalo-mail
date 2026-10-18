@@ -12,7 +12,7 @@ import { SecuritySection } from "./Security";
 import { SyncDetails } from "./SyncDetails";
 import { explain } from "../lib/problems";
 import { SHORTCUTS, keyLabel, usesCommand } from "../lib/shortcuts";
-import { ConfirmDialog, Segmented, Spinner, Switch, trapFocus, useSaveOnLeave } from "./ui";
+import { ConfirmDialog, Segmented, Select, Spinner, Switch, trapFocus, useSaveOnLeave } from "./ui";
 import { ProblemCard, Setup } from "./Setup";
 import { useRef } from "react";
 
@@ -124,7 +124,7 @@ function ServerEdit({ label, server, onChange }: { label: string; server: Server
       <legend>{label}</legend>
       <label className="stack-field server-host">
         <span className="field-label">{t("setup.host")}</span>
-        <input className="input" value={server.host} spellCheck={false} onChange={(e) => onChange({ ...server, host: e.target.value.trim() })} />
+        <input className="input" value={server.host} spellCheck={false} autoCapitalize="off" autoCorrect="off" onChange={(e) => onChange({ ...server, host: e.target.value.trim() })} />
       </label>
       <label className="stack-field server-port">
         <span className="field-label">{t("setup.port")}</span>
@@ -132,11 +132,11 @@ function ServerEdit({ label, server, onChange }: { label: string; server: Server
       </label>
       <label className="stack-field server-security">
         <span className="field-label">{t("setup.security")}</span>
-        <select className="select" value={server.security} onChange={(e) => onChange({ ...server, security: e.target.value as Security })}>
+        <Select className="select" value={server.security} onChange={(e) => onChange({ ...server, security: e.target.value as Security })}>
           <option value="tls">{t("setup.tls")}</option>
           <option value="start_tls">{t("setup.starttls")}</option>
           <option value="plain">{t("setup.plain")}</option>
-        </select>
+        </Select>
       </label>
     </fieldset>
   );
@@ -222,7 +222,7 @@ function AccountEditor({ a, onChanged, onRemoved }: { a: AccountInfo; onChanged:
           <div className="set-card-title">{t("settings.servers")}</div>
           <label className="stack-field">
             <span className="field-label">{t("setup.username")}</span>
-            <input className="input" value={transport.username} spellCheck={false} onChange={(e) => setTransport({ ...transport, username: e.target.value })} />
+            <input className="input" value={transport.username} spellCheck={false} autoCapitalize="off" autoCorrect="off" onChange={(e) => setTransport({ ...transport, username: e.target.value })} />
           </label>
           <ServerEdit label={t("setup.incoming")} server={transport.imap} onChange={(imap) => setTransport({ ...transport, imap })} />
           <ServerEdit label={t("setup.outgoing")} server={transport.smtp} onChange={(smtp) => setTransport({ ...transport, smtp })} />
@@ -248,7 +248,7 @@ function AccountEditor({ a, onChanged, onRemoved }: { a: AccountInfo; onChanged:
           <div className="set-card-title">{t("settings.servers")}</div>
           <label className="stack-field">
             <span className="field-label">{t("setup.username")}</span>
-            <input className="input" value={pop3.username} spellCheck={false} onChange={(e) => setPop3({ ...pop3, username: e.target.value })} />
+            <input className="input" value={pop3.username} spellCheck={false} autoCapitalize="off" autoCorrect="off" onChange={(e) => setPop3({ ...pop3, username: e.target.value })} />
           </label>
           <ServerEdit label={t("setup.incomingPop3")} server={pop3.pop3} onChange={(s) => setPop3({ ...pop3, pop3: s })} />
           <ServerEdit label={t("setup.outgoing")} server={pop3.smtp} onChange={(smtp) => setPop3({ ...pop3, smtp })} />
@@ -257,7 +257,7 @@ function AccountEditor({ a, onChanged, onRemoved }: { a: AccountInfo; onChanged:
           </Row>
           {pop3.leave_on_server && (
             <Row label={t("setup.deleteAfter")} description={t("setup.deleteAfterHint")}>
-              <select
+              <Select
                 className="select"
                 aria-label={t("setup.deleteAfter")}
                 value={pop3.delete_after_days ?? 0}
@@ -269,7 +269,7 @@ function AccountEditor({ a, onChanged, onRemoved }: { a: AccountInfo; onChanged:
                     {t("setup.afterDays", { n })}
                   </option>
                 ))}
-              </select>
+              </Select>
             </Row>
           )}
           <label className="stack-field">
@@ -483,20 +483,20 @@ function NetworkSection({ net, onChange }: { net: NetworkSettings; onChange: (n:
             <div className="set-fields">
               <label className="stack-field">
                 <span className="field-label">{t("net.httpProxy")}</span>
-                <input className="input" value={p.http_proxy} placeholder={t("net.proxyPlaceholder")} spellCheck={false} onChange={(e) => setProfile(i, { http_proxy: e.target.value }, false)} onBlur={() => commit(draft)} />
+                <input className="input" value={p.http_proxy} placeholder={t("net.proxyPlaceholder")} spellCheck={false} autoCapitalize="off" autoCorrect="off" onChange={(e) => setProfile(i, { http_proxy: e.target.value }, false)} onBlur={() => commit(draft)} />
               </label>
               <label className="stack-field">
                 <span className="field-label">{t("net.socksProxy")}</span>
-                <input className="input" value={p.socks_proxy} placeholder={t("net.proxyPlaceholder")} spellCheck={false} onChange={(e) => setProfile(i, { socks_proxy: e.target.value }, false)} onBlur={() => commit(draft)} />
+                <input className="input" value={p.socks_proxy} placeholder={t("net.proxyPlaceholder")} spellCheck={false} autoCapitalize="off" autoCorrect="off" onChange={(e) => setProfile(i, { socks_proxy: e.target.value }, false)} onBlur={() => commit(draft)} />
               </label>
               <label className="stack-field">
                 <span className="field-label">{t("net.noProxy")}</span>
-                <input className="input" value={p.no_proxy} spellCheck={false} onChange={(e) => setProfile(i, { no_proxy: e.target.value }, false)} onBlur={() => commit(draft)} />
+                <input className="input" value={p.no_proxy} spellCheck={false} autoCapitalize="off" autoCorrect="off" onChange={(e) => setProfile(i, { no_proxy: e.target.value }, false)} onBlur={() => commit(draft)} />
                 <span className="field-hint">{t("net.noProxyHint")}</span>
               </label>
               <label className="stack-field">
                 <span className="field-label">{t("net.user")}</span>
-                <input className="input" value={p.proxy_user} spellCheck={false} onChange={(e) => setProfile(i, { proxy_user: e.target.value }, false)} onBlur={() => commit(draft)} />
+                <input className="input" value={p.proxy_user} spellCheck={false} autoCapitalize="off" autoCorrect="off" onChange={(e) => setProfile(i, { proxy_user: e.target.value }, false)} onBlur={() => commit(draft)} />
               </label>
               {p.proxy_user.trim() && (
                 <label className="stack-field">
@@ -537,7 +537,7 @@ function NetworkSection({ net, onChange }: { net: NetworkSettings; onChange: (n:
         <div className="set-card-title">{t("net.routes")}</div>
         {ROUTES.map(([group, label]) => (
           <Row key={group} label={t(label)}>
-            <select
+            <Select
               className="select"
               aria-label={t(label)}
               value={draft.routes[group] ?? "standard"}
@@ -553,7 +553,7 @@ function NetworkSection({ net, onChange }: { net: NetworkSettings; onChange: (n:
                   {p.name}
                 </option>
               ))}
-            </select>
+            </Select>
           </Row>
         ))}
       </div>
@@ -637,7 +637,7 @@ export function SettingsView({ settings, accounts, info, section, onSection, onC
               </button>
             )}
           </div>
-          {SECTIONS.map(([id, label, Icon]) => (
+          {SECTIONS.filter(([id]) => !(phone && id === "shortcuts")).map(([id, label, Icon]) => (
             <button
               key={id}
               type="button"
@@ -715,11 +715,11 @@ export function SettingsView({ settings, accounts, info, section, onSection, onC
                   />
                 </Row>
                 <Row label={t("lang.label")}>
-                  <select className="select" value={settings.language} onChange={(e) => onChange({ language: e.target.value as LanguageChoice })} aria-label={t("lang.label")}>
+                  <Select className="select" value={settings.language} onChange={(e) => onChange({ language: e.target.value as LanguageChoice })} aria-label={t("lang.label")}>
                     <option value="system">{t("theme.system")}</option>
                     <option value="de">{t("lang.de")}</option>
                     <option value="en">{t("lang.en")}</option>
-                  </select>
+                  </Select>
                 </Row>
                 <Row label={t("settings.threads")} description={t("settings.threadsHint")}>
                   <Switch label={t("settings.threads")} checked={settings.threads} onChange={(threads) => onChange({ threads })} />
@@ -738,7 +738,7 @@ export function SettingsView({ settings, accounts, info, section, onSection, onC
             {section === "reading" && (
               <div className="set-card">
                 <Row label={t("settings.markRead")} description={t("settings.markReadHint")}>
-                  <select
+                  <Select
                     className="select"
                     aria-label={t("settings.markRead")}
                     value={settings.mark_read_after_secs == null ? "never" : String(settings.mark_read_after_secs)}
@@ -747,14 +747,14 @@ export function SettingsView({ settings, accounts, info, section, onSection, onC
                     <option value="0">{t("settings.markReadNow")}</option>
                     <option value="2">{t("settings.markReadAfter", { n: 2 })}</option>
                     <option value="never">{t("settings.markReadNever")}</option>
-                  </select>
+                  </Select>
                 </Row>
                 <Row label={t("settings.prefetch")} description={t("settings.prefetchHint")}>
-                  <select className="select" aria-label={t("settings.prefetch")} value={settings.prefetch} onChange={(e) => onChange({ prefetch: e.target.value as Prefetch })}>
+                  <Select className="select" aria-label={t("settings.prefetch")} value={settings.prefetch} onChange={(e) => onChange({ prefetch: e.target.value as Prefetch })}>
                     <option value="none">{t("settings.prefetchNone")}</option>
                     <option value="recent">{t("settings.prefetchRecent")}</option>
                     <option value="month">{t("settings.prefetchMonth")}</option>
-                  </select>
+                  </Select>
                 </Row>
               </div>
             )}
@@ -762,7 +762,7 @@ export function SettingsView({ settings, accounts, info, section, onSection, onC
               <div className="set-card" aria-label={t("settings.gestures")} role="group">
                 {(["swipe_left", "swipe_right"] as const).map((key) => (
                   <Row key={key} label={t(key === "swipe_left" ? "settings.swipeLeft" : "settings.swipeRight")} description={t("settings.swipeHint")}>
-                    <select
+                    <Select
                       className="select"
                       aria-label={t(key === "swipe_left" ? "settings.swipeLeft" : "settings.swipeRight")}
                       value={settings[key]}
@@ -773,7 +773,7 @@ export function SettingsView({ settings, accounts, info, section, onSection, onC
                           {t(label)}
                         </option>
                       ))}
-                    </select>
+                    </Select>
                   </Row>
                 ))}
               </div>
@@ -847,14 +847,14 @@ export function SettingsView({ settings, accounts, info, section, onSection, onC
                   <Switch label={t("settings.richText")} checked={settings.compose_rich_text} onChange={(compose_rich_text) => onChange({ compose_rich_text })} />
                 </Row>
                 <Row label={t("settings.undoSend")} description={t("settings.undoSendHint")}>
-                  <select className="select" aria-label={t("settings.undoSend")} value={String(settings.undo_send_secs)} onChange={(e) => onChange({ undo_send_secs: Number(e.target.value) })}>
+                  <Select className="select" aria-label={t("settings.undoSend")} value={String(settings.undo_send_secs)} onChange={(e) => onChange({ undo_send_secs: Number(e.target.value) })}>
                     <option value="0">{t("settings.undoSendOff")}</option>
                     {[5, 10, 20, 30].map((n) => (
                       <option key={n} value={n}>
                         {t("settings.seconds", { n })}
                       </option>
                     ))}
-                  </select>
+                  </Select>
                 </Row>
               </div>
             )}

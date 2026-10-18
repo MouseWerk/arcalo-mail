@@ -121,7 +121,7 @@ describe("menus", () => {
     document.body.appendChild(opener);
     opener.focus();
     const onClose = vi.fn();
-    const el = await render(
+    await render(
       <Menu
         label="Aktionen"
         at={{ x: 0, y: 0 }}
@@ -133,7 +133,8 @@ describe("menus", () => {
         ]}
       />,
     );
-    const items = Array.from(el.querySelectorAll<HTMLElement>("[role=menuitem]"));
+    // The menu is drawn on the page itself (a portal), above dialogs.
+    const items = Array.from(document.querySelectorAll<HTMLElement>(".menu [role=menuitem]"));
     expect(document.activeElement).toBe(items[0]);
     await key(items[0], "End");
     expect(document.activeElement).toBe(items[2]);

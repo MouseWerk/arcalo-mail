@@ -4,7 +4,7 @@ import { useT, type TKey } from "../lib/i18n";
 import { api, openExternal } from "../lib/api";
 import { explain, hintKey } from "../lib/problems";
 import type { Account, AccountDraft, CheckResult, Discovered, ImapTransport, MicrosoftSignIn, Pop3Transport, Problem, Security, Server } from "../lib/types";
-import { Segmented, Spinner, Switch } from "./ui";
+import { Segmented, Select, Spinner, Switch } from "./ui";
 
 type Step =
   | { kind: "form" }
@@ -43,7 +43,7 @@ function ServerFields({ kind, server, onChange }: { kind: "imap" | "smtp" | "pop
       <legend>{kind === "imap" ? t("setup.incoming") : kind === "pop3" ? t("setup.incomingPop3") : t("setup.outgoing")}</legend>
       <label className="stack-field server-host">
         <span className="field-label">{t("setup.host")}</span>
-        <input id={`${id}-host`} className="input" value={server.host} spellCheck={false} onChange={(e) => onChange({ ...server, host: e.target.value.trim(), trusted_cert: null })} />
+        <input id={`${id}-host`} className="input" value={server.host} spellCheck={false} autoCapitalize="off" autoCorrect="off" onChange={(e) => onChange({ ...server, host: e.target.value.trim(), trusted_cert: null })} />
       </label>
       <label className="stack-field server-port">
         <span className="field-label">{t("setup.port")}</span>
@@ -57,7 +57,7 @@ function ServerFields({ kind, server, onChange }: { kind: "imap" | "smtp" | "pop
       </label>
       <label className="stack-field server-security">
         <span className="field-label">{t("setup.security")}</span>
-        <select
+        <Select
           id={`${id}-security`}
           className="select"
           value={server.security}
@@ -69,7 +69,7 @@ function ServerFields({ kind, server, onChange }: { kind: "imap" | "smtp" | "pop
           <option value="tls">{t("setup.tls")}</option>
           <option value="start_tls">{t("setup.starttls")}</option>
           <option value="plain">{t("setup.plain")}</option>
-        </select>
+        </Select>
       </label>
     </fieldset>
   );
@@ -175,7 +175,8 @@ export function Setup({ welcome, onDone, onCancel }: { welcome: boolean; onDone:
   const [protocol, setProtocol] = useState<"imap" | "pop3" | "jmap">("imap");
   const [pop3, setPop3] = useState<Pop3Transport | null>(null);
   const [jmapManual, setJmapManual] = useState<JmapManual>({ session_url: "", username: "", token: false });
-  const [microsoftBuilt, setMicrosoftBuilt] = useState(true);
+  // Off until the app says the build has a Microsoft client id: no sign-in offered that cannot work.
+  const [microsoftBuilt, setMicrosoftBuilt] = useState(false);
   // Each Microsoft sign-in counts up; leaving it (Back, Cancel, closing) counts up too, so a
   // browser sign-in that finishes later is dropped.
   const signInRun = useRef(0);
@@ -504,7 +505,7 @@ export function Setup({ welcome, onDone, onCancel }: { welcome: boolean; onDone:
             >
               <label className="stack-field">
                 <span className="field-label">{t("setup.name")}</span>
-                <input className="input" value={name} placeholder={t("setup.namePlaceholder")} onChange={(e) => setName(e.target.value)} readOnly={busy} autoComplete="name" />
+                <input className="input" value={name} placeholder={t("setup.namePlaceholder")} onChange={(e) => setName(e.target.value)} readOnly={busy} autoComplete="name" autoCapitalize="words" enterKeyHint="next" />
               </label>
               <label className="stack-field">
                 <span className="field-label">{t("setup.email")}</span>
@@ -517,6 +518,9 @@ export function Setup({ welcome, onDone, onCancel }: { welcome: boolean; onDone:
                   onChange={(e) => setEmail(e.target.value)}
                   readOnly={busy}
                   autoComplete="email"
+                  autoCapitalize="off"
+                  autoCorrect="off"
+                  enterKeyHint="next"
                   spellCheck={false}
                 />
               </label>
@@ -525,7 +529,7 @@ export function Setup({ welcome, onDone, onCancel }: { welcome: boolean; onDone:
                   {google && <GmailGuide />}
                   <label className="stack-field">
                     <span className="field-label">{google ? t("gmail.passwordLabel") : t("setup.password")}</span>
-                    <input className="input" type="password" value={password} onChange={(e) => setPassword(e.target.value)} readOnly={busy} autoComplete="current-password" />
+                    <input className="input" type="password" value={password} onChange={(e) => setPassword(e.target.value)} readOnly={busy} autoComplete="current-password" enterKeyHint="go" />
                   </label>
                   <p className="setup-note muted">
                     <KeyRound size={13} strokeWidth={1.75} aria-hidden />
@@ -571,7 +575,7 @@ export function Setup({ welcome, onDone, onCancel }: { welcome: boolean; onDone:
                   {microsoftDomain ? t("ms.button") : step.kind === "failed" ? t("setup.tryAgain") : t("setup.continue")}
                 </button>
               </div>
-              {!microsoftDomain && (
+              {!microsoftDomain && microsoftBuilt && (
                 <div className="setup-other">
                   <span className="setup-or">{t("setup.or")}</span>
                   <button type="button" className="btn setup-ms" disabled={busy} onClick={() => void microsoft()}>
@@ -611,11 +615,11 @@ export function Setup({ welcome, onDone, onCancel }: { welcome: boolean; onDone:
                     <p className="muted setup-note">{t("setup.pop3Note")}</p>
                     <label className="stack-field">
                       <span className="field-label">{t("setup.username")}</span>
-                      <input className="input" value={pop3.username} spellCheck={false} onChange={(e) => setPop3({ ...pop3, username: e.target.value })} />
+                      <input className="input" value={pop3.username} spellCheck={false} autoCapitalize="off" autoCorrect="off" onChange={(e) => setPop3({ ...pop3, username: e.target.value })} />
                     </label>
                     <label className="stack-field">
                       <span className="field-label">{t("setup.password")}</span>
-                      <input className="input" type="password" value={password} onChange={(e) => setPassword(e.target.value)} readOnly={busy} />
+                      <input className="input" type="password" value={password} onChange={(e) => setPassword(e.target.value)} readOnly={busy} autoComplete="current-password" />
                     </label>
                     <ServerFields kind="pop3" server={pop3.pop3} onChange={(s) => setPop3({ ...pop3, pop3: s })} />
                     <ServerFields kind="smtp" server={pop3.smtp} onChange={(smtp) => setPop3({ ...pop3, smtp })} />
@@ -626,14 +630,14 @@ export function Setup({ welcome, onDone, onCancel }: { welcome: boolean; onDone:
                     {pop3.leave_on_server && (
                       <label className="stack-field">
                         <span className="field-label">{t("setup.deleteAfter")}</span>
-                        <select className="select" value={pop3.delete_after_days ?? 0} onChange={(e) => setPop3({ ...pop3, delete_after_days: Number(e.target.value) || null })}>
+                        <Select className="select" value={pop3.delete_after_days ?? 0} onChange={(e) => setPop3({ ...pop3, delete_after_days: Number(e.target.value) || null })}>
                           <option value={0}>{t("setup.keepForever")}</option>
                           {[7, 14, 30, 90].map((n) => (
                             <option key={n} value={n}>
                               {t("setup.afterDays", { n })}
                             </option>
                           ))}
-                        </select>
+                        </Select>
                       </label>
                     )}
                   </>
@@ -642,11 +646,11 @@ export function Setup({ welcome, onDone, onCancel }: { welcome: boolean; onDone:
                 <>
                   <label className="stack-field">
                     <span className="field-label">{t("setup.username")}</span>
-                    <input className="input" value={transport.username} spellCheck={false} onChange={(e) => setTransport({ ...transport, username: e.target.value })} />
+                    <input className="input" value={transport.username} spellCheck={false} autoCapitalize="off" autoCorrect="off" onChange={(e) => setTransport({ ...transport, username: e.target.value })} />
                   </label>
                   <label className="stack-field">
                     <span className="field-label">{t("setup.password")}</span>
-                    <input className="input" type="password" value={password} onChange={(e) => setPassword(e.target.value)} readOnly={busy} />
+                    <input className="input" type="password" value={password} onChange={(e) => setPassword(e.target.value)} readOnly={busy} autoComplete="current-password" />
                   </label>
                   <ServerFields kind="imap" server={transport.imap} onChange={(imap) => setTransport({ ...transport, imap })} />
                   <ServerFields kind="smtp" server={transport.smtp} onChange={(smtp) => setTransport({ ...transport, smtp })} />
@@ -659,7 +663,7 @@ export function Setup({ welcome, onDone, onCancel }: { welcome: boolean; onDone:
                       id="setup-jmap-url"
                       className="input"
                       value={jmapManual.session_url}
-                      spellCheck={false}
+                      spellCheck={false} autoCapitalize="off" autoCorrect="off"
                       placeholder="https://jmap.example.org/.well-known/jmap"
                       onChange={(e) => setJmapManual({ ...jmapManual, session_url: e.target.value })}
                     />
@@ -671,12 +675,12 @@ export function Setup({ welcome, onDone, onCancel }: { welcome: boolean; onDone:
                   {!jmapManual.token && (
                     <label className="stack-field">
                       <span className="field-label">{t("setup.username")}</span>
-                      <input className="input" value={jmapManual.username} spellCheck={false} onChange={(e) => setJmapManual({ ...jmapManual, username: e.target.value })} />
+                      <input className="input" value={jmapManual.username} spellCheck={false} autoCapitalize="off" autoCorrect="off" onChange={(e) => setJmapManual({ ...jmapManual, username: e.target.value })} />
                     </label>
                   )}
                   <label className="stack-field">
                     <span className="field-label">{jmapManual.token ? t("setup.apiToken") : t("setup.password")}</span>
-                    <input className="input" type="password" value={password} onChange={(e) => setPassword(e.target.value)} readOnly={busy} />
+                    <input className="input" type="password" value={password} onChange={(e) => setPassword(e.target.value)} readOnly={busy} autoComplete="current-password" />
                   </label>
                 </>
               )}

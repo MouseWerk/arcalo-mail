@@ -21,8 +21,24 @@ export function MailFrame({ html, allowRemote, theme, plain }: Props) {
     let observer: ResizeObserver | null = null;
     const fit = () => {
       const doc = frame.contentDocument;
+      const root = doc?.documentElement;
+      const body = doc?.body;
+      if (!root) return;
+      // A mail laid out wider than the frame (a newsletter's 600 px table on a phone) is shown
+      // smaller to fit, as phones' mail apps do, instead of being cut off at the side.
+      let scale = 1;
+      if (body) {
+        body.style.transform = "";
+        const wide = root.scrollWidth;
+        const room = root.clientWidth;
+        if (room > 0 && wide > room + 1) scale = room / wide;
+        body.style.transformOrigin = "0 0";
+        body.style.transform = scale < 1 ? `scale(${scale})` : "";
+        root.style.overflow = scale < 1 ? "hidden" : "";
+      }
+      const height = scale < 1 && body ? Math.max(body.scrollHeight, body.offsetHeight) * scale : root.scrollHeight;
       // The frame's own border counts too (border-box), else a scroll bar shows.
-      if (doc?.documentElement) frame.style.height = `${Math.ceil(doc.documentElement.scrollHeight) + frame.offsetHeight - frame.clientHeight}px`;
+      frame.style.height = `${Math.ceil(height) + frame.offsetHeight - frame.clientHeight}px`;
     };
     const onLoad = () => {
       fit();

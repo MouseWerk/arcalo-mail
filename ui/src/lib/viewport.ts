@@ -3,10 +3,13 @@
 // - The keyboard: iOS lays it over the page instead of making the page smaller. The visual
 //   viewport says how much is left; the app's height follows it (`--app-h`, app.css), so the
 //   compose sheet's fields and its send button stay above the keyboard, and a focused field is
-//   scrolled into what is left. Android makes the window smaller itself (adjustResize).
+//   scrolled into what is left. Android makes the web view smaller itself (SystemBars.kt).
+// - The system bars: Android draws the app edge to edge and its WebView reports no safe-area
+//   insets, so the shell hands them over as `--sat`, `--sar`, `--sab`, `--sal` and `--ime`
+//   (CSS pixels, on <html>); `--safe-*` (tokens.css) takes them or iOS's env() values.
 // - The text size: iOS's Dynamic Type reaches the page only through `font: -apple-system-body`;
 //   its size sets `--type-scale` (touch.ts), which the touch type scale multiplies (app.css).
-//   Android's font size reaches the WebView as its text zoom (MainActivity.kt).
+//   Android's font size comes from the shell as `--type-scale` too (SystemBars.kt).
 // - Visibility: the app tells the shell when it is hidden or shown again; a phone keeps its
 //   connections only while the app is in front.
 
@@ -58,4 +61,50 @@ export function onVisibility(f: (visible: boolean) => void): () => void {
   document.addEventListener("visibilitychange", update);
   update();
   return () => document.removeEventListener("visibilitychange", update);
+}
+
+/** The Android shell's side (SystemBars.kt): the bars' insets and the system's font size, and
+ *  the page's theme for the bars' icons and the window behind the page. */
+type SystemBarsBridge = { insets?: () => string; setTheme?: (dark: boolean, background: string) => void; setNightMode?: (mode: string) => void };
+const bridge = (): SystemBarsBridge | undefined => (typeof window === "undefined" ? undefined : (window as unknown as { ArcaloSystemBars?: SystemBarsBridge }).ArcaloSystemBars);
+
+/** Sent after the shell set new values (SystemBars.kt). */
+export const INSETS_EVENT = "arcalo-insets";
+
+/** The only properties the shell may set. */
+export const SYSTEM_BAR_PROPS = ["--sat", "--sar", "--sab", "--sal", "--ime", "--type-scale"] as const;
+
+/** Sets the values the shell reports (a JSON object of `SYSTEM_BAR_PROPS`); others are ignored. */
+export function applyInsets(json: string, root: HTMLElement = document.documentElement): boolean {
+  let v: Record<string, unknown>;
+  try {
+    v = JSON.parse(json) as Record<string, unknown>;
+  } catch {
+    return false;
+  }
+  if (!v || typeof v !== "object") return false;
+  for (const k of SYSTEM_BAR_PROPS) {
+    const x = v[k];
+    if (typeof x !== "string") continue;
+    if (k === "--type-scale" ? /^\d+(\.\d+)?$/.test(x) : /^\d+(\.\d+)?px$/.test(x)) root.style.setProperty(k, x);
+  }
+  return true;
+}
+
+/** At start: what the shell knows already (later changes it sets itself). */
+export function readSystemBars(root: HTMLElement = document.documentElement): void {
+  const b = bridge();
+  if (b?.insets) applyInsets(b.insets(), root);
+}
+
+/** Tells the shell the theme in use: dark or light icons on the bars, and its background. */
+export function tellSystemBars(dark: boolean, background: string | undefined): void {
+  const b = bridge();
+  if (b?.setTheme && background) b.setTheme(dark, background);
+}
+
+/** Tells the shell the theme the user chose, for the system's splash at the next start:
+ *  „system“ follows the system, the others are light or dark (contrast is dark). */
+export function tellNightMode(choice: "system" | "light" | "dark"): void {
+  bridge()?.setNightMode?.(choice);
 }

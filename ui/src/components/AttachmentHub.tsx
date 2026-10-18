@@ -7,7 +7,7 @@ import { api } from "../lib/api";
 import { currentLang, useT, type TKey } from "../lib/i18n";
 import { displayName, fileSize, listDate, now } from "../lib/format";
 import type { FileKind, HubFilter, HubItem, HubSender } from "../lib/types";
-import { Spinner } from "./ui";
+import { Select, Spinner } from "./ui";
 
 export const KINDS: [FileKind, TKey][] = [
   ["images", "hub.images"],
@@ -94,7 +94,7 @@ export function AttachmentHub({
         </div>
         <div className="search hub-search">
           <Search size={16} strokeWidth={1.75} aria-hidden className="search-icon" />
-          <input className="input search-input" type="search" value={query} placeholder={t("hub.search")} aria-label={t("hub.search")} onChange={(e) => setQuery(e.target.value)} />
+          <input className="input search-input" type="search" enterKeyHint="search" value={query} placeholder={t("hub.search")} aria-label={t("hub.search")} onChange={(e) => setQuery(e.target.value)} />
           {query && (
             <button type="button" className="icon-btn icon-btn-xs search-clear" onClick={() => setQuery("")} aria-label={t("common.close")}>
               <X size={12} strokeWidth={2} aria-hidden />
@@ -102,28 +102,28 @@ export function AttachmentHub({
           )}
         </div>
         <div className="hub-filters" role="group" aria-label={t("hub.filters")}>
-          <select className="select select-sm" value={kind ?? ""} onChange={(e) => setKind((e.target.value || null) as FileKind | null)} aria-label={t("hub.kind")}>
+          <Select className="select select-sm" value={kind ?? ""} onChange={(e) => setKind((e.target.value || null) as FileKind | null)} aria-label={t("hub.kind")}>
             <option value="">{t("hub.allKinds")}</option>
             {KINDS.map(([k, label]) => (
               <option key={k} value={k}>
                 {t(label)}
               </option>
             ))}
-          </select>
-          <select className="select select-sm" value={sender ?? ""} onChange={(e) => setSender(e.target.value || null)} aria-label={t("hub.sender")}>
+          </Select>
+          <Select className="select select-sm" value={sender ?? ""} onChange={(e) => setSender(e.target.value || null)} aria-label={t("hub.sender")}>
             <option value="">{t("hub.allSenders")}</option>
             {senders.map((s) => (
               <option key={s.email} value={s.email}>
                 {s.name ? `${s.name} (${s.files})` : `${s.email} (${s.files})`}
               </option>
             ))}
-          </select>
-          <select className="select select-sm" value={range} onChange={(e) => setRange(e.target.value as Range)} aria-label={t("hub.time")}>
+          </Select>
+          <Select className="select select-sm" value={range} onChange={(e) => setRange(e.target.value as Range)} aria-label={t("hub.time")}>
             <option value="all">{t("hub.anyTime")}</option>
             <option value="week">{t("hub.week")}</option>
             <option value="month">{t("hub.month")}</option>
             <option value="year">{t("hub.year")}</option>
-          </select>
+          </Select>
         </div>
       </header>
       {items === null ? (

@@ -88,6 +88,8 @@
   /* The sender's circle in the reading pane, and the small one of collapsed messages. */
   --avatar: 32px;
   --avatar-sm: 22px;
+  /* Phones: the sender at the start of a row of the list. */
+  --avatar-row: 40px;
   /* The picture on the contact card. */
   --avatar-lg: 56px;
   /* The assistant's answer and the ask view keep a readable line length. */
@@ -184,6 +186,8 @@
   --update-notes-h: 520px;
   /* Phones and touch screens: the smallest touch target. */
   --touch-min: 44px;
+  /* Phones: rows of lists and sheets (menus, settings) a thumb hits without aiming. */
+  --touch-row: 48px;
   /* Touch screens: the bar of message actions at the bottom, the compose button over the list,
      the folders drawer of tablets, the compose sheet of tablets, and the smallest text of fields
      (iOS zooms into smaller ones). */
@@ -193,12 +197,18 @@
   --compose-w-touch: 720px;
   --compose-h-touch: 760px;
   --fs-input-touch: 16px;
-  /* The edges a notch, the status bar or the home indicator cover (iOS; Android pads the app
-     itself, MainActivity.kt). */
-  --safe-top: env(safe-area-inset-top, 0px);
-  --safe-right: env(safe-area-inset-right, 0px);
-  --safe-bottom: env(safe-area-inset-bottom, 0px);
-  --safe-left: env(safe-area-inset-left, 0px);
+  /* The edges the status bar, a notch or cutout, the navigation bar or the home indicator
+     cover: iOS reports them as env(), the Android shell as --sat/--sar/--sab/--sal
+     (SystemBars.kt, lib/viewport.ts); --ime is the height of Android's keyboard. */
+  --sat: 0px;
+  --sar: 0px;
+  --sab: 0px;
+  --sal: 0px;
+  --ime: 0px;
+  --safe-top: max(var(--sat), env(safe-area-inset-top, 0px));
+  --safe-right: max(var(--sar), env(safe-area-inset-right, 0px));
+  --safe-bottom: max(var(--sab), env(safe-area-inset-bottom, 0px));
+  --safe-left: max(var(--sal), env(safe-area-inset-left, 0px));
   /* The height left above the keyboard (lib/viewport.ts sets it on touch screens). */
   --app-h: 100dvh;
   /* iOS Dynamic Type as a factor (lib/viewport.ts); 1 elsewhere. */
@@ -221,10 +231,11 @@
   --z-overlay: 50;
   --z-anchored: 60;
   --z-hovercard: 65;
-  --z-menu: 70;
   --z-panel: 75;
   --z-viewer: 76;
   --z-toast: 80;
+  /* Menus are drawn on the page itself (components/ui.tsx), over the panels that open them. */
+  --z-menu: 85;
   --z-select: 90;
   --z-fullscreen: 900;
   --z-top: 1000;

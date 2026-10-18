@@ -49,7 +49,8 @@ it("snoozes a message and brings it back unread at the top", async () => {
   await waitRow(app, "Lies mich später", false);
   await waitOnServer(app, server, "Snoozed", "Lies mich später");
   await waitOnServer(app, server, "INBOX", "Lies mich später", { present: false });
-  assert.equal(await viewCount(app, "Zurückgestellt"), 1);
+  // The counts follow the sync a moment later (its notices are gathered, App.tsx).
+  await app.waitUntil(async () => (await viewCount(app, "Zurückgestellt")) === 1, 5000, "the snoozed view with one message");
   await openView(app, "Zurückgestellt");
   await waitRow(app, "Lies mich später");
   assert.match(await app.text(".row-due"), /Heute, \d\d:\d\d/);

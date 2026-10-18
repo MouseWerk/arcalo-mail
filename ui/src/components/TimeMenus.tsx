@@ -1,12 +1,13 @@
 // The menus and the dialog of the time tools: snooze presets, „Später senden“, „Erinnern, wenn
 // keine Antwort“, and the dialog that picks a date and time.
 
-import { AlarmClock, BellOff, CalendarClock, Clock, Info, Sun, Sunrise } from "lucide-react";
+import { AlarmClock, BellOff, CalendarClock, ChevronLeft, ChevronRight, Clock, Info, Sun, Sunrise } from "lucide-react";
 import { useState } from "react";
 import { currentLang, useT } from "../lib/i18n";
 import { now } from "../lib/format";
 import { FOLLOWUP_DAYS, fromLocalInput, sendPresets, snoozePresets, toLocalInput, whenLabel, type SendPreset, type SnoozePreset } from "../lib/when";
-import { Dialog, type MenuItem } from "./ui";
+import { addMonths, dateLocale, isoDay, monthGrid, weekStartsOn } from "../lib/calendar";
+import { Dialog, Select, type MenuItem } from "./ui";
 
 const SNOOZE_ICON: Record<SnoozePreset, typeof Clock> = { laterToday: Clock, tomorrow: Sunrise, weekend: Sun, nextWeek: CalendarClock };
 const SEND_ICON: Record<SendPreset, typeof Clock> = { tomorrowMorning: Sunrise, tomorrowAfternoon: Sun, nextWeek: CalendarClock };
@@ -111,14 +112,18 @@ export function WhenDialog({
         </>
       }
     >
-      <label className="stack-field">
+      <DateTimePicker value={value} onChange={setValue} />
+      <label className="stack-field when-typed">
         <span className="field-label">{t("when.label")}</span>
         <input
           className="input when-input"
-          type="datetime-local"
+          type="text"
+          inputMode="numeric"
+          enterKeyHint="done"
+          autoComplete="off"
+          spellCheck={false} autoCapitalize="off" autoCorrect="off"
+          placeholder="2026-03-12T08:00"
           value={value}
-          min={toLocalInput(now().getTime() / 1000)}
-          autoFocus
           onChange={(e) => setValue(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && submit()}
         />
@@ -141,5 +146,86 @@ export function WhenDialog({
         </p>
       )}
     </Dialog>
+  );
+}
+
+const pad = (n: number) => String(n).padStart(2, "0");
+
+/**
+ * A day and a time, drawn by the app (the system's date and time pickers do not match it): a
+ * month to tap a day in, past days dimmed, and the hour and minute as the app's own selects.
+ * `value` is in the form of a `datetime-local` field („2026-03-12T08:00“).
+ */
+export function DateTimePicker({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const t = useT();
+  const at = fromLocalInput(value);
+  const chosen = at === null ? now() : new Date(at * 1000);
+  const [month, setMonth] = useState(() => new Date(chosen.getFullYear(), chosen.getMonth(), 1));
+  const today = now();
+  const startsOn = weekStartsOn();
+  const days = monthGrid(month.getFullYear(), month.getMonth(), startsOn);
+  const l = dateLocale();
+  const set = (d: Date, h: number, m: number) => onChange(`${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(h)}:${pad(m)}`);
+  const h = chosen.getHours();
+  const m = chosen.getMinutes();
+  const minutes = Array.from({ length: 12 }, (_, i) => i * 5);
+  if (!minutes.includes(m)) minutes.push(m);
+  minutes.sort((a, b) => a - b);
+  const before = (d: Date) => isoDay(d) < isoDay(today);
+  return (
+    <div className="dt-picker">
+      <div className="dt-month">
+        <button type="button" className="icon-btn" aria-label={t("calv.back")} onClick={() => setMonth((x) => addMonths(x, -1))}>
+          <ChevronLeft size={16} strokeWidth={1.75} aria-hidden />
+        </button>
+        <span className="dt-month-name">{month.toLocaleDateString(l, { month: "long", year: "numeric" })}</span>
+        <button type="button" className="icon-btn" aria-label={t("calv.forward")} onClick={() => setMonth((x) => addMonths(x, 1))}>
+          <ChevronRight size={16} strokeWidth={1.75} aria-hidden />
+        </button>
+      </div>
+      <div className="dt-grid" role="grid" aria-label={month.toLocaleDateString(l, { month: "long", year: "numeric" })}>
+        {days.slice(0, 7).map((d) => (
+          <span key={`h${d.getDay()}`} className="dt-weekday" aria-hidden>
+            {d.toLocaleDateString(l, { weekday: "narrow" })}
+          </span>
+        ))}
+        {days.map((d) => {
+          const on = isoDay(d) === isoDay(chosen);
+          return (
+            <button
+              key={isoDay(d)}
+              type="button"
+              className="dt-day"
+              data-other={d.getMonth() !== month.getMonth() || undefined}
+              data-today={isoDay(d) === isoDay(today) || undefined}
+              aria-pressed={on}
+              aria-label={d.toLocaleDateString(l, { weekday: "long", day: "numeric", month: "long" })}
+              disabled={before(d)}
+              onClick={() => set(d, h, m)}
+            >
+              {d.getDate()}
+            </button>
+          );
+        })}
+      </div>
+      <div className="dt-time">
+        <Clock size={14} strokeWidth={1.75} aria-hidden />
+        <Select className="select dt-hour" aria-label={t("when.hour")} value={h} onChange={(e) => set(chosen, Number(e.target.value), m)}>
+          {Array.from({ length: 24 }, (_, i) => (
+            <option key={i} value={i}>
+              {pad(i)}
+            </option>
+          ))}
+        </Select>
+        <span aria-hidden>:</span>
+        <Select className="select dt-minute" aria-label={t("when.minute")} value={m} onChange={(e) => set(chosen, h, Number(e.target.value))}>
+          {minutes.map((x) => (
+            <option key={x} value={x}>
+              {pad(x)}
+            </option>
+          ))}
+        </Select>
+      </div>
+    </div>
   );
 }

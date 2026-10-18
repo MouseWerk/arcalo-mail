@@ -25,7 +25,7 @@ import {
   type LockStatus,
 } from "../lib/security";
 import type { Settings } from "../lib/types";
-import { ConfirmDialog, Dialog, Segmented, Spinner, Switch } from "./ui";
+import { ConfirmDialog, Dialog, Segmented, Select, Spinner, Switch } from "./ui";
 
 const BIOMETRIC: Record<Biometric, TKey> = {
   windows_hello: "lock.windowsHello",
@@ -173,6 +173,9 @@ function LockScreen({ status, refresh }: { status: LockStatus; refresh: () => vo
           type="password"
           className="input lock-pin"
           spellCheck={false}
+          autoCapitalize="off"
+          autoCorrect="off"
+          enterKeyHint="go"
           autoComplete="off"
           autoFocus
           value={pin}
@@ -208,6 +211,8 @@ function LockScreen({ status, refresh }: { status: LockStatus; refresh: () => vo
               <div className="lock-recovery">
                 <input
                   className="input lock-code"
+                  autoCapitalize="characters"
+                  autoCorrect="off"
                   value={code}
                   placeholder={t("keygate.codePlaceholder")}
                   aria-label={t("keygate.code")}
@@ -604,13 +609,13 @@ export function SecuritySection({ settings, onChange }: { settings: Settings; on
         </Row>
         {config.mode === "idle" && (
           <Row label={lock.phone ? t("sec.idleAfterPhone") : t("sec.idleAfter")}>
-            <select className="select" aria-label={t("sec.idleAfter")} value={config.idle_minutes} onChange={(e) => void configure({ ...config, idle_minutes: Number(e.target.value) }).catch(() => {})}>
+            <Select className="select" aria-label={t("sec.idleAfter")} value={config.idle_minutes} onChange={(e) => void configure({ ...config, idle_minutes: Number(e.target.value) }).catch(() => {})}>
               {IDLE_MINUTES.map((n) => (
                 <option key={n} value={n}>
                   {t("sec.minutes", { n })}
                 </option>
               ))}
-            </select>
+            </Select>
           </Row>
         )}
         {config.mode !== "off" && (

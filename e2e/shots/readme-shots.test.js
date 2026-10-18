@@ -318,16 +318,17 @@ scene("rules", async () => {
   await clickText(".settings-nav-item", "Rules");
   await clickText(".set-actions .btn span", "Add a rule");
   await app.waitFor(".rule-editor");
-  const set = (el, v) =>
-    app.browser.execute(
+  const set = async (el, v) => {
+    if ((await el.getAttribute("role")) === "combobox") return mail.choose(app, el, v);
+    await app.browser.execute(
       (e, value) => {
-        const proto = e.tagName === "SELECT" ? HTMLSelectElement.prototype : HTMLInputElement.prototype;
-        Object.getOwnPropertyDescriptor(proto, "value").set.call(e, value);
-        e.dispatchEvent(new Event(e.tagName === "SELECT" ? "change" : "input", { bubbles: true }));
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(e, value);
+        e.dispatchEvent(new Event("input", { bubbles: true }));
       },
       el,
       v,
     );
+  };
   const accounts = await app.invoke("list_accounts");
   await set(await app.$(".rule-editor .rule-grid .input"), "Invoices to Archive");
   await set(await app.$(".rule-editor .rule-grid .select"), String(accounts.find((a) => a.email === WORK).id));
@@ -336,13 +337,13 @@ scene("rules", async () => {
   await clickText(".rule-editor .rule-block .btn span", "Add a condition");
   [cond, act] = await app.$$(".rule-editor .rule-block");
   const second = (await cond.$$(".rule-line"))[1];
-  await set(await second.$('select[aria-label="Field"]'), "subject");
+  await set(await second.$('.select-btn[aria-label="Field"]'), "subject");
   await set(await second.$(".input"), "Invoice");
-  await app.waitUntil(async () => (await act.$$('select[aria-label="Folder"] option')).length > 2, 10000, "the folders");
-  await set(await act.$('select[aria-label="Folder"]'), "Archive");
+  await app.waitUntil(async () => Number(await (await act.$('.select-btn[aria-label="Folder"]')).getAttribute("data-count")) > 2, 10000, "the folders");
+  await set(await act.$('.select-btn[aria-label="Folder"]'), "Archive");
   await clickText(".rule-editor .rule-block .btn span", "Add an action");
   [cond, act] = await app.$$(".rule-editor .rule-block");
-  await set((await act.$$('select[aria-label="Action"]'))[1], "label");
+  await set((await act.$$('.select-btn[aria-label="Action"]'))[1], "label");
   await set(await (await act.$$(".rule-line"))[1].$(".input"), "$Invoice");
   await clickText(".rule-tools .btn span", "Which mails match?");
   await app.waitFor(".rule-preview");
