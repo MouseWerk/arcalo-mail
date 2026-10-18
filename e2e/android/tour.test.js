@@ -137,10 +137,13 @@ for (const [W, H] of [
         await page.waitForFunction(() => document.querySelectorAll(".row:not(.row-placeholder)").length >= 5, undefined, { timeout: 90000 });
         await shot("inbox");
         await menus("inbox");
-        for (const tab of await page.evaluate(() => [...document.querySelectorAll(".inbox-tab")].map((t) => t.dataset.tab))) {
-          await page.click(`.inbox-tab[data-tab="${tab}"]`);
-          await shot(`inbox-${tab}`);
-        }
+        await section("tabs", async () => {
+          const tabs = await page.evaluate(() => [...document.querySelectorAll(".inbox-tab")].filter((t) => t.getBoundingClientRect().width > 0).map((t) => t.dataset.tab));
+          for (const tab of tabs) {
+            await page.click(`.inbox-tab[data-tab="${tab}"]`);
+            await shot(`inbox-${tab}`);
+          }
+        });
         await page.click('.inbox-tab[data-tab="people"]').catch(() => {});
 
         // Search.

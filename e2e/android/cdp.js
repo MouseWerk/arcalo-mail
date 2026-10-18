@@ -115,7 +115,16 @@ export class Page {
   /** A mouse click (pressed and released) in the middle of the first element `sel` matches
    *  whose text, when given, matches `text`. */
   async click(sel, { text = null, timeout = 30000 } = {}) {
-    const at = await this.waitForFunction(
+    const at = await this.clickTarget(sel, text, timeout).catch((e) => {
+      throw new Error(`no ${sel}${text ? ` with ${text}` : ""} to click: ${e.message.split("\n")[0].slice(0, 120)}`);
+    });
+    for (const type of ["mouseMoved", "mousePressed", "mouseReleased"]) {
+      await this.send("Input.dispatchMouseEvent", { type, x: at.x, y: at.y, button: "left", clickCount: type === "mouseMoved" ? 0 : 1 });
+    }
+  }
+
+  clickTarget(sel, text, timeout) {
+    return this.waitForFunction(
       ([s, src, flags]) => {
         const re = src == null ? null : new RegExp(src, flags);
         for (const e of document.querySelectorAll(s)) {
@@ -129,9 +138,6 @@ export class Page {
       [sel, text?.source ?? null, text?.flags ?? ""],
       { timeout },
     );
-    for (const type of ["mouseMoved", "mousePressed", "mouseReleased"]) {
-      await this.send("Input.dispatchMouseEvent", { type, x: at.x, y: at.y, button: "left", clickCount: type === "mouseMoved" ? 0 : 1 });
-    }
   }
 
   /** A key pressed and released (`Escape`, `Enter`). */
