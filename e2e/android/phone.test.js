@@ -67,7 +67,8 @@ for (const [W, H] of [
 
     /** The layout checks of the screen shown now, with the bars where they are now. */
     const screen = async (name, opts) => {
-      await sleep(700);
+      device.dismissSystemDialogs();
+          await sleep(700);
       shot(name);
       const where = device.insetsCss(dpr);
       const m = await page.evaluate(geo.measureLayout, where.insets);

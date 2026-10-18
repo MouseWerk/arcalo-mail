@@ -74,6 +74,7 @@ for (const [W, H] of [
 
         /** The whole screen as it is now, and what the page shows of the platform's UI. */
         const shot = async (name) => {
+          device.dismissSystemDialogs();
           await sleep(700);
           const file = `${String(++n).padStart(2, "0")}-${name}`;
           device.screencap(path.join(dir, `${file}.png`));

@@ -58,6 +58,10 @@ export function fresh() {
     /* older Android: no such permission */
   }
   shell("settings put secure show_ime_with_hard_keyboard 1");
+  // A busy emulator's launcher answers late: no "isn't responding" dialog over the app.
+  shell("settings put global hide_error_dialogs 1");
+  shell("settings put global anr_show_background 0");
+  dismissSystemDialogs();
 }
 
 export async function start(timeout = 60000) {
@@ -110,6 +114,15 @@ export function unforward() {
 export function screencap(file) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, execFileSync(ADB, ["exec-out", "screencap", "-p"], { maxBuffer: 64 * 1024 * 1024 }));
+}
+
+/** Closes system dialogs (a launcher that "isn't responding") that may lie over the app. */
+export function dismissSystemDialogs() {
+  try {
+    shell("am broadcast -a android.intent.action.CLOSE_SYSTEM_DIALOGS");
+  } catch {
+    /* none */
+  }
 }
 
 export const tap = (x, y) => shell(`input tap ${Math.round(x)} ${Math.round(y)}`);
