@@ -97,6 +97,7 @@ import { UpdateLayer, setBeforeRestart, startUpdates } from "./components/Update
 import { Outbox } from "./components/Outbox";
 import { ConfirmDialog, Dialog, LAYERS_EVENT, Menu, PromptDialog, closeTopLayer, openLayers, type MenuItem } from "./components/ui";
 import { PassphraseDialog } from "./components/Meeting";
+import { isKey } from "./lib/ime";
 
 /** On a phone one pane is shown at a time; `view` says which (app.css, narrow layout). On a
  *  tablet `folders` opens the folders as a drawer over the list. */
@@ -2485,7 +2486,7 @@ export function App() {
         </Dialog>
       )}
       {preview && (
-        <div className="overlay preview-overlay" onMouseDown={(e) => e.target === e.currentTarget && setPreview(null)} onKeyDown={(e) => e.key === "Escape" && setPreview(null)}>
+        <div className="overlay preview-overlay" onMouseDown={(e) => e.target === e.currentTarget && setPreview(null)} onKeyDown={(e) => isKey(e, "Escape") && setPreview(null)}>
           <figure className="preview" role="dialog" aria-modal="true" aria-label={preview.name}>
             <figcaption>
               <span>{preview.name}</span>
@@ -2588,7 +2589,7 @@ function SignInDialog({ account, onClose }: { account: AccountInfo; onClose: () 
     >
       <label className="stack-field">
         <span className="field-label">{t("setup.password")}</span>
-        <input className="input" type="password" autoFocus value={password} onChange={(e) => setPassword(e.target.value)} onKeyDown={(e) => e.key === "Enter" && password && void submit()} />
+        <input className="input" type="password" autoFocus value={password} onChange={(e) => setPassword(e.target.value)} onKeyDown={(e) => isKey(e, "Enter") && password && void submit()} />
       </label>
       {error && (
         <p className="field-error" role="alert">

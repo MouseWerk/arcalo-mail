@@ -5,6 +5,7 @@ import { useEffect, useMemo, useRef, useState, type ComponentType } from "react"
 import { useT } from "../lib/i18n";
 import { score } from "../lib/palette";
 import { useRestoreFocus } from "./ui";
+import { isKey } from "../lib/ime";
 
 type IconType = ComponentType<{ size?: number; strokeWidth?: number; "aria-hidden"?: boolean }>;
 
@@ -66,7 +67,7 @@ export function CommandPalette({ commands, search, onClose }: { commands: Comman
           aria-activedescendant={shown[index] ? `palette-${shown[index].id}` : undefined}
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "Escape") {
+            if (isKey(e, "Escape")) {
               e.preventDefault();
               e.stopPropagation();
               onClose();
@@ -76,7 +77,7 @@ export function CommandPalette({ commands, search, onClose }: { commands: Comman
             } else if (e.key === "ArrowUp") {
               e.preventDefault();
               setIndex((i) => Math.max(0, i - 1));
-            } else if (e.key === "Enter") {
+            } else if (isKey(e, "Enter")) {
               e.preventDefault();
               run(shown[index]);
             } else if (e.key === "Tab") {

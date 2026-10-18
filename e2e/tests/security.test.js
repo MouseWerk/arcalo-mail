@@ -26,7 +26,7 @@ before(async () => {
   app = await launch({ dataDir });
   await addAccount(app, server);
   await server.deliver(message({ subject: "Gehaltsabrechnung Oktober", body: "Vertraulicher Inhalt der Abrechnung." }));
-  await app.browser.refresh();
+  await app.reload();
   await app.waitText(".row-subject", /Gehaltsabrechnung Oktober/, 30000);
 });
 

@@ -45,7 +45,7 @@ before(async () => {
   // The unsubscribe address is the test server on this computer, which mail may not point at otherwise.
   app = await launch({ env: { ARCALO_MAIL_TEST_LOOPBACK: "1" } });
   await addAccount(app, server);
-  await app.browser.refresh();
+  await app.reload();
 });
 
 after(async () => {

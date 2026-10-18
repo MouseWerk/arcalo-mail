@@ -41,8 +41,8 @@ round to the job summary and uploads the screenshots, `FAIL-*.png` and TAP repor
 Every guard Arcalo has (its `CLAUDE.md`, `docs/i18n.md`, `docs/quality/`, `docs/testing/`, CI, the UI and Rust
 tests that check the sources, the e2e harness) and its counterpart here. Status: **ported** (new on branch
 `qa`), **present** (Arcalo Mail had it), **planned** (applies, comes with a later step named in the plan), or
-**n/a** (with the reason). „Red until `and`“: the guard is ported and correct, and fails on `main` because of
-files the `and` round rewrites (`q110/findings.md`); its commit is merged after `and`.
+**n/a** (with the reason). „Fixed after `and`“: the guard failed on `main` in files the phone round rewrote; after
+its merge the findings were fixed on `qa` (`q110/findings.md`). Every ported guard is green on `qa`.
 
 ### Design (CSS and components)
 
@@ -52,7 +52,7 @@ files the `and` round rewrites (`q110/findings.md`); its commit is merged after 
 | Every token in dark, light and contrast; only tokens that exist | text in `CLAUDE.md` | `styles.test.ts` „defines every token…“, „uses only tokens that exist“ | present |
 | Balanced braces, no merge markers in stylesheets | `styles.test.ts` „stylesheets“ | `styles.test.ts` „stylesheets“ | ported |
 | Weights, layers, focus ring, pill radii from tokens | `styles.test.ts` „design tokens“ | `styles.test.ts` „design tokens“ | ported |
-| Mono font without ligatures | `styles.test.ts` | `styles.test.ts` | ported, red until `and` (10 rules) |
+| Mono font without ligatures | `styles.test.ts` | `styles.test.ts` | ported, green; 11 rules fixed after `and` |
 | Uppercase labels with `--ls-eyebrow` | `styles.test.ts` | `styles.test.ts` | ported |
 | No accent border, outline or ring on selected, current, focused states | `styles.test.ts` „selection and focus look“ | `styles.test.ts` (same, plus `--unread`, `.open`, `.expanded`, `aria-expanded`, `data-selected`) | ported (a simpler form was present) |
 | No glow or gradient border for a state | text in `CLAUDE.md` („glows or gradient borders“) | `styles.test.ts` „no glow or gradient frame marks a state“ | ported (enforced here, text in Arcalo) |
@@ -62,7 +62,7 @@ files the `and` round rewrites (`q110/findings.md`); its commit is merged after 
 | No faded text (opacity on content) | `styles.test.ts` „no faded text“ | `styles.test.ts` | ported |
 | Inline styles in components draw no side bars or accent frames | `styles.test.ts` | `styles.test.ts` | ported |
 | Endless animations only of opacity and transform | `styles.test.ts` „endless animations“ | `styles.test.ts`, plus a `prefers-reduced-motion` block must exist | ported |
-| Text contrast 4.5:1 (muted 4.5 / 4 on rows, focus ring 3:1, status on its tint) | `ui/src/lib/contrast.test.ts`, `themes.test.ts` | `ui/src/lib/contrast.test.ts` (dark, light, contrast; contrast theme text 7:1) | ported, red until `and` (one pair in the contrast theme) |
+| Text contrast 4.5:1 (muted 4.5 / 4 on rows, focus ring 3:1, status on its tint) | `ui/src/lib/contrast.test.ts`, `themes.test.ts` | `ui/src/lib/contrast.test.ts` (dark, light, contrast; contrast theme text 7:1) | ported, green; one pair in the contrast theme fixed after `and` |
 | Custom and built-in theme families | `themes.test.ts`, `backdrop.test.ts`, `eventlook.test.ts` | – | planned: Arcalo's themes and reading mode are 1.1 scope; the tests come with them |
 | Today in the time sheet, Git setup choices | `styles.test.ts` (view-specific) | – | n/a: views Arcalo Mail does not have; the general rules cover the calendar's today |
 | Live dots never pulse forever | `styles.test.ts` „never run on the live dots“ | covered by „loop only opacity and transform“ | present in substance |
@@ -77,8 +77,8 @@ files the `and` round rewrites (`q110/findings.md`); its commit is merged after 
 | Error texts of the backend through `tr!` | `crates/arcalo-core/src/error.rs` `error_texts_are_translated` | `crates/mail-core/tests/guards.rs` `error_texts_are_translated` (core and shell) | ported, 17 places fixed |
 | Key combinations written one way | `shortcut.test.ts` „one notation“ | `ui/src/lib/keynotation.test.ts` (also „Strg + K“ with spaces) | ported |
 | Icon-only buttons have a name | `a11y-buttons.test.ts` | `ui/src/lib/a11y-buttons.test.ts` | ported, green |
-| Menu buttons say so (`aria-haspopup`); no button role that hides it | `a11y-menus.test.ts` | `ui/src/lib/a11y-menus.test.ts` (Arcalo Mail's menu openers) | ported, red until `and` (1 button) |
-| Enter and Escape safe during IME composition | `ime-guard.test.ts`, `lib/ime.ts` | `ui/src/lib/ime-guard.test.ts`, `ui/src/lib/ime.ts` | ported, red until `and` (22 handlers; `listing.ts` fixed) |
+| Menu buttons say so (`aria-haspopup`); no button role that hides it | `a11y-menus.test.ts` | `ui/src/lib/a11y-menus.test.ts` (Arcalo Mail's menu openers) | ported, green; 1 button fixed after `and` |
+| Enter and Escape safe during IME composition | `ime-guard.test.ts`, `lib/ime.ts` | `ui/src/lib/ime-guard.test.ts`, `ui/src/lib/ime.ts` | ported, green; 22 handlers; `listing.ts` fixed fixed after `and` |
 | No emojis anywhere | text in `CLAUDE.md` | `ui/src/lib/emoji.test.ts` (every text file of the repository) | ported (enforced here, text in Arcalo) |
 | English UI without German leftovers (e2e) | `e2e/lib/english.js` `germanLeftovers` | – | planned: q110 area i18n |
 | Old product name out of sight | `branding.test.ts` | – | n/a: Arcalo Mail was never renamed |
@@ -117,8 +117,8 @@ files the `and` round rewrites (`q110/findings.md`); its commit is merged after 
 | Release notes: „## Improved“, „## Fixed“, „## Checklist for Windows (manual)“ | text in `CLAUDE.md` | `scripts/release-notes.test.mjs` | ported (enforced here) |
 | Commit rules (owner's authorship, no trailers) | text in `CLAUDE.md` | `scripts/commit-rules.mjs` (each push), its test | ported (enforced here) |
 | Superseded CI runs cancelled | `ci.yml` concurrency | same | present |
-| e2e: failure screenshot (`guarded`) | `e2e/lib/harness.js` | `e2e/lib/harness.js`; `scripts/e2e-conventions.test.mjs` checks every test file | present; check ported, red until `and` (2 shot files) |
-| e2e: `app.reload()` waits for the new document | `harness.js` `reload` | `harness.js` `reload`; the conventions check refuses `location.reload` and `browser.refresh` | ported, red until `and` (6 places in shot files) |
+| e2e: failure screenshot (`guarded`) | `e2e/lib/harness.js` | `e2e/lib/harness.js`; `scripts/e2e-conventions.test.mjs` checks every test file | present; check ported, green; 3 shot files fixed after `and` |
+| e2e: `app.reload()` waits for the new document | `harness.js` `reload` | `harness.js` `reload`; the conventions check refuses `location.reload` and `browser.refresh` | ported, green; 44 `browser.refresh()` calls in tests and shot files fixed after `and` |
 | e2e: time budgets for CI (`budget`) | `harness.js` | `harness.js` | ported |
 | e2e: app only via the variable, kill only own PIDs, no skips | text in `CLAUDE.md` | `scripts/e2e-conventions.test.mjs` | ported (enforced here) |
 | e2e: own Xvfb display, private D-Bus, opener shim | `harness.js` | `harness.js` (`opened()`) | present |

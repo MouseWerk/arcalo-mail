@@ -36,6 +36,7 @@ import type { Abilities, Account, Contact, Destination, ProtectMethod, Template,
 import { Menu, PromptDialog, Select, Spinner, trapFocus, type MenuItem } from "./ui";
 import { followupItems, sendLaterItems } from "./TimeMenus";
 import { AiText, PrivacyLine } from "./Assistant";
+import { isKey } from "../lib/ime";
 
 type Props = {
   draft: ComposeState;
@@ -197,19 +198,19 @@ function AddressField({
 
   const onKey = (e: KeyboardEvent<HTMLInputElement>) => {
     // Ctrl+Enter sends: the sheet takes the typed address along.
-    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) return;
+    if (isKey(e, "Enter") && (e.ctrlKey || e.metaKey)) return;
     if (hits.length && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
       e.preventDefault();
       setActive((a) => (a + (e.key === "ArrowDown" ? 1 : -1) + hits.length) % hits.length);
-    } else if ((e.key === "Enter" || e.key === "Tab") && hits.length && text.trim()) {
+    } else if ((isKey(e, "Enter") || e.key === "Tab") && hits.length && text.trim()) {
       e.preventDefault();
       pick(hits[active]);
-    } else if ((e.key === "Enter" || e.key === "," || e.key === ";") && text.trim()) {
+    } else if ((isKey(e, "Enter") || e.key === "," || e.key === ";") && text.trim()) {
       e.preventDefault();
       commit(text);
     } else if (e.key === "Backspace" && !text && values.length) {
       onChange(values.slice(0, -1));
-    } else if (e.key === "Escape" && hits.length) {
+    } else if (isKey(e, "Escape") && hits.length) {
       e.stopPropagation();
       setHits([]);
     }
@@ -542,12 +543,12 @@ export function ComposeSheet({ draft, accounts, error, sending, saved, modal, ph
       setSnip({ ...snip, active: (snip.active + (e.key === "ArrowDown" ? 1 : -1) + snip.list.length) % snip.list.length });
       return true;
     }
-    if (e.key === "Enter" || e.key === "Tab") {
+    if (isKey(e, "Enter") || e.key === "Tab") {
       e.stopPropagation();
       void insertSnippet(snip.list[snip.active], snip.query);
       return true;
     }
-    if (e.key === "Escape") {
+    if (isKey(e, "Escape")) {
       e.stopPropagation();
       setSnip(null);
       return true;
@@ -650,11 +651,11 @@ export function ComposeSheet({ draft, accounts, error, sending, saved, modal, ph
       onKeyDown={(e) => {
         // A dialog the sheet opened (the link prompt) has its own keys.
         if ((e.target as HTMLElement).closest?.(".overlay")) return;
-        if (e.key === "Escape") {
+        if (isKey(e, "Escape")) {
           e.stopPropagation();
           onClose();
         }
-        if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+        if (isKey(e, "Enter") && (e.ctrlKey || e.metaKey)) {
           e.preventDefault();
           onSend(followupSecs);
         }

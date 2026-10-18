@@ -6,11 +6,11 @@
 //   cd e2e && npm run shots:mobile
 // ARCALO_MAIL_SHOTS sets the folder (default docs/screenshots/mobile).
 
-import { test, before, after } from "node:test";
+import { test as nodeTest, before, after } from "node:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { launch } from "../lib/harness.js";
+import { guarded, launch } from "../lib/harness.js";
 import { addAccount, startServer } from "../lib/server.js";
 import * as mail from "../lib/mail.js";
 import { NOW, PERSONAL, WORK, fill, personalMail, workMail } from "./mailbox.js";
@@ -24,6 +24,8 @@ for (const k of ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"]) {
 const ENV = { ARCALO_MAIL_NOW: String(NOW), TZ: "Europe/London", ARCALO_MAIL_TOUCH: "1" };
 
 let work, personal, app, dataDir;
+// A failed shot leaves FAIL-*.png behind, as the tests do.
+const test = guarded(nodeTest, () => app);
 
 async function shot(name) {
   await app.browser.execute(() => document.querySelectorAll(".toast .icon-btn").forEach((b) => b.click()));
@@ -35,8 +37,7 @@ async function shot(name) {
 async function setTheme(theme) {
   const s = await app.invoke("get_settings");
   await app.invoke("set_settings", { settings: { ...s, theme } });
-  await app.browser.refresh();
-  await app.waitUntil(async () => (await app.browser.execute(() => document.body.classList.contains("ready"))) === true, 20000, "ready after reload");
+  await app.reload();
 }
 
 async function inbox() {

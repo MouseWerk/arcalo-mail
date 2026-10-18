@@ -23,8 +23,7 @@ before(async () => {
   }
   app = await launch({ width: 390, height: 844, env: { ARCALO_MAIL_TOUCH: "1" } });
   await addAccount(app, server);
-  await app.browser.refresh();
-  await app.waitUntil(async () => (await app.browser.execute(() => document.body.classList.contains("ready"))) === true, 20000, "ready");
+  await app.reload();
   await waitRow(app, "Vier");
 });
 

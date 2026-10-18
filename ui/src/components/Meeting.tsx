@@ -11,6 +11,7 @@ import { fileSize } from "../lib/format";
 import { showToast } from "../lib/toasts";
 import { attendeeName, dateLocale, hhmm, isoDay } from "../lib/calendar";
 import type { InvitationAnswer, InvitationCard as Card, MessageView, Protection } from "../lib/types";
+import { isKey } from "../lib/ime";
 
 const STATUS: Record<string, TKey> = { ACCEPTED: "invite.st.accepted", TENTATIVE: "invite.st.tentative", DECLINED: "invite.st.declined", "NEEDS-ACTION": "invite.st.open", DELEGATED: "invite.st.delegated" };
 
@@ -202,7 +203,7 @@ export function PassphraseDialog({ fingerprint, onDone, onClose, above }: { fing
     >
       <label className="stack-field">
         <span className="field-label">{t("protect.passphrase")}</span>
-        <input className="input" type="password" autoFocus value={value} onChange={(e) => setValue(e.target.value)} onKeyDown={(e) => e.key === "Enter" && submit()} />
+        <input className="input" type="password" autoFocus value={value} onChange={(e) => setValue(e.target.value)} onKeyDown={(e) => isKey(e, "Enter") && submit()} />
       </label>
       <div className="set-control-row passphrase-remember">
         <Switch label={t("protect.rememberPassphrase")} checked={remember} onChange={setRemember} />

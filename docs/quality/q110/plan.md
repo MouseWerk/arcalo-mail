@@ -7,7 +7,7 @@ has to reach, and its status. Findings go to `findings.md` in this folder (sever
 test).
 
 Rounds running in parallel when this plan was written: `and` (phone UI and account switcher), `gm` (sync speed),
-`e2e2` (Android emulator e2e), Arcalo's `ios`. Areas they own are checked again after their merge.
+`e2e2` (Android emulator e2e), Arcalo's `ios`. Areas they own are checked again after their merge (`gm` and `and` are merged on 2026-10-18).
 
 ## Rules for every area
 
@@ -17,7 +17,7 @@ Rounds running in parallel when this plan was written: `and` (phone UI and accou
   weaken a test.
 - Visual pass in every area: screenshots across the matrix below, looked at one by one; every picture shows the
   whole window or one whole dialog.
-- Migrations take the next number (latest on `main`: 0011; `gm` adds 0012), settings changes a step
+- Migrations take the next number (latest on `main`: 0012), settings changes a step
   (`SETTINGS_VERSION` 12 on `main`).
 
 ## Exit criterion
@@ -29,7 +29,7 @@ since the last round. A round is clean when it found nothing to fix. Any fix sta
 
 | Round | Date | Soak (5x) | Android e2e | Findings | Clean |
 |-------|------|-----------|-------------|----------|-------|
-| 0 | 2026-10-17 | not yet run (workflow added) | waits for `e2e2` | guards: `findings.md` (9 fixed, 5 groups open until `and`) | no |
+| 0 | 2026-10-17/18 | not yet run (workflow added; it can be started once it is on `main`) | waits for `e2e2` | guards: `findings.md` (all fixed on `qa`, after the merges of `gm` and `and`); CI run 39068876509: one e2e failure in `mobile-tools`, passed on rerun, root cause `browser.refresh()` (fixed) | no |
 
 ## Device and theme matrix
 
@@ -69,7 +69,7 @@ phone and tablet sizes on emulators and simulators):
 - **Android emulator e2e in CI.** When `e2e2` is merged, hook its emulator job (`.github/workflows/ci.yml`,
   `android.yml` on that branch) into the round: it has to be green in every round, and the soak gets an input to
   run the Android suite N times too. Nothing of `e2e2` is changed from this branch.
-- **Merge order.** `and`, then the commit „Guards that wait for the phone round“ of `qa` with the fixes of
-  `findings.md` („Open“), then round 1.
+- **Merge order.** `qa` (with `gm` and `and` merged in, every guard green) into `main`, then round 1 starts with
+  the soak.
 - **Planned guards** (README table, status planned): themes tests with Arcalo's themes, the settings fixture of
   1.1.0, the desktop-only command list, the MSIX job, the English leftovers check.

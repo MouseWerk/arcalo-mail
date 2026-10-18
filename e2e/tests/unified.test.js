@@ -23,7 +23,7 @@ before(async () => {
   app = await launch();
   await addAccount(app, work, { name: "Arbeit" });
   await addAccount(app, home, { name: "Privat" });
-  await app.browser.refresh();
+  await app.reload();
 });
 
 after(async () => {

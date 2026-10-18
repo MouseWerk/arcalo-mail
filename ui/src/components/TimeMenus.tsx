@@ -8,6 +8,7 @@ import { now } from "../lib/format";
 import { FOLLOWUP_DAYS, fromLocalInput, sendPresets, snoozePresets, toLocalInput, whenLabel, type SendPreset, type SnoozePreset } from "../lib/when";
 import { addMonths, dateLocale, isoDay, monthGrid, weekStartsOn } from "../lib/calendar";
 import { Dialog, Select, type MenuItem } from "./ui";
+import { isKey } from "../lib/ime";
 
 const SNOOZE_ICON: Record<SnoozePreset, typeof Clock> = { laterToday: Clock, tomorrow: Sunrise, weekend: Sun, nextWeek: CalendarClock };
 const SEND_ICON: Record<SendPreset, typeof Clock> = { tomorrowMorning: Sunrise, tomorrowAfternoon: Sun, nextWeek: CalendarClock };
@@ -125,7 +126,7 @@ export function WhenDialog({
           placeholder="2026-03-12T08:00"
           value={value}
           onChange={(e) => setValue(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && submit()}
+          onKeyDown={(e) => isKey(e, "Enter") && submit()}
         />
       </label>
       {at !== null && !past && (

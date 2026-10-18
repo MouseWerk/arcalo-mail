@@ -4,6 +4,7 @@ import { Check, X } from "lucide-react";
 import { Children, Fragment, isValidElement, useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { useT } from "../lib/i18n";
+import { isKey } from "../lib/ime";
 
 /** A modal dialog: a scrim, focus inside, Esc and the close button close it. */
 // Sheets, menus and dialogs over a screen: Android's Back closes the topmost of them first
@@ -76,7 +77,7 @@ export function Dialog({
         aria-label={title}
         tabIndex={-1}
         onKeyDown={(e) => {
-          if (e.key === "Escape") {
+          if (isKey(e, "Escape")) {
             e.stopPropagation();
             onClose();
           }
@@ -199,7 +200,7 @@ export function PromptDialog({
           value={value}
           autoFocus
           onChange={(e) => setValue(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && void submit()}
+          onKeyDown={(e) => isKey(e, "Enter") && void submit()}
         />
       </label>
       {error && (
@@ -336,7 +337,7 @@ export function Menu({ items, at, onClose, label }: { items: MenuItem[]; at: { x
             e.preventDefault();
             const list = menuItems();
             (e.key === "Home" ? list[0] : list[list.length - 1])?.focus();
-          } else if (e.key === "Escape") {
+          } else if (isKey(e, "Escape")) {
             e.stopPropagation();
             onClose();
           } else if (e.key === "Tab") {

@@ -30,7 +30,7 @@ before(async () => {
   }
   app = await launch();
   for (const [i, s] of servers.entries()) ids.push((await addAccount(app, s, { name: NAMES[i] })).id);
-  await app.browser.refresh();
+  await app.reload();
 });
 
 after(async () => {
@@ -104,8 +104,7 @@ it("writes from the account in view", async () => {
 });
 
 it("opens the last view again at the next start", async () => {
-  await app.browser.refresh();
-  await app.waitUntil(async () => (await app.browser.execute(() => document.body.classList.contains("ready"))) === true, 20000, "ready");
+  await app.reload();
   await app.waitUntil(async () => (await subjects(app)).length === 2, 15000, "Privat's inbox after the start");
   assert.ok((await subjects(app)).every((s) => s.startsWith("Privat")));
 });

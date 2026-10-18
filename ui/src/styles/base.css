@@ -388,6 +388,7 @@ kbd {
   background: var(--bg-hover);
   color: var(--text);
   font-family: var(--font-mono);
+  font-variant-ligatures: none;
   font-size: var(--fs-xs);
   overflow-wrap: anywhere;
 }

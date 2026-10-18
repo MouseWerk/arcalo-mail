@@ -11,12 +11,12 @@
 //   cd e2e && npm run shots:store
 // ARCALO_MAIL_SHOTS sets the folder (default docs/store/screenshots).
 
-import { test, before, after } from "node:test";
+import { test as nodeTest, before, after } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { launch } from "../lib/harness.js";
+import { guarded, launch } from "../lib/harness.js";
 import { startServer } from "../lib/server.js";
 import { addAccount } from "../lib/server.js";
 import * as mail from "../lib/mail.js";
@@ -37,6 +37,8 @@ const SIZES = [
 ];
 
 let work, personal, app, dataDir;
+// A failed shot leaves FAIL-*.png behind, as the tests do.
+const test = guarded(nodeTest, () => app);
 
 /** `20260312T103000Z` of a day of the screenshots' week (0 = Monday 9 March 2026) at `hh:mm` UTC. */
 const when = (day, hh, mm = 0) => new Date(Date.UTC(2026, 2, 9 + day, hh, mm)).toISOString().replace(/[-:]/g, "").replace(/\.\d+/, "");
@@ -63,7 +65,7 @@ async function ready() {
 async function setTheme(theme) {
   const s = await app.invoke("get_settings");
   await app.invoke("set_settings", { settings: { ...s, theme } });
-  await app.browser.refresh();
+  await app.reload();
   await ready();
 }
 

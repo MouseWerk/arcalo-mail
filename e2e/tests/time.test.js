@@ -24,7 +24,7 @@ before(async () => {
   await server.deliver(message({ subject: "Ganz neu", body: "Oben." }), { date: now - 100, seen: true });
   app = await launch({ env });
   await addAccount(app, server);
-  await app.browser.refresh();
+  await app.reload();
 });
 
 after(async () => {

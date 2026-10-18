@@ -8,6 +8,7 @@ import type { MessageSummary, SwipeAction } from "../lib/types";
 import { Avatar } from "./Avatar";
 import { INSETS_EVENT } from "../lib/viewport";
 import { Spinner } from "./ui";
+import { isKey } from "../lib/ime";
 
 export type BulkAction = "archive" | "delete" | "spam" | "read" | "unread" | "flag" | "move";
 
@@ -357,12 +358,12 @@ export function MessageList(p: Props) {
             aria-label={t("list.searchLabel")}
             onChange={(e) => p.onQuery(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === "Escape") {
+              if (isKey(e, "Escape")) {
                 e.stopPropagation();
                 p.onQuery("");
                 p.listRef.current?.focus();
               }
-              if (e.key === "ArrowDown" || e.key === "Enter") {
+              if (e.key === "ArrowDown" || isKey(e, "Enter")) {
                 e.preventDefault();
                 p.listRef.current?.focus();
               }
