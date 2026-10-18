@@ -168,14 +168,19 @@ pub fn open_auth(url: &str) -> Result<(), String> {
 
 /// Whether the phone can confirm the user with a fingerprint, the face or the screen lock
 /// (`BiometricGate.kt`, Android 9 and later).
+/// Asked with the application context: what Tauri registers as the activity is not always one
+/// (a debug build's checked JNI stops the app on such a call).
 pub fn biometric_available() -> bool {
-    let activity = ACTIVITY.lock().unwrap_or_else(|e| e.into_inner()).clone();
-    let Some(activity) = activity else { return false };
     with_env(|env, java| {
         let c = class(env, java, BIOMETRIC)?;
-        env.call_static_method(&c, "available", "(Landroid/app/Activity;)Z", &[JValue::Object(activity.as_obj())])
-            .and_then(|v| v.z())
-            .map_err(|e| failure(env, e))
+        env.call_static_method(
+            &c,
+            "available",
+            "(Landroid/content/Context;)Z",
+            &[JValue::Object(java.context.as_obj())],
+        )
+        .and_then(|v| v.z())
+        .map_err(|e| failure(env, e))
     })
     .unwrap_or(false)
 }

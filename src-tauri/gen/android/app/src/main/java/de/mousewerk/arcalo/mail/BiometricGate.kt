@@ -1,6 +1,7 @@
 package de.mousewerk.arcalo.mail
 
 import android.app.Activity
+import android.content.Context
 import android.hardware.biometrics.BiometricManager
 import android.hardware.biometrics.BiometricPrompt
 import android.os.Build
@@ -17,10 +18,11 @@ import java.util.concurrent.atomic.AtomicBoolean
 object BiometricGate {
     private const val WAIT_SECONDS = 120L
 
+    /** Any context will do: the system service is the same for the whole app. */
     @JvmStatic
-    fun available(activity: Activity): Boolean {
+    fun available(context: Context): Boolean {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return false
-        val manager = activity.getSystemService(BiometricManager::class.java) ?: return false
+        val manager = context.getSystemService(BiometricManager::class.java) ?: return false
         val result = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             manager.canAuthenticate(
                 BiometricManager.Authenticators.BIOMETRIC_STRONG or BiometricManager.Authenticators.DEVICE_CREDENTIAL,
