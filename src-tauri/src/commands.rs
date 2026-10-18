@@ -245,6 +245,12 @@ pub fn update_servers(
     Ok(())
 }
 
+/// „Sync-Details“: the steps of the account's last sync with their times (empty before one).
+#[tauri::command]
+pub fn sync_details(id: i64) -> String {
+    mail_core::diag::sync_details(id).unwrap_or_default()
+}
+
 #[tauri::command]
 pub fn remove_account(app: AppHandle, state: State<'_, AppState>, id: i64) -> Res<()> {
     stop_worker(&app, id);

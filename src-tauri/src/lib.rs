@@ -634,6 +634,7 @@ pub fn run() {
             commands::update_account,
             commands::update_servers,
             commands::remove_account,
+            commands::sync_details,
             commands::sign_in,
             commands::microsoft_sign_in,
             commands::add_microsoft_account,

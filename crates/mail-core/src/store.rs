@@ -30,6 +30,7 @@ pub const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0009_calendar_ai_keys.sql"),
     include_str!("../migrations/0010_large_mailboxes.sql"),
     include_str!("../migrations/0011_security.sql"),
+    include_str!("../migrations/0012_unified_views.sql"),
 ];
 pub const SCHEMA_VERSION: u32 = MIGRATIONS.len() as u32;
 
@@ -187,10 +188,10 @@ fn provider_of(s: &str) -> Provider {
     }
 }
 
-pub(crate) const SUMMARY_COLS: &str = "id, mailbox_id, uid, thread_id, subject, from_name, from_email, COALESCE(date, internal_date), \
+pub const SUMMARY_COLS: &str = "id, mailbox_id, uid, thread_id, subject, from_name, from_email, COALESCE(date, internal_date), \
      snippet, seen, flagged, answered, has_attachments, account_id";
 
-pub(crate) fn summary(r: &Row<'_>) -> rusqlite::Result<MessageSummary> {
+pub fn summary(r: &Row<'_>) -> rusqlite::Result<MessageSummary> {
     let email: Option<String> = r.get(6)?;
     Ok(MessageSummary {
         id: r.get(0)?,
@@ -743,6 +744,18 @@ impl Store {
                has_attachments = (SELECT has_attachments FROM messages WHERE id = ?1) WHERE id = ?2",
             params![source, id],
         )?;
+        Ok(())
+    }
+
+    /// The preview line of a message whose body is not here yet (from the beginning of its
+    /// body), in the list and in its search entry.
+    pub fn set_preview(&self, id: i64, p: &ParsedMessage) -> Result<()> {
+        let n = self
+            .conn
+            .execute("UPDATE messages SET snippet = ?2 WHERE id = ?1 AND has_body = 0", params![id, p.snippet])?;
+        if n > 0 {
+            self.index_message(id, p)?;
+        }
         Ok(())
     }
 
