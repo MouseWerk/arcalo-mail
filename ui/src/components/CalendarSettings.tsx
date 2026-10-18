@@ -12,6 +12,7 @@ import { showToast } from "../lib/toasts";
 import { CAL_PALETTE } from "../lib/calendar";
 import type { AccountInfo, CalendarInfo, CalendarOverview, Settings, StoredKey } from "../lib/types";
 import { ConfirmDialog, Dialog, Segmented, Select, Spinner, Switch } from "./ui";
+import { isKey } from "../lib/ime";
 
 function Row({ label, description, children }: { label: string; description?: string; children: ReactNode }) {
   return (
@@ -427,7 +428,7 @@ function ImportKeyDialog({ onDone, onClose }: { onDone: () => void; onClose: () 
         <>
           <label className="stack-field">
             <span className="field-label">{t("crypto.passphraseNeeded")}</span>
-            <input className="input" type="password" autoFocus aria-label={t("protect.passphrase")} value={passphrase} onChange={(e) => setPassphrase(e.target.value)} onKeyDown={(e) => e.key === "Enter" && passphrase && void run()} />
+            <input className="input" type="password" autoFocus aria-label={t("protect.passphrase")} value={passphrase} onChange={(e) => setPassphrase(e.target.value)} onKeyDown={(e) => isKey(e, "Enter") && passphrase && void run()} />
           </label>
           <div className="set-control-row passphrase-remember">
             <Switch label={t("protect.rememberPassphrase")} checked={remember} onChange={setRemember} />

@@ -38,7 +38,7 @@ before(async () => {
   await deliver({ subject: "Kaffee morgen?", body: "Um zehn in der Küche?" }, { ago: 100 });
   app = await launch();
   await addAccount(app, server);
-  await app.browser.refresh();
+  await app.reload();
 });
 
 after(async () => {

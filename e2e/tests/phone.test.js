@@ -72,8 +72,7 @@ for (const [W, H] of [
     });
 
     it("shows the inbox with every tab in reach and the last row clear of the compose button", async () => {
-      await app.browser.refresh();
-      await app.waitUntil(async () => (await app.browser.execute(() => document.body.classList.contains("ready"))) === true, 20000, "ready");
+      await app.reload();
       await prepare();
       await app.waitUntil(async () => (await app.$$(".row:not(.row-placeholder)")).length >= 5, 30000, "rows");
       await app.waitUntil(async () => (await app.$$(".inbox-tab")).length >= TABS.length, 30000, "the tabs");

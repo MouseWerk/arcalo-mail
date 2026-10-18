@@ -9,11 +9,11 @@
 // folder, default e2e/screenshots/tour) choose what is drawn. A step that cannot be reached is
 // noted and skipped, so a tour always finishes.
 
-import { test, before, after } from "node:test";
+import { test as nodeTest, before, after } from "node:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { launch } from "../lib/harness.js";
+import { guarded, launch } from "../lib/harness.js";
 import { addAccount, message, startServer } from "../lib/server.js";
 import * as mail from "../lib/mail.js";
 import { NOW, PERSONAL, WORK, fill, personalMail, workMail } from "./mailbox.js";
@@ -36,6 +36,8 @@ for (const k of ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"]) {
 }
 
 let work, personal, app, dataDir, theme;
+// A failed tour leaves FAIL-*.png behind, as the tests do.
+const test = guarded(nodeTest, () => app);
 const prefix = () => `${W}x${H}-${LOCALE.slice(0, 2)}${SCALE ? `-${SCALE}x` : ""}-${theme}`;
 
 /** The simulated system bars: what MainActivity.kt sets on a phone, in CSS pixels. */
@@ -69,7 +71,7 @@ async function setTheme(t) {
   theme = t;
   const s = await app.invoke("get_settings");
   await app.invoke("set_settings", { settings: { ...s, theme: t } });
-  await app.browser.refresh();
+  await app.reload();
   await ready();
 }
 
@@ -80,7 +82,7 @@ async function step(name, fn) {
   } catch (e) {
     console.log(`tour: ${prefix()} ${name}: ${String(e?.message ?? e).split("\n")[0]}`);
     await app.browser.keys("Escape").catch(() => {});
-    await app.browser.refresh().catch(() => {});
+    await app.reload().catch(() => {});
     await ready().catch(() => {});
   }
 }
@@ -193,7 +195,7 @@ test("setup", async () => {
   });
   await addAccount(app, work, { name: "Work", sender: "Emma Larsen" });
   await addAccount(app, personal, { name: "Personal", sender: "Emma Larsen" });
-  await app.browser.refresh();
+  await app.reload();
   await ready();
   await app.waitUntil(async () => (await app.$$(".row")).length >= 6, 30000, "rows");
 });

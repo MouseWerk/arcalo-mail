@@ -14,9 +14,10 @@
 //
 //   cd e2e && ARCALO_MAIL_APK=path/to/app-debug.apk node --test android/phone.test.js
 
-import { describe, test, after, before } from "node:test";
+import { describe, test as nodeTest, after, before } from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
+import { guarded } from "../lib/harness.js";
 import { startServer } from "../lib/server.js";
 import * as geo from "../lib/geometry.js";
 import * as stock from "../lib/stockui.js";
@@ -26,6 +27,8 @@ const OUT = path.resolve(import.meta.dirname, "../screenshots/android");
 const APK = process.env.ARCALO_MAIL_APK;
 const TABS = ["people", "newsletters", "notifications", "receipts"];
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// A failing test leaves the phone's screen behind (FAIL-*.png), as the desktop tests do.
+const test = guarded(nodeTest, () => ({ browser: { saveScreenshot: async (file) => device.screencap(file) } }));
 
 let server;
 let fixture;

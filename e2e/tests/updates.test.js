@@ -63,7 +63,7 @@ it("downloads in the background, installs with „Jetzt neu starten“ and shows
   try {
     app = await launch({ env: env(), dataDir });
     await addAccount(app, server);
-    await app.browser.refresh();
+    await app.reload();
     await app.waitFor(".account");
     await app.invoke("update_check", { manual: true });
     await app.waitText(".update-card-title", /Update 1\.0\.1 bereit/, 20000);
@@ -100,7 +100,7 @@ it("refuses a tampered file, and „Installieren“ can be cancelled and continu
   try {
     app = await launch({ env: env(), dataDir });
     await addAccount(app, server);
-    await app.browser.refresh();
+    await app.reload();
     await app.waitFor(".account");
     await openSettings(app, "Über Arcalo Mail");
     await app.waitFor('[data-updates="desktop"]');
@@ -144,7 +144,7 @@ it("a copy that cannot install itself says why and offers the release page", asy
   try {
     app = await launch({ env: env({ ARCALO_MAIL_UPDATE_MANUAL: "portable" }) });
     await addAccount(app, server);
-    await app.browser.refresh();
+    await app.reload();
     await app.waitFor(".account");
     await app.invoke("update_check", { manual: true });
     await app.waitText(".update-card-title", /Arcalo Mail 1\.0\.1 ist verfügbar/, 15000);
@@ -162,7 +162,7 @@ it("a copy that cannot install itself says why and offers the release page", asy
 it("an e-mail link of another app opens the compose sheet, and the app can become the default mail app", async () => {
   app = await launch({ env: env() });
   await addAccount(app, server);
-  await app.browser.refresh();
+  await app.reload();
   await app.waitFor(".account");
   await openSettings(app, "Über Arcalo Mail");
   await app.waitFor("[data-default-mail]");

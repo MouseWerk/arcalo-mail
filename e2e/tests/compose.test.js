@@ -23,7 +23,7 @@ before(async () => {
   await server.deliver(message({ subject: "Treffen am Montag", id: "treffen@example.org", body: "Passt dir Montag um neun?" }), { date: Math.floor(Date.now() / 1000) - 60 });
   app = await launch();
   await addAccount(app, server);
-  await app.browser.refresh();
+  await app.reload();
 });
 
 after(async () => {

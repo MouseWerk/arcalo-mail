@@ -11,6 +11,7 @@ import { currentLang, useT, type TKey } from "../lib/i18n";
 import { showToast } from "../lib/toasts";
 import type { AiItem, AiRequest, Destination } from "../lib/types";
 import { Menu, Spinner, type MenuItem } from "./ui";
+import { isKey } from "../lib/ime";
 
 /** „Bleibt auf diesem Gerät (Ollama)“ or „Geht an api.openai.com (OpenAI)“. */
 export function PrivacyLine({ dest, className }: { dest: Destination | null; className?: string }) {
@@ -180,7 +181,7 @@ export function AssistantBar({ messageId, latestId, accountId, on, autoSummary, 
             placeholder={t("ai.notesPlaceholder")}
             aria-label={t("ai.notes")}
             onChange={(e) => setNotes(e.target.value)}
-            onKeyDown={(e) => e.key === "Escape" && (e.stopPropagation(), setNotes(null))}
+            onKeyDown={(e) => isKey(e, "Escape") && (e.stopPropagation(), setNotes(null))}
           />
           <button type="submit" className="btn btn-sm">
             {t("ai.draft")}

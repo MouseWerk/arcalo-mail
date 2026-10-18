@@ -72,6 +72,7 @@ import {
 import type { CalendarRequest } from "../lib/calendar";
 import type { CalendarEvent, CalendarInfo, CalendarOverview, CalFields, CalUndo, Settings } from "../lib/types";
 import { ConfirmDialog, Segmented, Select } from "./ui";
+import { isComposing, isKey } from "../lib/ime";
 
 const VIEW_LABELS: Record<CalView, TKey> = { day: "calv.view.day", workweek: "calv.view.workweek", week: "calv.view.week", month: "calv.view.month", agenda: "calv.view.agenda" };
 const BUSY_LABELS: Record<CalendarEvent["busy"], TKey> = { free: "calv.busy.free", tentative: "calv.busy.tentative", busy: "calv.busy.busy", oof: "calv.busy.oof", elsewhere: "calv.busy.elsewhere" };
@@ -300,12 +301,12 @@ export function CalendarView({ settings, onSettings, onShowFolders, request, onR
   keyState.current = { selected, go, today, setView, draft, newEntryNow };
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.isComposing || e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey) return;
+      if (isComposing(e) || e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey) return;
       const focused = document.activeElement as HTMLElement | null;
       if (focused?.closest("input, textarea, select, [contenteditable='true'], .calv-appt")) return;
       if (document.querySelector(".overlay, .menu")) return;
       const k = keyState.current;
-      if (e.key === "Escape") {
+      if (isKey(e, "Escape")) {
         if (k.selected || k.draft) {
           e.preventDefault();
           setSelected(null);
@@ -848,7 +849,7 @@ function EntryItem(props: {
     props.onSelect(e.key);
   };
   const key = (ev: ReactKeyboardEvent<HTMLDivElement>) => {
-    if (ev.nativeEvent.isComposing || ev.ctrlKey || ev.metaKey || ev.altKey) return;
+    if (isComposing(ev) || ev.ctrlKey || ev.metaKey || ev.altKey) return;
     let p: { start: string; end: string } | null = null;
     if (ev.key === "ArrowUp" || ev.key === "ArrowDown") {
       const d = ev.key === "ArrowUp" ? -SNAP : SNAP;
@@ -857,7 +858,7 @@ function EntryItem(props: {
       const d = ev.key === "ArrowLeft" ? -1 : 1;
       if (props.dayIndex + d < 0 || props.dayIndex + d >= props.dayCount) return;
       p = moved(e, 0, d);
-    } else if (ev.key === "Enter" || ev.key === " " || ev.key === "F2") {
+    } else if (isKey(ev, "Enter") || ev.key === " " || ev.key === "F2") {
       ev.preventDefault();
       props.onSelect(e.key);
       return;
@@ -1074,7 +1075,7 @@ function WhenInputs({ start, end, onCommit }: { start: Date; end: Date; onCommit
     <div
       className="calv-entry-when"
       onKeyDown={(e) => {
-        if (e.key === "Enter" && !e.nativeEvent.isComposing) commit();
+        if (isKey(e, "Enter") && !isComposing(e)) commit();
       }}
       onBlur={(e) => {
         if (!e.currentTarget.contains(e.relatedTarget as Node | null)) commit();
@@ -1122,12 +1123,12 @@ function EntryEditor({ draft, calendars, defaultCalendar, onChange, onClose, onC
     }
   };
   const keys = (e: ReactKeyboardEvent) => {
-    if (e.nativeEvent.isComposing) return;
-    if (e.key === "Enter" && (e.target as HTMLElement).tagName === "INPUT") {
+    if (isComposing(e)) return;
+    if (isKey(e, "Enter") && (e.target as HTMLElement).tagName === "INPUT") {
       e.preventDefault();
       void create();
     }
-    if (e.key === "Escape") {
+    if (isKey(e, "Escape")) {
       e.preventDefault();
       e.stopPropagation();
       onClose();
@@ -1229,12 +1230,12 @@ function EventDetail({ event: e, calendars, onClose, onSave, onDelete, onReload 
     }
   };
   const blurOnEnter = (ev: ReactKeyboardEvent<HTMLInputElement>, reset: () => void) => {
-    if (ev.nativeEvent.isComposing) return;
-    if (ev.key === "Enter") {
+    if (isComposing(ev)) return;
+    if (isKey(ev, "Enter")) {
       ev.preventDefault();
       ev.currentTarget.blur();
     }
-    if (ev.key === "Escape") {
+    if (isKey(ev, "Escape")) {
       ev.stopPropagation();
       reset();
     }

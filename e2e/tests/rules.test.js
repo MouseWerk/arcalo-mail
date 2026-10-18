@@ -27,7 +27,7 @@ before(async () => {
   await server.deliver(message({ from: "Lea <lea@example.org>", subject: "Kino?", body: "Heute Abend?" }));
   app = await launch();
   accountId = (await addAccount(app, server)).id;
-  await app.browser.refresh();
+  await app.reload();
   await app.waitText(".row-subject", /Kino\?/, 20000);
 });
 

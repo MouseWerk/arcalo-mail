@@ -107,8 +107,7 @@ it("shows the setup over the whole screen, below the status bar", async () => {
 
 it("keeps the list's bars and the compose button clear of the system bars", async () => {
   await addAccount(app, server);
-  await app.browser.refresh();
-  await app.waitUntil(async () => (await app.browser.execute(() => document.body.classList.contains("ready"))) === true, 20000, "ready");
+  await app.reload();
   await waitRow(app, "Drei");
   await insets();
   await clearOfBars(".list-head");

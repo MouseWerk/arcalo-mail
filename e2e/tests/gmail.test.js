@@ -38,8 +38,7 @@ before(async () => {
   await server.slow({ headers: 2000, oldBodies: 1500 });
   app = await launch();
   await addAccount(app, server, { sender: "Maria Muster" });
-  await app.browser.refresh();
-  await app.waitUntil(async () => (await app.browser.execute(() => document.body.classList.contains("ready"))) === true, 20000, "ready");
+  await app.reload();
 });
 
 after(async () => {

@@ -8,10 +8,11 @@
 //
 //   cd e2e && ARCALO_MAIL_APK=path/to/app-debug.apk node --test android/tour.test.js
 
-import { test, after, before } from "node:test";
+import { test as nodeTest, after, before } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
+import { guarded } from "../lib/harness.js";
 import { startServer } from "../lib/server.js";
 import * as stock from "../lib/stockui.js";
 import * as device from "./device.js";
@@ -19,6 +20,8 @@ import * as device from "./device.js";
 const OUT = path.resolve(import.meta.dirname, "../screenshots/android");
 const APK = process.env.ARCALO_MAIL_APK;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// A failing test leaves the phone's screen behind (FAIL-*.png), as the desktop tests do.
+const test = guarded(nodeTest, () => ({ browser: { saveScreenshot: async (file) => device.screencap(file) } }));
 const findings = new Map();
 
 let server;
@@ -49,7 +52,7 @@ for (const [W, H] of [
   [412, 915],
 ]) {
   for (const theme of ["light", "dark"]) {
-    test(`tour at ${W}×${H}, ${theme}`, { timeout: 1200000 }, async () => {
+    test(`tour at ${W}×${H}, ${theme}`, async () => {
       const dir = path.join(OUT, `tour-${W}x${H}-${theme}`);
       let n = 0;
       device.fresh();

@@ -20,7 +20,7 @@ before(async () => {
   await server.deliver(message({ subject: "Frage zum Urlaub", body: "Wann fahrt ihr los?" }), { date: now - 100 });
   app = await launch();
   await addAccount(app, server);
-  await app.browser.refresh();
+  await app.reload();
   await waitRow(app, "Wochenplan");
   // The preview lines come with the headers; the bodies (to read offline) right after.
   const id = (await app.invoke("list_accounts"))[0].id;

@@ -30,8 +30,7 @@ before(async () => {
   settings.ai.providers = [{ id: "local", name: "Testmodell", kind: "compatible", base_url: `http://127.0.0.1:${server.control}/ai/v1`, model: "llama3.2", api_version: "" }];
   settings.ai.default_provider = "local";
   await app.invoke("set_settings", { settings });
-  await app.browser.refresh();
-  await app.waitUntil(async () => (await app.browser.execute(() => document.body.classList.contains("ready"))) === true, 20000, "ready");
+  await app.reload();
   await waitRow(app, "Angebot Website");
 });
 
@@ -116,8 +115,7 @@ it("edits a rule on a phone", async () => {
 
 it("shows the attachments next to the message on a tablet", async () => {
   await app.browser.setWindowSize(1024, 768);
-  await app.browser.refresh();
-  await app.waitUntil(async () => (await app.browser.execute(() => document.body.classList.contains("ready"))) === true, 20000, "ready");
+  await app.reload();
   const nav = await app.$$(".folders-btn");
   if (nav.length && (await nav[0].isDisplayed())) await nav[0].click();
   await openView(app, "Anhänge");

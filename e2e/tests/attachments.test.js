@@ -32,7 +32,7 @@ before(async () => {
   );
   app = await launch();
   await addAccount(app, server);
-  await app.browser.refresh();
+  await app.reload();
   await app.waitText(".row-subject", /Fotos vom Ausflug/, 20000);
 });
 

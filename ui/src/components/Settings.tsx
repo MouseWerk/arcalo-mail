@@ -15,6 +15,7 @@ import { SHORTCUTS, keyLabel, usesCommand } from "../lib/shortcuts";
 import { ConfirmDialog, Segmented, Select, Spinner, Switch, trapFocus, useSaveOnLeave } from "./ui";
 import { ProblemCard, Setup } from "./Setup";
 import { useRef } from "react";
+import { isKey } from "../lib/ime";
 
 export type SettingsSection =
   | "accounts"
@@ -621,7 +622,7 @@ export function SettingsView({ settings, accounts, info, section, onSection, onC
         aria-modal="true"
         aria-label={t("settings.title")}
         onKeyDown={(e) => {
-          if (e.key === "Escape") {
+          if (isKey(e, "Escape")) {
             e.stopPropagation();
             onClose();
           }

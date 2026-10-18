@@ -18,7 +18,7 @@ before(async () => {
   server = await startServer();
   app = await launch();
   await addAccount(app, server);
-  await app.browser.refresh();
+  await app.reload();
 });
 
 after(async () => {

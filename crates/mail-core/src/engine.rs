@@ -1470,7 +1470,7 @@ struct NoConnection;
 
 impl NoConnection {
     fn refuse<T>() -> Result<T> {
-        Err(Error::Network("offline".into()))
+        Err(Error::Network(crate::tr!("Keine Verbindung.", "No connection.").into()))
     }
 }
 

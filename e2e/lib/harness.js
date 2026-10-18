@@ -105,6 +105,12 @@ async function waitForPort(port, timeout = 15000) {
   throw new Error(`port ${port} did not open`);
 }
 
+/**
+ * A time budget in milliseconds for a performance check: `local` on a developer machine, `ci` on CI
+ * (`CI` set; the runners are slower and shared), by default 1.6 times as much (as Arcalo's).
+ */
+export const budget = (local, ci = Math.round(local * 1.6)) => (process.env.CI ? ci : local);
+
 /** Wraps node:test's `test` so a failing test leaves a screenshot behind. */
 export function guarded(test, getApp) {
   return (name, fn) =>
@@ -265,6 +271,27 @@ export async function launch({ width = 1440, height = 900, locale = "de-DE", env
           return false;
         },
         { timeout, timeoutMsg: `no ${sel} matching ${pattern}` },
+      );
+    },
+    /**
+     * Reloads the page and waits until the new document is ready. `location.reload()` returns
+     * before the old document goes: a check for `ready` right after it can still see the old one,
+     * and keys sent then are lost while the new one starts (Arcalo's harness learned it).
+     */
+    async reload() {
+      await browser.execute(() => {
+        window.__arcaloMailOldDocument = true;
+        location.reload();
+      });
+      await browser.waitUntil(
+        async () => {
+          try {
+            return await browser.execute(() => !window.__arcaloMailOldDocument && document.body.classList.contains("ready"));
+          } catch {
+            return false; // between the documents
+          }
+        },
+        { timeout: 20000, timeoutMsg: "not ready after reload" },
       );
     },
     async waitUntil(f, timeout = 10000, msg = "condition") {

@@ -201,8 +201,9 @@ export function fromComposeDraft(d: ComposeDraft, files: FileInfo[] = [], forwar
 /** The plain text of editor HTML (for switching to plain text). */
 export function editorHtmlToText(html: string): string {
   if (typeof document === "undefined") return html.replace(/<[^>]+>/g, "");
-  const div = document.createElement("div");
-  div.innerHTML = html.replace(/<br\s*\/?>/gi, "\n").replace(/<\/(p|div|li|h\d)>/gi, "$&\n");
+  // An inert document: nothing in it loads or runs (a detached element of the page would still
+  // load its images).
+  const div = new DOMParser().parseFromString(html.replace(/<br\s*\/?>/gi, "\n").replace(/<\/(p|div|li|h\d)>/gi, "$&\n"), "text/html").body;
   for (const q of Array.from(div.querySelectorAll("blockquote")))
     q.textContent = (q.textContent ?? "").replace(/\n+$/, "").split("\n").map((l) => `> ${l}`).join("\n") + "\n";
   return (div.textContent ?? "").replace(/\n{3,}/g, "\n\n").replace(/\s+$/, "");

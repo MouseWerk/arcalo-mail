@@ -266,6 +266,7 @@ export function Sidebar({
                       <button
                         type="button"
                         className="icon-btn icon-btn-xs folder-more"
+                        aria-haspopup="menu"
                         aria-label={t("folders.actions", { name: folderLabel(m, t) })}
                         onClick={(e) => {
                           const r = e.currentTarget.getBoundingClientRect();

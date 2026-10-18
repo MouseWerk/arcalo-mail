@@ -41,7 +41,7 @@ before(async () => {
   await fetch(`http://127.0.0.1:${server.control}/dav-card?name=lea`, { method: "POST", body: VCARD });
   app = await launch();
   await addAccount(app, server);
-  await app.browser.refresh();
+  await app.reload();
 });
 
 after(async () => {
