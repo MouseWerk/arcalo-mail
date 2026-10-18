@@ -33,7 +33,7 @@ before(async () => {
   app = await launch();
   await addAccount(app, server);
   await addAccount(app, other, { sender: "Ben" });
-  await app.browser.refresh();
+  await app.reload();
 });
 
 async function discard() {
@@ -60,7 +60,7 @@ it("stays off until a provider is set up", async () => {
   settings.ai.default_provider = "local";
   settings.ai.accounts = { [String(ben.id)]: "off" };
   await app.invoke("set_settings", { settings });
-  await app.browser.refresh();
+  await app.reload();
 });
 
 it("summarizes a conversation, streamed, and says where the text goes", async () => {

@@ -1263,6 +1263,7 @@
   border-radius: var(--r-sm);
   background: var(--bg-raised);
   font-family: var(--font-mono);
+  font-variant-ligatures: none;
   font-size: var(--fs-xs);
   overflow-wrap: anywhere;
 }
@@ -1660,6 +1661,7 @@
 }
 .set-code {
   font-family: var(--font-mono);
+  font-variant-ligatures: none;
   font-size: var(--fs-sm);
   color: var(--text-2);
   overflow-wrap: anywhere;
@@ -2946,6 +2948,7 @@ button.cite:hover {
   background: var(--bg-canvas);
   color: var(--text);
   font-family: var(--font-mono);
+  font-variant-ligatures: none;
   font-size: var(--fs-sm);
   line-height: 1.55;
   white-space: pre-wrap;
@@ -3275,6 +3278,7 @@ button.rule-text:hover {
 }
 .input-affix > .muted {
   font-family: var(--font-mono);
+  font-variant-ligatures: none;
 }
 .input-affix .input {
   flex: 1;
@@ -3298,6 +3302,7 @@ button.rule-text:hover {
 .snippet-trigger {
   color: var(--text-2);
   font-family: var(--font-mono);
+  font-variant-ligatures: none;
   font-size: var(--fs-xs);
 }
 .writing-help {
@@ -3696,7 +3701,7 @@ button.rule-text:hover {
 .protect-badge.warn { background: var(--warning-soft); color: var(--text); }
 .protect-badge.warn > svg { color: var(--warning); }
 .protect-note { font-size: var(--fs-xs); }
-.protect-fingerprint { font-family: var(--font-mono); font-size: var(--fs-xs); overflow-wrap: anywhere; }
+.protect-fingerprint { font-family: var(--font-mono); font-variant-ligatures: none; font-size: var(--fs-xs); overflow-wrap: anywhere; }
 .passphrase-remember { display: flex; justify-content: flex-start; align-items: center; margin-top: var(--sp-3); color: var(--text-2); font-size: var(--fs-sm); }
 .protect-btn { padding: 0 var(--sp-2); }
 .protect-on { background: var(--bg-current); color: var(--text); }
@@ -3719,8 +3724,8 @@ button.rule-text:hover {
 .calset-day.on { background: var(--bg-current); color: var(--text); font-weight: var(--fw-semibold); }
 .calset-day:focus-visible { outline: var(--focus-ring); outline-offset: 1px; }
 .crypto-kind { margin-left: var(--sp-2); padding: 0 var(--sp-1-5); border-radius: var(--r-pill); background: var(--bg-hover); color: var(--text-2); font-size: var(--fs-2xs); font-weight: var(--fw-semibold); }
-.crypto-fp { font-family: var(--font-mono); font-size: var(--fs-2xs); }
-.crypto-armor { width: 100%; min-height: var(--crypto-armor-h); padding: var(--sp-2); font-family: var(--font-mono); font-size: var(--fs-xs); resize: vertical; }
+.crypto-fp { font-family: var(--font-mono); font-variant-ligatures: none; font-size: var(--fs-2xs); }
+.crypto-armor { width: 100%; min-height: var(--crypto-armor-h); padding: var(--sp-2); font-family: var(--font-mono); font-variant-ligatures: none; font-size: var(--fs-xs); resize: vertical; }
 .crypto-file { display: flex; align-items: center; gap: var(--sp-2); min-width: 0; }
 .crypto-lookup { display: flex; gap: var(--sp-2); margin-top: var(--sp-3); }
 .crypto-lookup .input { flex: 1; min-width: 0; }
@@ -4479,6 +4484,7 @@ button.rule-text:hover {
   background: var(--bg-active);
   color: var(--text-2);
   font-family: var(--font-mono);
+  font-variant-ligatures: none;
   font-size: var(--fs-xs);
   white-space: pre;
 }

@@ -172,7 +172,9 @@ pub fn pgp_locked(state: State<'_, AppState>, account_id: i64) -> Res<Option<Str
 #[tauri::command]
 pub fn smime_trust(state: State<'_, AppState>, message_id: i64) -> Res<smime::CertInfo> {
     let store = state.store();
-    let raw = store.raw_message(message_id)?.ok_or_else(|| Error::NotFound("message".into()))?;
+    let raw = store.raw_message(message_id)?.ok_or_else(|| {
+        Error::NotFound(mail_core::tr!("Die Nachricht gibt es nicht mehr.", "The message no longer exists.").into())
+    })?;
     let sender = store.message(message_id)?.summary.from.map(|a| a.email).unwrap_or_default();
     crypto::trust_signer(&store, &raw, &sender, &ShellKeys)
 }
@@ -257,11 +259,15 @@ pub fn crypto_abilities(state: State<'_, AppState>, account_id: i64, recipients:
 #[tauri::command]
 pub fn save_protected_attachment(state: State<'_, AppState>, message_id: i64, index: u32, path: String) -> Res<()> {
     let store = state.store();
-    let raw = store.raw_message(message_id)?.ok_or_else(|| Error::NotFound("message".into()))?;
+    let raw = store.raw_message(message_id)?.ok_or_else(|| {
+        Error::NotFound(mail_core::tr!("Die Nachricht gibt es nicht mehr.", "The message no longer exists.").into())
+    })?;
     let sender = store.message(message_id)?.summary.from.map(|a| a.email);
     let opened = crypto::open(&store, &raw, sender.as_deref(), &ShellKeys).and_then(|o| o.entity).ok_or_else(|| {
         Error::Invalid(mail_core::tr!("Die Nachricht lässt sich nicht öffnen.", "The message cannot be opened.").into())
     })?;
-    let data = mail_core::parse::attachment_data(&opened, index).ok_or_else(|| Error::NotFound("attachment".into()))?;
+    let data = mail_core::parse::attachment_data(&opened, index).ok_or_else(|| {
+        Error::NotFound(mail_core::tr!("Den Anhang gibt es nicht mehr.", "The attachment no longer exists.").into())
+    })?;
     mail_core::files::write_marked(std::path::Path::new(&path), &data).map_err(|e| Error::Invalid(e.to_string()))
 }

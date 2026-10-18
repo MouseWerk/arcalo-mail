@@ -59,8 +59,12 @@ fn phrase(text: &str) -> String {
 /// An address header (`From: Jörg <j@x>, …`) with its names encoded.
 fn address_header(name: &str, raw_value: &str) -> Result<String> {
     let probe = format!("{name}:{raw_value}\r\n\r\n");
-    let parsed = MessageParser::default().parse(probe.as_bytes()).ok_or_else(|| Error::Invalid("header".into()))?;
-    let header = parsed.parts.first().and_then(|p| p.headers.first()).ok_or_else(|| Error::Invalid("header".into()))?;
+    let parsed = MessageParser::default().parse(probe.as_bytes()).ok_or_else(|| {
+        Error::Invalid(crate::tr!("Die Adresse lässt sich nicht lesen.", "The address cannot be read.").into())
+    })?;
+    let header = parsed.parts.first().and_then(|p| p.headers.first()).ok_or_else(|| {
+        Error::Invalid(crate::tr!("Die Adresse lässt sich nicht lesen.", "The address cannot be read.").into())
+    })?;
     let mut out = vec![];
     if let Some(list) = header.value.as_address() {
         for a in list.iter() {

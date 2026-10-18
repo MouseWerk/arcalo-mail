@@ -41,8 +41,7 @@ async function shot(name) {
 async function setTheme(theme) {
   const s = await app.invoke("get_settings");
   await app.invoke("set_settings", { settings: { ...s, theme } });
-  await app.browser.refresh();
-  await app.waitUntil(async () => (await app.browser.execute(() => document.body.classList.contains("ready"))) === true, 20000, "ready after reload");
+  await app.reload();
 }
 
 const clickText = (sel, text) => mail.clickText(app, sel, text);
@@ -215,8 +214,7 @@ scene("screener", async () => {
   // The Screener switched on two days ago: who wrote for the first time since waits.
   const s = await app.invoke("get_settings");
   await app.invoke("set_settings", { settings: { ...s, screener: true, screener_since: NOW - 2 * 86400 } });
-  await app.browser.refresh();
-  await app.waitUntil(async () => (await app.browser.execute(() => document.body.classList.contains("ready"))) === true, 20000, "ready after reload");
+  await app.reload();
   await mail.openView(app, "New senders");
   await app.waitText(".screener-item", /Sofia Marin/);
   for (const item of await app.$$(".screener-item")) if ((await app.textOf(item)).includes("Sofia Marin")) await (await item.$(".smart-main")).click();
@@ -224,8 +222,7 @@ scene("screener", async () => {
   await shot("screener");
   const back = await app.invoke("get_settings");
   await app.invoke("set_settings", { settings: { ...back, screener: false, screener_since: null } });
-  await app.browser.refresh();
-  await app.waitUntil(async () => (await app.browser.execute(() => document.body.classList.contains("ready"))) === true, 20000, "ready after reload");
+  await app.reload();
 });
 
 scene("contrast", async () => {
@@ -260,8 +257,7 @@ async function assistantOn() {
   s.ai.providers = [{ id: "ollama", name: "Ollama", kind: "ollama", base_url: `http://127.0.0.1:${work.control}/ai`, model: "llama3.2", api_version: "" }];
   s.ai.default_provider = "ollama";
   await app.invoke("set_settings", { settings: s });
-  await app.browser.refresh();
-  await app.waitUntil(async () => (await app.browser.execute(() => document.body.classList.contains("ready"))) === true, 20000, "ready after reload");
+  await app.reload();
 }
 
 const answer = (task, text) => fetch(`http://127.0.0.1:${work.control}/ai-answer?task=${task}`, { method: "POST", body: text });
@@ -369,8 +365,7 @@ scene("contact-card", async () => {
   ].join("\r\n");
   await fetch(`http://127.0.0.1:${work.control}/dav-card?name=daniel`, { method: "POST", body: card });
   await app.invoke("carddav_add", { name: "Northwind", url: `http://127.0.0.1:${work.control}/dav`, username: WORK, password: "sample-password" });
-  await app.browser.refresh();
-  await app.waitUntil(async () => (await app.browser.execute(() => document.body.classList.contains("ready"))) === true, 20000, "ready after reload");
+  await app.reload();
   await openFolder("Work", "Inbox");
   await openMessage("Customer interviews: notes");
   await app.waitFor(".message-card .avatar-picture img", 10000);
@@ -466,8 +461,7 @@ scene("calendar", async () => {
     if (c.name === "Privat") await app.invoke("calendar_set", { id: c.id, patch: { name: "Personal", color: "#0d9488" } });
     if (c.kind === "local") await app.invoke("calendar_set", { id: c.id, patch: { hidden: true } });
   }
-  await app.browser.refresh();
-  await app.waitUntil(async () => (await app.browser.execute(() => document.body.classList.contains("ready"))) === true, 20000, "ready after reload");
+  await app.reload();
   await mail.openView(app, "Calendar");
   await clickText(".calv-views .segmented button", "Week");
   await app.waitText(".calv-ev .calv-ev-title", /Q2 launch planning/, 20000);

@@ -26,6 +26,7 @@ import {
 } from "../lib/security";
 import type { Settings } from "../lib/types";
 import { ConfirmDialog, Dialog, Segmented, Select, Spinner, Switch } from "./ui";
+import { isKey } from "../lib/ime";
 
 const BIOMETRIC: Record<Biometric, TKey> = {
   windows_hello: "lock.windowsHello",
@@ -385,7 +386,7 @@ function PinDialog({ onDone, onClose }: { onDone: (pin: string) => Promise<void>
           autoComplete="new-password"
           value={repeat}
           onChange={(e) => setRepeat(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && void save()}
+          onKeyDown={(e) => isKey(e, "Enter") && void save()}
           data-pin-repeat
         />
       </label>

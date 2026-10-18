@@ -70,7 +70,7 @@ before(async () => {
   await putEvent("work", "planung.ics", vevent("planung-1@other", "Planungsrunde", todayAt(9), todayAt(10)));
   app = await launch({ env: { ARCALO_MAIL_TICK_SECS: "2" } });
   await addAccount(app, server);
-  await app.browser.refresh();
+  await app.reload();
 });
 
 after(async () => {

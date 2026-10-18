@@ -25,7 +25,7 @@ before(async () => {
   });
   app = await launch();
   await addAccount(app, server);
-  await app.browser.refresh();
+  await app.reload();
   await waitRow(app, "Von früher");
 });
 
@@ -46,7 +46,7 @@ it("is off until switched on, then holds back first-time senders", async () => {
   await server.deliver(message({ from: "Werbung <angebote@werbung.example>", subject: "Großes Angebot", body: "Kauf!" }), { date: later });
   await server.deliver(message({ from: "Lea <lea@example.org>", subject: "Re: Frage an Lea", inReplyTo: "frage@example.org", body: "Antwort." }), { date: later });
   await server.deliver(message({ from: "Fremd <fremd@example.net>", subject: "Re: Frage an Lea", inReplyTo: "frage@example.org", body: "Auch eine Antwort." }), { date: later + 1 });
-  await app.browser.refresh();
+  await app.reload();
   await waitRow(app, "Re: Frage an Lea", true, 30000);
   await app.waitUntil(async () => (await viewCount(app, "Neue Absender")) === 2, 20000, "two senders wait");
   const list = await subjects(app);

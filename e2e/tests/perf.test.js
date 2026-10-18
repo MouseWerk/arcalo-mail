@@ -59,7 +59,7 @@ it("draws the first rows soon after a start, cold and warm", async () => {
   await addAccount(app, big, { name: "Gross" });
   await addAccount(app, small, { name: "Klein" });
   // Cold: the first start with these accounts (the store fills while the rows come).
-  await app.browser.refresh();
+  await app.reload();
   const cold = await firstRows();
   perf("cold-first-rows", cold);
   // Everything synced, then warm starts.
@@ -70,7 +70,7 @@ it("draws the first rows soon after a start, cold and warm", async () => {
   );
   const warm = [];
   for (let i = 0; i < 3; i++) {
-    await app.browser.refresh();
+    await app.reload();
     warm.push(await firstRows());
   }
   warm.sort((a, b) => a - b);

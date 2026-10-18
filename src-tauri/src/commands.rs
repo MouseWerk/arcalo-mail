@@ -416,7 +416,13 @@ pub async fn microsoft_reauth(app: AppHandle, state: State<'_, AppState>, id: i6
         Err(e) => return Ok(sign_in_failed(e)),
     };
     let Some(refresh) = tokens.refresh_token.clone() else {
-        return Ok(sign_in_failed(Error::Invalid("no refresh token".into())));
+        return Ok(sign_in_failed(Error::Invalid(
+            mail_core::tr!(
+                "Die Anmeldung hat keinen dauerhaften Zugang erteilt.",
+                "The sign-in granted no lasting access."
+            )
+            .into(),
+        )));
     };
     secrets::set(&secret_key(id, SecretKind::RefreshToken), &refresh)?;
     match state.worker(id) {

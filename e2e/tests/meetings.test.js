@@ -101,7 +101,7 @@ before(async () => {
   await addAccount(app, server);
   // Something else at that time: the card names it.
   await app.invoke("calendar_create", { calendarId: null, fields: { title: "Zahnarzt", start: tomorrowAt(10).toISOString(), end: new Date(tomorrowAt(10).getTime() + 1800e3).toISOString() } });
-  await app.browser.refresh();
+  await app.reload();
 });
 
 after(async () => {

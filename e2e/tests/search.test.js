@@ -21,7 +21,7 @@ before(async () => {
   await server.deliver(message({ from: "Verwaltung <info@verein.example>", subject: "Langes Protokoll", body: filler }), { date: now - 200 });
   app = await launch();
   await addAccount(app, server);
-  await app.browser.refresh();
+  await app.reload();
   await waitRow(app, "Langes Protokoll");
   // The bodies of the small messages are in the index.
   await app.waitUntil(async () => (await app.$$(".row-snippet")).length >= 2, 20000, "bodies fetched");

@@ -10,6 +10,7 @@ import { listDate, now } from "../lib/format";
 import type { AiSource, Destination } from "../lib/types";
 import { PrivacyLine } from "./Assistant";
 import { Select, Spinner } from "./ui";
+import { isKey } from "../lib/ime";
 
 export function AskView({ on, onOpen, onShowFolders, onSettings }: { on: boolean; onOpen: (s: AiSource) => void; onShowFolders: () => void; onSettings: () => void }) {
   const t = useT();
@@ -72,7 +73,7 @@ export function AskView({ on, onOpen, onShowFolders, onSettings }: { on: boolean
               aria-label={t("ask.question")}
               onChange={(e) => setQuestion(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
+                if (isKey(e, "Enter") && !e.shiftKey) {
                   e.preventDefault();
                   ask(question);
                 }

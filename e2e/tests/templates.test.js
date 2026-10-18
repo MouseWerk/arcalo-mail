@@ -17,7 +17,7 @@ before(async () => {
   app = await launch();
   const account = await addAccount(app, server);
   await app.invoke("update_account", { id: account.id, name: "", senderName: "Maria Muster", signature: "Maria Muster\nTel. 0123 456789" });
-  await app.browser.refresh();
+  await app.reload();
 });
 
 after(async () => {

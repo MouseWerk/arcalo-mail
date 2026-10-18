@@ -13,12 +13,18 @@ something is done, do it the way Arcalo does.
 - Local-first, no telemetry: mail is stored and searched on the device; the app talks only to the user's mail
   servers, the OAuth endpoints of the chosen provider and the update feed. No own server, no analytics, no crash
   upload.
-- Accounts in the first version: IMAP/SMTP, Microsoft 365/Outlook.com (OAuth), Gmail/Google Workspace (OAuth),
-  JMAP. Remote content in mail is blocked by default.
+- The first public release is 1.1.0 (there is no 1.0.0); later releases are 1.x. Decisions and their dates:
+  `docs/decisions.md`.
+- Accounts in 1.1.0: IMAP/SMTP, POP3/SMTP (with "leave on server"), Microsoft 365/Outlook.com (OAuth), JMAP, and
+  presets for iCloud, Yahoo, AOL, GMX, WEB.DE and T-Online. Gmail/Google Workspace works over IMAP with an app
+  password (the setup says how to create one); Google sign-in (OAuth) comes later, after Google's verification.
+  Exchange on premises (EWS) is part of the 1.1 scope. Remote content in mail is blocked by default.
 - App language: German uses "du", plus English. Glossary: `ui/src/locales/glossary.json`, rules in `docs/i18n.md`.
 - Encryption at rest is off by default (as in Arcalo); settings apply instantly with undo.
-- Code signing certificates are off the table (no paid certificate). iOS distribution needs the paid Apple
-  Developer Program: that is an open owner decision (`docs/plan.md`), not a default.
+- Code signing certificates are off the table (no paid certificate), as in Arcalo; the Microsoft Store (MSIX) and
+  winget are the Windows store paths. iOS is decided: MouseWerk joins the paid Apple Developer Program and Arcalo
+  Mail ships through TestFlight and the App Store (the one exception, for the App Store only). Android: Google
+  Play plus the APK attached to each GitHub release.
 - No pull requests unless asked. No force push, branch deletion or history rewrite without an explicit request.
 - Never commit signing keys (update signing, Android keystore). Secrets only in the OS credential store.
 
@@ -35,13 +41,21 @@ something is done, do it the way Arcalo does.
   own CSP (`ui/src/lib/mailframe.ts`). Never render mail HTML anywhere else, never add `allow-scripts`.
 - UI texts go through the i18n catalogs (`ui/src/locales/de.ts`, `en.ts`; backend `tr!`/`trf!` pairs); the
   translation check `ui/src/lib/translations.test.ts` must pass.
-- Use the design tokens in `ui/src/styles/tokens.css`; no one-off colors or sizes (`styles.test.ts` checks colors).
+- Use the design tokens in `ui/src/styles/tokens.css`; no one-off colors, weights, layers or radii
+  (`ui/src/lib/styles.test.ts` checks them). Text reaches 4.5:1 in every theme (`contrast.test.ts`).
 - No accent-colored borders, outlines, left bars, glows or gradient borders for selected, active or current
   states (the "AI look"); show them with a quiet neutral background tint and text weight or color. Keyboard
   focus stays visible, but only on `:focus-visible` and in a neutral style. No colored bars on the left side
   anywhere either (cards, toasts, notices, callouts, nav); use a tinted background and an icon. A plain
-  blockquote may keep a thin neutral gray line. Quality bar: Obsidian/Linear-level polish in light, dark and
-  contrast themes, 900–1920 px, split panes, and phones.
+  blockquote may keep a thin neutral gray line. `ui/src/lib/styles.test.ts` fails on each of these. Quality bar:
+  Obsidian/Linear-level polish in light, dark and contrast themes, 900–1920 px, split panes, and phones.
+- Accessibility and input: icon-only buttons have an `aria-label` (`a11y-buttons.test.ts`), a button that opens a
+  menu has `aria-haspopup` (`a11y-menus.test.ts`), and every handler of Enter or Escape asks `isComposing`/`isKey`
+  of `ui/src/lib/ime.ts` first (`ime-guard.test.ts`). No hard-coded UI text (`i18n-strings.test.ts`); key
+  combinations are written `Strg+K` (`keynotation.test.ts`). No emojis (`emoji.test.ts` checks the whole
+  repository).
+- Error texts that reach the UI go through `tr!`/`trf!` (`crates/mail-core/tests/guards.rs`, with the
+  positional migrations, the settings steps and no secrets in the settings).
 - Migrations in `crates/mail-core/migrations` are positional: take the next number, never fill a gap. Settings
   changes need a step in `crates/mail-core/src/settings_migrate.rs` (`SETTINGS_VERSION`).
 - Release notes: `docs/releases/v<version>.md` with "## Improved", "## Fixed" and
@@ -71,7 +85,15 @@ cd e2e && ARCALO_MAIL_APP="$PWD/../target/debug/arcalo-mail" node --test --test-
 
 `e2e/run.sh` does all of it. Pass the app only via `ARCALO_MAIL_APP`. The harness starts Xvfb on `DISPLAY` (default
 `:76`) when nothing runs there. Never kill processes by name or pattern (other runs may share the machine); kill
-only PIDs you started. Prefer root-cause fixes; never skip or weaken a test.
+only PIDs you started. Prefer root-cause fixes; never skip or weaken a test. Every test is wrapped in `guarded`
+(a screenshot on failure), a reload goes through `app.reload()`; `scripts/e2e-conventions.test.mjs` checks both.
+A test that fails once in five runs is a bug: the `e2e soak` workflow runs the whole suite N times.
+
+## Quality
+
+The quality process is Arcalo's: `docs/quality/README.md` (every guard, its Arcalo source and status; the device
+and theme matrix; the exit criterion), one plan and findings file per release (`docs/quality/q110/` for 1.1.0), and
+manual device checklists in `docs/testing/`.
 
 README screenshots: `cd e2e && npm run shots` writes `docs/screenshots/` from English sample mailboxes
 (`e2e/shots/mailbox.js`) on a fixed clock. Every picture shows the whole window or one whole dialog; look at each
