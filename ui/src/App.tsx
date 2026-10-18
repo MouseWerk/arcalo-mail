@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   AlarmClock,
+  Archive,
   BellRing,
   BookmarkMinus,
   BookmarkPlus,
@@ -11,6 +12,7 @@ import {
   Clock,
   Crosshair,
   Download,
+  FileText,
   Inbox,
   Layers,
   LogIn,
@@ -45,8 +47,8 @@ import { clickSelect, isControl, isTyping, keyAction, pagesFor, rangeGaps, type 
 import { closeToast, runUndo, setUndo, showToast } from "./lib/toasts";
 import { displayName, now as clockNow, setClock } from "./lib/format";
 import { whenLabel } from "./lib/when";
-import { backStep, isTouch, layoutFor } from "./lib/touch";
-import { applyTypeScale, onVisibility, watchViewport } from "./lib/viewport";
+import { SHORT_MAX, backStep, isTouch, layoutFor } from "./lib/touch";
+import { applyTypeScale, onVisibility, tellNightMode, tellSystemBars, watchViewport } from "./lib/viewport";
 import type {
   AccountInfo,
   AppInfo,
@@ -72,6 +74,7 @@ import type {
   WaitingSender,
   UnsubscribePlan,
 } from "./lib/types";
+import { AccountSwitcher, stepAccount, switcherAccounts } from "./components/AccountSwitcher";
 import { Sidebar, folderIcon, folderLabel, listedFolder, type FolderAction, type ViewEntry } from "./components/Sidebar";
 import { MessageList, type BulkAction } from "./components/MessageList";
 import { ReadingPane, type Loaded, type MarkAction, type MessageAction } from "./components/ReadingPane";
@@ -92,7 +95,7 @@ import { ProblemCard } from "./components/Setup";
 import { Toasts } from "./components/Toasts";
 import { UpdateLayer, setBeforeRestart, startUpdates } from "./components/Updates";
 import { Outbox } from "./components/Outbox";
-import { ConfirmDialog, Dialog, Menu, PromptDialog, type MenuItem } from "./components/ui";
+import { ConfirmDialog, Dialog, LAYERS_EVENT, Menu, PromptDialog, closeTopLayer, openLayers, type MenuItem } from "./components/ui";
 import { PassphraseDialog } from "./components/Meeting";
 
 /** On a phone one pane is shown at a time; `view` says which (app.css, narrow layout). On a
@@ -104,6 +107,10 @@ const PAGE = 100;
 /** Unread messages of a conversation expanded (and loaded) when it opens; the others on demand. */
 const UNREAD_OPEN = 4;
 
+/** The folders shown for all accounts together (the inboxes are the sorted inbox). */
+type UnifiedRole = "drafts" | "sent" | "archive";
+const UNIFIED_ROLES: UnifiedRole[] = ["drafts", "sent", "archive"];
+
 type ListState = { key: string; total: number; pages: Record<number, MessageSummary[]>; loading: boolean };
 
 type FolderDialog = FolderAction | null;
@@ -113,6 +120,8 @@ type FolderDialog = FolderAction | null;
 type Place =
   | { kind: "folder" }
   | { kind: "inbox"; account: number | null }
+  /** One folder of every account at once: „Alle Entwürfe“, „Alle gesendeten“, „Alle archivierten“. */
+  | { kind: "role"; role: UnifiedRole }
   | { kind: "screener" }
   | { kind: "snoozed" }
   | { kind: "later" }
@@ -122,6 +131,48 @@ type Place =
   | { kind: "ask" }
   | { kind: "files" }
   | { kind: "calendar" };
+
+const VIEW_KEY = "arcalo-mail.view";
+
+/** The lists kept for switching back at once, and how many of their first pages. */
+const LIST_CACHE_SIZE = 12;
+const LIST_CACHE_PAGES = 2;
+
+/** How long notices of a sync are gathered before the lists are loaded again. */
+const NOTICE_SETTLE_MS = 150;
+
+/** Remembers the view on this device (browser storage: a convenience, may be gone). */
+function rememberView(p: Place, mailbox: number | null) {
+  try {
+    localStorage.setItem(VIEW_KEY, JSON.stringify({ p, mailbox }));
+  } catch {
+    // Private mode or full storage: the next start opens the inbox.
+  }
+}
+
+/** The view of the last start when its account or folder is still there. */
+function lastView(list: AccountInfo[], all: Record<number, Mailbox[]>): [Place, number | null] | null {
+  let v: { p?: Place; mailbox?: number | null } | null = null;
+  try {
+    v = JSON.parse(localStorage.getItem(VIEW_KEY) ?? "null");
+  } catch {
+    return null;
+  }
+  const p = v?.p;
+  if (!p) return null;
+  const box = (id: number | null | undefined) => (id == null ? null : (Object.values(all).flat().find((m) => m.id === id) ?? null));
+  if (p.kind === "inbox") {
+    if (p.account == null) return list.length > 1 ? [p, null] : null;
+    const inbox = all[p.account]?.find((m) => m.role === "inbox");
+    return inbox ? [p, inbox.id] : null;
+  }
+  if (p.kind === "role") return list.length > 1 && UNIFIED_ROLES.includes(p.role) ? [p, null] : null;
+  if (p.kind === "folder") {
+    const m = box(v?.mailbox);
+    return m ? [p, m.id] : null;
+  }
+  return null;
+}
 
 /** A source of list pages, `key` names it (a new key starts the list afresh). */
 type Source = { key: string; page: (offset: number, limit: number) => Promise<Page> };
@@ -171,6 +222,10 @@ export function App() {
   const [list, setList] = useState<ListState>({ key: "", total: 0, pages: {}, loading: true });
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<MessageSummary[] | null>(null);
+  // The switcher's numbers: unread mail in each account's inbox.
+  const [acctCounts, setAcctCounts] = useState<Record<number, number>>({});
+  // Search runs over every account; the switcher narrows the results to one (null: all).
+  const [searchAccount, setSearchAccount] = useState<number | null>(null);
   // Bumped when the store changed (new mail, fetched bodies): open search results follow.
   const [searchRev, setSearchRev] = useState(0);
   const serverHits = useRef(new Set<number>());
@@ -203,6 +258,7 @@ export function App() {
   // What the calendar should open on (an appointment, a day, a new one's draft), once.
   const [calRequest, setCalRequest] = useState<CalendarRequest | null>(null);
   const [width, setWidth] = useState(() => (typeof window === "undefined" ? 1280 : window.innerWidth));
+  const [height, setHeight] = useState(() => (typeof window === "undefined" ? 800 : window.innerHeight));
   // Phones: the settings' list of sections, before a section opens.
   const [settingsNav, setSettingsNav] = useState(true);
   const searchRef = useRef<HTMLInputElement | null>(null);
@@ -213,6 +269,10 @@ export function App() {
 
   const touch = isTouch(info?.touch ?? false);
   const layout = layoutFor(width, touch);
+  // A phone in landscape: two panes side by side, but too low for a floating sheet; writing and
+  // the settings take the whole screen as on a phone.
+  const short = touch && layout === "tablet" && height < SHORT_MAX;
+  const fullScreen = layout === "phone" || short;
 
   const mailbox = useMemo(() => Object.values(mailboxes).flat().find((m) => m.id === mailboxId) ?? null, [mailboxes, mailboxId]);
   const threads = settings?.threads ?? true;
@@ -237,6 +297,10 @@ export function App() {
         return pages("followups", api.followups);
       case "folder":
         return mailboxId == null ? null : { key: `${mailboxId}:${threads}`, page: (o, l) => api.messages(mailboxId, o, l, threads) };
+      case "role": {
+        const role = place.role;
+        return { key: `role:${role}`, page: (o, l) => api.roleList(role, o, l) };
+      }
       default:
         return null;
     }
@@ -272,7 +336,9 @@ export function App() {
   useEffect(() => {
     if (!settings) return;
     rememberSplash({ off: !settings.startup_animation, bg: cssHex("--bg-app"), ink: cssHex("--text"), seal: cssHex("--accent") });
-  }, [settings?.startup_animation, theme]);
+    tellSystemBars(theme !== "light", cssHex("--bg-app"));
+    tellNightMode(settings.theme === "system" ? "system" : theme === "light" ? "light" : "dark");
+  }, [settings?.startup_animation, settings?.theme, theme]);
 
   const loadAccounts = useCallback(async () => {
     const list = await api.accounts();
@@ -295,7 +361,8 @@ export function App() {
   const openStart = useCallback((list: AccountInfo[], all: Record<number, Mailbox[]>, unified: boolean) => {
     const first = list.map((a) => all[a.id]?.find((m) => m.role === "inbox")).find(Boolean) ?? null;
     const [p, id]: [Place, number | null] =
-      list.length > 1 && unified ? [{ kind: "inbox", account: null }, null] : first ? [{ kind: "inbox", account: first.account_id }, first.id] : [{ kind: "folder" }, null];
+      lastView(list, all) ??
+      (list.length > 1 && unified ? [{ kind: "inbox", account: null }, null] : first ? [{ kind: "inbox", account: first.account_id }, first.id] : [{ kind: "folder" }, null]);
     // The refs at once: a folder list that arrives before the next render must not open another inbox.
     placeRef.current = p;
     mailboxRef.current = id;
@@ -316,7 +383,10 @@ export function App() {
   // ---------------------------------------------------------------- phones and tablets
 
   useEffect(() => {
-    const onResize = () => setWidth(window.innerWidth);
+    const onResize = () => {
+      setWidth(window.innerWidth);
+      setHeight(window.innerHeight);
+    };
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
   }, []);
@@ -328,6 +398,25 @@ export function App() {
     applyTypeScale(root);
     return watchViewport(root);
   }, [touch]);
+
+  // Touch screens: a long press opens the app's own menus (a folder's) or selects text in a
+  // field; nothing else shows the WebView's stock context menu.
+  useEffect(() => {
+    if (!touch) return;
+    const onMenu = (e: MouseEvent) => {
+      if (e.defaultPrevented) return;
+      if ((e.target as Element | null)?.closest?.("input, textarea, [contenteditable='true']")) return;
+      e.preventDefault();
+    };
+    document.addEventListener("contextmenu", onMenu);
+    return () => document.removeEventListener("contextmenu", onMenu);
+  }, [touch]);
+
+  // The layout on <html> too: what the app shows outside its panes (the setup, menus as bottom
+  // sheets, dialogs) follows it (app.css, components/ui.tsx).
+  useLayoutEffect(() => {
+    document.documentElement.dataset.layout = layout;
+  }, [layout]);
 
   // Hidden or shown again: a phone closes or opens its connections; back in front after a
   // while, the app checks for mail.
@@ -355,17 +444,27 @@ export function App() {
   }, []);
 
   /** The tabs' numbers, „Neue Absender“ and the time tools' counts. */
+  // Only the answers of the latest round count: an older one arriving late (a sync's reload
+  // that started before a snooze) must not put back counts that changed since.
+  const smartSeq = useRef(0);
   const reloadSmart = useCallback(() => {
     const p = placeRef.current;
-    void api.inboxCounts(p.kind === "inbox" ? p.account : null).then((c) => {
-      setCounts(c);
-      if (p.kind !== "inbox" || p.account == null) setScreenerCount(c.screener);
-    });
-    if (p.kind === "inbox" && p.account != null) void api.inboxCounts(null).then((c) => setScreenerCount(c.screener));
-    void api.timeCounts().then(setTimes);
-    if (p.kind === "screener") void api.screenerSenders(null).then(setWaiting);
-    if (p.kind === "subscriptions") void api.subscriptions().then(setSubs);
-    if (p.kind === "scheduled") void api.scheduled().then(setScheduled);
+    const seq = ++smartSeq.current;
+    const latest = <T,>(f: (v: T) => void) => (v: T) => {
+      if (seq === smartSeq.current) f(v);
+    };
+    void api.inboxCounts(p.kind === "inbox" ? p.account : null).then(
+      latest((c) => {
+        setCounts(c);
+        if (p.kind !== "inbox" || p.account == null) setScreenerCount(c.screener);
+      }),
+    );
+    if (p.kind === "inbox" && p.account != null) void api.inboxCounts(null).then(latest((c) => setScreenerCount(c.screener)));
+    void api.timeCounts().then(latest(setTimes));
+    void api.accountCounts().then(latest((list) => setAcctCounts(Object.fromEntries(list.map((c) => [c.account_id, c.unread])))));
+    if (p.kind === "screener") void api.screenerSenders(null).then(latest(setWaiting));
+    if (p.kind === "subscriptions") void api.subscriptions().then(latest(setSubs));
+    if (p.kind === "scheduled") void api.scheduled().then(latest(setScheduled));
   }, []);
 
   useEffect(() => {
@@ -374,11 +473,21 @@ export function App() {
 
   // ---------------------------------------------------------------- the list
 
-  const fetchPage = useCallback(async (key: string, page: number) => {
+  // Pages on their way: each is asked for once while the list scrolls over it.
+  const inflight = useRef(new Set<string>());
+  const fetchPage = useCallback(async (key: string, page: number, again = false) => {
     const src = sourceRef.current;
     if (!src || src.key !== key) return;
-    const r = await src.page(page * PAGE, PAGE);
-    setList((l) => (l.key === key ? { ...l, total: r.total, pages: { ...l.pages, [page]: r.items }, loading: false } : l));
+    const id = `${key}#${page}`;
+    // `again`: after a change the page is asked for anew, also while an older answer is on its way.
+    if (inflight.current.has(id) && !again) return;
+    if (!again) inflight.current.add(id);
+    try {
+      const r = await src.page(page * PAGE, PAGE);
+      setList((l) => (l.key === key ? { ...l, total: r.total, pages: { ...l.pages, [page]: r.items }, loading: false } : l));
+    } finally {
+      if (!again) inflight.current.delete(id);
+    }
   }, []);
 
   /** Loads list pages now (into the list too) and returns them. */
@@ -394,12 +503,13 @@ export function App() {
   const refreshList = useCallback(() => {
     setList((l) => {
       const pages = Object.keys(l.pages).map(Number);
-      for (const p of pages.length ? pages : [0]) void fetchPage(l.key, p);
+      for (const p of pages.length ? pages : [0]) void fetchPage(l.key, p, true);
       return l;
     });
   }, [fetchPage]);
 
-  useEffect(() => {
+  // Before the paint: a list seen before shows in the same frame as the click that asked for it.
+  useLayoutEffect(() => {
     // A place without a list (Dateien, Frag dein Postfach, Neue Absender, Abos, Geplant): the
     // last folder's rows go, so no key works on a list that is not shown.
     if (!listKey) {
@@ -407,27 +517,43 @@ export function App() {
       setSel({ ids: [], anchor: null });
       return;
     }
-    setList({ key: listKey, total: 0, pages: {}, loading: true });
+    // A list seen a moment ago (another tab, account or folder) shows at once from its last
+    // pages and is brought up to date behind them; a new one starts empty.
+    const seen = listCache.current.get(listKey);
+    setList(seen ? { ...seen, loading: false } : { key: listKey, total: 0, pages: {}, loading: true });
     setSel({ ids: [], anchor: null });
     setCurrent(null);
     setThread([]);
     setStream(null);
-    void fetchPage(listKey, 0);
+    for (const p of seen ? Object.keys(seen.pages).map(Number) : [0]) void fetchPage(listKey, p, !!seen);
   }, [listKey]);
+
+  // The lists seen last, their first pages: for switching back without waiting.
+  const listCache = useRef(new Map<string, ListState>());
+  useEffect(() => {
+    if (!list.key || list.loading) return;
+    const cache = listCache.current;
+    const first = Object.fromEntries(Object.entries(list.pages).filter(([p]) => Number(p) < LIST_CACHE_PAGES));
+    cache.delete(list.key);
+    cache.set(list.key, { ...list, pages: first });
+    while (cache.size > LIST_CACHE_SIZE) cache.delete(cache.keys().next().value as string);
+  }, [list]);
 
   const onRange = useCallback(
     (start: number, end: number) => {
       if (results || !listKey) return;
-      for (const p of pagesFor(start, end, PAGE)) if (!list.pages[p]) void fetchPage(list.key, p);
+      // Half a page ahead and behind: the next rows are there before the list reaches them.
+      for (const p of pagesFor(Math.max(0, start - PAGE / 2), Math.min(list.total || end, end + PAGE / 2), PAGE)) if (!list.pages[p]) void fetchPage(list.key, p);
     },
     [results, listKey, list.pages, list.key, fetchPage],
   );
 
+  const shown = useMemo(() => (results && searchAccount != null ? results.filter((m) => m.account_id === searchAccount) : results), [results, searchAccount]);
   const rowAt = useCallback(
-    (i: number): MessageSummary | undefined => (results ? results[i] : list.pages[Math.floor(i / PAGE)]?.[i % PAGE]),
-    [results, list.pages],
+    (i: number): MessageSummary | undefined => (shown ? shown[i] : list.pages[Math.floor(i / PAGE)]?.[i % PAGE]),
+    [shown, list.pages],
   );
-  const total = results ? results.length : list.total;
+  const total = shown ? shown.length : list.total;
   const order = useMemo(() => Array.from({ length: total }, (_, i) => rowAt(i)?.id), [total, rowAt]);
 
   // Search as you type, over all accounts (local index, works offline). An answer counts only
@@ -441,6 +567,7 @@ export function App() {
     serverHits.current = new Set();
     if (!q) {
       setResults(null);
+      setSearchAccount(null);
       return;
     }
     let alive = true;
@@ -1012,7 +1139,9 @@ export function App() {
   };
 
   const newMessage = (to: string[] = []) => {
-    const account = accountById(mailbox?.account_id) ?? accounts?.[0] ?? null;
+    // From the account in view (its inbox or folder, or the one the switcher narrowed to).
+    const here = mailbox?.account_id ?? (place.kind === "inbox" ? place.account : null) ?? (results ? searchAccount : null);
+    const account = accountById(here) ?? accounts?.[0] ?? null;
     void startCompose(emptyDraft(account, rich, to));
   };
 
@@ -1226,6 +1355,30 @@ export function App() {
 
   // ---------------------------------------------------------------- notices
 
+  // A sync reports in batches, several a second while a large account catches up: what they ask
+  // for is gathered and done once a moment later (one reload per account, one of the list),
+  // instead of a round of reloads and renders per batch.
+  const settle = useRef<{ accounts: Set<number>; list: boolean; search: boolean; timer: number | null }>({ accounts: new Set(), list: false, search: false, timer: null });
+  const settleWith = useRef({ reloadMailboxes, reloadSmart, refreshList });
+  settleWith.current = { reloadMailboxes, reloadSmart, refreshList };
+  const settleSoon = (account: number, list: boolean, search: boolean) => {
+    const s = settle.current;
+    s.accounts.add(account);
+    s.list ||= list;
+    s.search ||= search;
+    if (s.timer != null) return;
+    s.timer = window.setTimeout(() => {
+      const { accounts: ids, list: l, search: q } = settle.current;
+      settle.current = { accounts: new Set(), list: false, search: false, timer: null };
+      const f = settleWith.current;
+      for (const id of ids) void f.reloadMailboxes(id);
+      f.reloadSmart();
+      if (q) setSearchRev((v) => v + 1);
+      if (l) f.refreshList();
+    }, NOTICE_SETTLE_MS);
+  };
+  useEffect(() => () => window.clearTimeout(settle.current.timer ?? undefined), []);
+
   useEffect(
     () =>
       onNotice((n: Notice) => {
@@ -1234,14 +1387,10 @@ export function App() {
             setAccounts((list) => list?.map((a) => (a.id === n.account_id ? { ...a, status: n } : a)) ?? list);
             break;
           case "changed":
-            void reloadMailboxes(n.account_id);
-            reloadSmart();
-            setSearchRev((v) => v + 1);
-            if (!n.mailboxes.length || placeRef.current.kind !== "folder" || (mailboxId != null && n.mailboxes.includes(mailboxId))) refreshList();
+            settleSoon(n.account_id, !n.mailboxes.length || placeRef.current.kind !== "folder" || (mailboxId != null && n.mailboxes.includes(mailboxId)), true);
             break;
           case "new_mail":
-            void reloadMailboxes(n.account_id);
-            reloadSmart();
+            settleSoon(n.account_id, false, false);
             break;
           case "outbox":
             void api.outbox().then(setOutbox);
@@ -1311,7 +1460,9 @@ export function App() {
   };
   /** The compose sheet with what an e-mail link names. */
   const composeMailto = (m: Mailto) => {
-    const account = accountById(mailbox?.account_id) ?? accounts?.[0] ?? null;
+    // From the account in view (its inbox or folder, or the one the switcher narrowed to).
+    const here = mailbox?.account_id ?? (place.kind === "inbox" ? place.account : null) ?? (results ? searchAccount : null);
+    const account = accountById(here) ?? accounts?.[0] ?? null;
     const d = emptyDraft(account, rich, m.to);
     d.cc = m.cc;
     d.bcc = m.bcc;
@@ -1504,6 +1655,9 @@ export function App() {
   // ---------------------------------------------------------------- places
 
   const goPlace = (p: Place, mailbox: number | null = null) => {
+    // The view the user went to, for the next start on this device (where the app placed the
+    // list by itself, as with the first account, it decides again).
+    if (p.kind === "inbox" || p.kind === "role" || (p.kind === "folder" && mailbox != null)) rememberView(p, mailbox);
     // An inbox opens at its first tab.
     if (p.kind === "inbox") setTab("people");
     setQuery("");
@@ -1515,6 +1669,27 @@ export function App() {
 
   /** A folder of the sidebar; an inbox opens sorted. */
   const goMailbox = (m: Mailbox) => goPlace(m.role === "inbox" ? { kind: "inbox", account: m.account_id } : { kind: "folder" }, m.id);
+
+  // ---------------------------------------------------------------- switching accounts
+
+  /** The folder the switcher moves between accounts: the inbox, or Drafts, Sent or Archive. */
+  const switchRole: "inbox" | UnifiedRole | null =
+    place.kind === "inbox"
+      ? "inbox"
+      : place.kind === "role"
+        ? place.role
+        : place.kind === "folder" && (mailbox?.role === "inbox" || mailbox?.role === "drafts" || mailbox?.role === "sent" || mailbox?.role === "archive")
+          ? mailbox.role
+          : null;
+  const switchCurrent = results ? searchAccount : place.kind === "inbox" ? place.account : place.kind === "role" ? null : (mailbox?.account_id ?? null);
+  const inboxUnread = (id: number) => acctCounts[id] ?? (mailboxes[id] ?? []).filter((m) => m.role === "inbox").reduce((n, m) => n + m.unread, 0);
+  const pickAccount = (id: number | null) => {
+    if (results) return setSearchAccount(id);
+    if (!switchRole) return;
+    if (id == null) return goPlace(switchRole === "inbox" ? { kind: "inbox", account: null } : { kind: "role", role: switchRole });
+    const box = (mailboxes[id] ?? []).find((m) => m.role === switchRole) ?? (mailboxes[id] ?? []).find((m) => m.role === "inbox");
+    if (box) goMailbox(box);
+  };
 
   /** The color (1–6) of an account's dot, with two accounts or more. */
   const accountColor = (id: number): number | null => {
@@ -1528,7 +1703,7 @@ export function App() {
     if (!settings) return [];
     const out: ViewEntry[] = [];
     const here = (k: Place["kind"]) => !showOutbox && place.kind === k;
-    const add = (id: Exclude<Place["kind"], "folder" | "inbox">, label: string, icon: ViewEntry["icon"], count: number, show: boolean) => {
+    const add = (id: Exclude<Place["kind"], "folder" | "inbox" | "role">, label: string, icon: ViewEntry["icon"], count: number, show: boolean) => {
       if (show || here(id) || all) out.push({ id, label, icon, count, current: here(id), onSelect: () => goPlace({ kind: id }) });
     };
     if (multi && settings.unified_inbox) {
@@ -1544,6 +1719,18 @@ export function App() {
         current: !showOutbox && place.kind === "inbox" && place.account == null,
         onSelect: () => goPlace({ kind: "inbox", account: null }),
       });
+      const ICON: Record<UnifiedRole, ViewEntry["icon"]> = { drafts: FileText, sent: Send, archive: Archive };
+      for (const role of UNIFIED_ROLES) {
+        if (!Object.values(mailboxes).some((list) => list.some((m) => m.role === role))) continue;
+        out.push({
+          id: `unified-${role}`,
+          label: t(`unified.${role}`),
+          icon: ICON[role],
+          count: 0,
+          current: !showOutbox && place.kind === "role" && place.role === role,
+          onSelect: () => goPlace({ kind: "role", role }),
+        });
+      }
     }
     add("screener", t("folder.screener"), UserPlus, screenerCount, settings.screener);
     add("snoozed", t("folder.snoozed"), Clock, times.snoozed, times.snoozed > 0);
@@ -1646,8 +1833,9 @@ export function App() {
   syncBack.current = () => {
     if (!touch) return;
     const marked = (window.history.state as { arcaloBack?: boolean } | null)?.arcaloBack === true;
-    if (stepRef.current && !marked) window.history.pushState({ arcaloBack: true }, "");
-    else if (!stepRef.current && marked) {
+    const way = stepRef.current || openLayers() > 0;
+    if (way && !marked) window.history.pushState({ arcaloBack: true }, "");
+    else if (!way && marked) {
       ownBacks.current++;
       window.history.back();
     }
@@ -1668,12 +1856,21 @@ export function App() {
         syncBack.current();
         return;
       }
+      // A menu, sheet or dialog over the screen closes first.
+      if (closeTopLayer()) return;
       goBack.current();
     };
+    const onLayers = () => syncBack.current();
     window.addEventListener("popstate", onPop);
-    return () => window.removeEventListener("popstate", onPop);
+    window.addEventListener(LAYERS_EVENT, onLayers);
+    return () => {
+      window.removeEventListener("popstate", onPop);
+      window.removeEventListener(LAYERS_EVENT, onLayers);
+    };
   }, [touch]);
-  useEffect(() => syncBack.current(), [touch, step, settingsNav]);
+  // Before the screen is painted: a Back right after a screen showed finds its entry (after
+  // the paint it came too late, and Back at the bottom of the history leaves the app).
+  useLayoutEffect(() => syncBack.current(), [touch, step, settingsNav]);
 
   // ---------------------------------------------------------------- swipes and pull to refresh
 
@@ -1741,6 +1938,8 @@ export function App() {
         return t("folder.later");
       case "followups":
         return t("folder.followups");
+      case "role":
+        return t(`unified.${place.role}`);
       default:
         return mailbox ? folderLabel(mailbox, t) : t("app.name");
     }
@@ -1793,7 +1992,7 @@ export function App() {
     attachment({ id: it.id, message_id: it.message_id, part_index: 0, filename: it.filename, mime_type: it.mime_type, size: it.size, content_id: null, inline: false, section: null }, how);
 
   return (
-    <div className="app" data-view={view} data-layout={layout} data-touch={touch ? "" : undefined} data-composing={compose ? "" : undefined}>
+    <div className="app" data-view={view} data-layout={layout} data-short={short ? "" : undefined} data-touch={touch ? "" : undefined} data-composing={compose ? "" : undefined}>
       {!inApp() && <div className="demo-bar">{t("app.demo")}</div>}
       <div className="panes">
         {layout === "tablet" && view === "folders" && <div className="drawer-scrim" onClick={() => setView("list")} aria-hidden />}
@@ -1878,6 +2077,7 @@ export function App() {
             onShowFolders={() => setView("folders")}
             request={calRequest}
             onRequestTaken={() => setCalRequest(null)}
+            phone={layout === "phone"}
           />
         ) : !results && place.kind === "ask" ? (
           <AskView on={aiOn} onOpen={(s) => openById(s.message_id)} onShowFolders={() => setView("folders")} onSettings={() => setSettingsOpen("ai")} />
@@ -1933,14 +2133,37 @@ export function App() {
             searching={results !== null}
             serverSearch={results !== null ? server : null}
             showSnippets={settings.show_snippets}
+            avatars={layout === "phone"}
             loading={!results && list.loading}
             emptyText={emptyText}
+            onSwipeAccount={
+              multi && (switchRole || results) && layout === "phone"
+                ? (dir) => pickAccount(stepAccount((accounts ?? []).map((a) => a.id), switchCurrent, dir))
+                : undefined
+            }
             head={
-              inInbox ? (
-                <InboxHead tab={tab} counts={counts} focus={focus} onTab={setTab} onFocusEnd={() => updateSettings({ focus: false })} />
-              ) : timeList && placeNote ? (
-                <p className="muted smart-note">{placeNote}</p>
-              ) : undefined
+              <>
+                {multi && (switchRole || results) && (
+                  <AccountSwitcher
+                    accounts={switcherAccounts(accounts, inboxUnread, accountColor)}
+                    current={switchCurrent}
+                    total={(accounts ?? []).reduce((n, a) => n + inboxUnread(a.id), 0)}
+                    onPick={pickAccount}
+                  />
+                )}
+                {inInbox ? (
+                  <InboxHead
+                    tab={tab}
+                    counts={counts}
+                    focus={focus}
+                    onTab={setTab}
+                    onFocusEnd={() => updateSettings({ focus: false })}
+                    onFocus={layout === "phone" ? () => updateSettings({ focus: true }) : undefined}
+                  />
+                ) : timeList && placeNote ? (
+                  <p className="muted smart-note">{placeNote}</p>
+                ) : undefined}
+              </>
             }
             titleExtra={
               inInbox ? (
@@ -1997,7 +2220,7 @@ export function App() {
             listRef={listRef}
             touch={touch ? { left: settings.swipe_left, right: settings.swipe_right, onSwipe: (m, a) => void swiped(m, a), onRefresh: refresh } : undefined}
             extra={
-              touch && layout !== "desktop" ? (
+              touch && layout !== "desktop" && !results ? (
                 <button type="button" className="compose-fab" onClick={() => newMessage()} aria-label={t("nav.compose")}>
                   <PenSquare size={20} strokeWidth={1.75} aria-hidden />
                   <span>{t("nav.compose")}</span>
@@ -2072,14 +2295,12 @@ export function App() {
           error={composeError}
           sending={sending}
           saved={isSaved(compose)}
-          modal={layout === "phone"}
+          modal={fullScreen}
+          phone={fullScreen}
           onChange={(d) => setCompose((c) => (c && c.uid === d.uid ? d : c))}
           onSend={(followupSecs) => void send(followupSecs)}
           onSendLater={(at, followupSecs) => (at == null ? setWhen({ kind: "send", followupSecs }) : void sendLater(at, followupSecs))}
-          onSaveDraft={() => {
-            const c = composeRef.current;
-            if (c) void saveDraft(committed(c), false);
-          }}
+          onSaveDraft={(d) => void saveDraft(committed(d), false)}
           onClose={() => void closeCompose()}
           onDiscard={discardCompose}
           aiOn={aiOn}

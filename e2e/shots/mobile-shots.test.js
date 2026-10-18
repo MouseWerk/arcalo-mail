@@ -1,5 +1,6 @@
 // Screenshots of the phone and tablet layouts (not part of the test suite): the desktop app in
-// its touch layout (ARCALO_MAIL_TOUCH=1) at an iPhone's size (390×844) and an iPad's (820×1180),
+// its touch layout (ARCALO_MAIL_TOUCH=1) at an iPhone's size (390×844), an Android phone's (412×915)
+// with its system bars, and an iPad's (820×1180),
 // with the sample mailboxes of the README pictures on the fixed clock, light and dark. Every
 // picture shows the whole window. Run after building the app and the test server:
 //   cd e2e && npm run shots:mobile
@@ -119,8 +120,7 @@ test("phone, writing and the settings", async () => {
   });
   await app.browser.execute(() => document.execCommand("insertText", false, "Thanks Daniel, approved for the budget review."));
   await shot("phone-compose-light");
-  await app.click('.compose-foot [aria-label="Discard"]');
-  await app.waitUntil(async () => (await app.$$(".compose")).length === 0, 8000, "compose closed");
+  await mail.discardCompose(app, "Discard");
   await app.browser.back();
   await app.click(".folders-btn");
   await app.click('.sidebar-head [aria-label="Settings"]');
@@ -163,4 +163,27 @@ test("phone with an iPhone's insets", async () => {
   await shot("phone-insets-message-light");
   await app.browser.back();
   await shot("phone-insets-list-light");
+});
+
+test("phone with Android's system bars", async () => {
+  // A 1080-pixel Android phone drawn edge to edge, with the bars' sizes the shell hands over
+  // (SystemBars.kt: status bar 48 px, gesture bar 24 px): the bars of the app reach under them,
+  // their content stays clear.
+  await app.browser.setWindowSize(412, 915);
+  for (const theme of ["dark", "light"]) {
+    await setTheme(theme);
+    const bars = () =>
+      app.browser.execute(() => {
+        const s = document.documentElement.style;
+        s.setProperty("--sat", "48px");
+        s.setProperty("--sab", "24px");
+      });
+    await bars();
+    await inbox();
+    await shot(`phone-android-list-${theme}`);
+    await app.click(".compose-fab");
+    await app.waitFor(".compose");
+    await shot(`phone-android-compose-${theme}`);
+    await mail.discardCompose(app, "Discard");
+  }
 });

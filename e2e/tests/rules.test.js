@@ -48,8 +48,8 @@ it("makes a rule in the app, previews it and runs it on the inbox", async () => 
     i.dispatchEvent(new Event("input", { bubbles: true }));
   }, cond, "billing@shop.example");
   const act = (await app.$$(".rule-editor .rule-block"))[1];
-  await app.waitUntil(async () => (await act.$$('select[aria-label="Ordner"] option')).length > 2, 10000, "the folders");
-  await choose(app, await act.$('select[aria-label="Ordner"]'), "Rechnungen");
+  await app.waitUntil(async () => Number(await (await act.$('.select-btn[aria-label="Ordner"]')).getAttribute("data-count")) > 2, 10000, "the folders");
+  await choose(app, await act.$('.select-btn[aria-label="Ordner"]'), "Rechnungen");
   await clickText(app, ".rule-tools .btn span", "Welche Mails passen?");
   await app.waitText(".rule-preview p", /2 Nachrichten auf diesem Gerät passen/);
   assert.match(await app.text(".rule-preview"), /Rechnung 1001[\s\S]*|Rechnung 1002/);
@@ -82,14 +82,14 @@ it("writes a server rule as Sieve over ManageSieve", async () => {
   await clickText(app, ".sieve-server .btn", "Prüfen");
   await app.waitText(".rule-where-note", new RegExp(`Sieve auf 127\\.0\\.0\\.1:${server.sieve}`), 10000);
   const cond = (await app.$$(".rule-editor .rule-block"))[0];
-  await choose(app, await cond.$('select[aria-label="Feld"]'), "subject");
+  await choose(app, await cond.$('.select-btn[aria-label="Feld"]'), "subject");
   await app.browser.execute((e, v) => {
     const i = e.querySelector(".rule-line .input");
     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(i, v);
     i.dispatchEvent(new Event("input", { bubbles: true }));
   }, cond, "Newsletter");
   const act = (await app.$$(".rule-editor .rule-block"))[1];
-  await choose(app, await act.$('select[aria-label="Aktion"]'), "mark_read");
+  await choose(app, await act.$('.select-btn[aria-label="Aktion"]'), "mark_read");
   await clickText(app, ".dialog-foot .btn-primary span", "Regel speichern");
   await app.waitText(".rule-item .rule-name", /Newsletter markieren/);
   await app.waitUntil(async () => /Newsletter/.test(await activeScript()), 10000, "the script on the server");

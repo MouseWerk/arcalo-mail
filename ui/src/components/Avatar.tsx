@@ -39,7 +39,7 @@ export function Avatar({ who, size = "md", className }: { who: Address | null; s
   const cls = `avatar${size === "sm" ? " avatar-sm" : size === "lg" ? " avatar-lg" : ""}${src ? " avatar-picture" : ""}${className ? ` ${className}` : ""}`;
   return (
     <span className={cls} aria-hidden>
-      {src ? <img src={src} alt="" draggable={false} /> : initials(who)}
+      {src ? <img src={src} alt="" draggable={false} loading="lazy" decoding="async" /> : initials(who)}
     </span>
   );
 }

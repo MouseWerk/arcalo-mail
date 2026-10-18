@@ -9,3 +9,8 @@
 -keep class de.mousewerk.arcalo.mail.MailCheckWorker { *; }
 -keep class de.mousewerk.arcalo.mail.MailWidget { *; }
 -keep class de.mousewerk.arcalo.mail.AppFacts { *; }
+
+# Called from the page by name (SystemBars.kt, ArcaloSystemBars in ui/src/lib/viewport.ts).
+-keepclassmembers class de.mousewerk.arcalo.mail.SystemBars$Bridge {
+    @android.webkit.JavascriptInterface <methods>;
+}

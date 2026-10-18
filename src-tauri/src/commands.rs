@@ -482,6 +482,33 @@ pub fn list_messages(state: State<'_, AppState>, mailbox_id: i64, offset: u32, l
     Ok(Page { total: store.list_len(mailbox_id, threads)?, offset, items })
 }
 
+/// One folder of every account at once: „Alle Entwürfe“, „Alle gesendeten“, „Alle archivierten“
+/// (`role` as `Role::as_str`), newest first and one row per message, by the date index
+/// (`unified::folder_page`). The list pages by offset: the rows up to the page are read and the
+/// earlier ones skipped.
+#[tauri::command]
+pub fn list_role(state: State<'_, AppState>, role: String, offset: u32, limit: u32) -> Res<Page> {
+    let store = state.store();
+    let Some(role) = mail_core::imap::Role::parse(&role) else { return Ok(Page { total: 0, offset, items: vec![] }) };
+    let limit = limit.min(500);
+    let mut total = 0u32;
+    for a in store.accounts()? {
+        for m in store.mailboxes(a.id)?.into_iter().filter(|m| m.role == Some(role) && m.selectable) {
+            total += store.list_len(m.id, false)?;
+        }
+    }
+    let page = mail_core::unified::folder_page(&store, role, None, None, offset.saturating_add(limit))?;
+    let mut items: Vec<_> = page.items.into_iter().skip(offset as usize).collect();
+    crate::tools::annotate(&store, &mut items);
+    Ok(Page { total, offset, items })
+}
+
+/// The unread and total mail of every account's inbox (the account switcher's numbers).
+#[tauri::command]
+pub fn account_counts(state: State<'_, AppState>) -> Res<Vec<mail_core::unified::AccountCount>> {
+    mail_core::unified::inbox_counts(&state.store())
+}
+
 #[tauri::command]
 pub fn list_thread(state: State<'_, AppState>, thread_id: i64) -> Res<Vec<MessageSummary>> {
     let store = state.store();
