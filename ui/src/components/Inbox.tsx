@@ -24,8 +24,23 @@ export const CATEGORY_ICON: Record<Category, typeof Bell> = {
 };
 
 /** The tabs (a tab without mail and not chosen stays out, People always shows), or the focus
- *  note while focus is on. */
-export function InboxHead({ tab, counts, focus, onTab, onFocusEnd }: { tab: Category; counts: InboxCounts | null; focus: boolean; onTab: (c: Category) => void; onFocusEnd: () => void }) {
+ *  note while focus is on. On a phone (`onFocus`): every tab, with its name, in a row that
+ *  scrolls sideways, and Focus as the last chip (the header has no room for its button). */
+export function InboxHead({
+  tab,
+  counts,
+  focus,
+  onTab,
+  onFocusEnd,
+  onFocus,
+}: {
+  tab: Category;
+  counts: InboxCounts | null;
+  focus: boolean;
+  onTab: (c: Category) => void;
+  onFocusEnd: () => void;
+  onFocus?: () => void;
+}) {
   const t = useT();
   if (focus)
     return (
@@ -37,8 +52,8 @@ export function InboxHead({ tab, counts, focus, onTab, onFocusEnd }: { tab: Cate
         </button>
       </div>
     );
-  const shown = CATEGORIES.filter((c) => c === "people" || c === tab || (counts?.tabs.find((x) => x.category === c)?.total ?? 0) > 0);
-  return (
+  const shown = onFocus ? CATEGORIES : CATEGORIES.filter((c) => c === "people" || c === tab || (counts?.tabs.find((x) => x.category === c)?.total ?? 0) > 0);
+  const tabs = (
     <div className="inbox-tabs" role="tablist" aria-label={t("inbox.tabs")}>
       {shown.map((c) => {
         const count = counts?.tabs.find((x) => x.category === c);
@@ -74,6 +89,16 @@ export function InboxHead({ tab, counts, focus, onTab, onFocusEnd }: { tab: Cate
           </button>
         );
       })}
+    </div>
+  );
+  if (!onFocus) return tabs;
+  return (
+    <div className="inbox-chips">
+      {tabs}
+      <button type="button" className="inbox-tab inbox-focus-chip" aria-pressed={false} aria-label={t("inbox.focusToggle")} onClick={onFocus}>
+        <Crosshair size={14} strokeWidth={1.75} aria-hidden />
+        <span className="inbox-tab-label">{t("inbox.focus")}</span>
+      </button>
     </div>
   );
 }

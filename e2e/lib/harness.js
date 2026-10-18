@@ -192,6 +192,20 @@ export async function launch({ width = 1440, height = 900, locale = "de-DE", env
     async click(sel) {
       const el = await browser.$(sel);
       await el.waitForClickable({ timeout: 8000 });
+      // A sheet still sliding in moves its buttons between the press and the release: wait
+      // until the element stands still (two frames at the same place), as a finger would.
+      await browser.executeAsync((e, done) => {
+        const until = performance.now() + 1500;
+        let last = "";
+        const f = () => {
+          const r = e.getBoundingClientRect();
+          const now = `${r.left},${r.top},${r.width},${r.height}`;
+          if (now === last || performance.now() > until) return done();
+          last = now;
+          requestAnimationFrame(() => requestAnimationFrame(f));
+        };
+        f();
+      }, el);
       await el.click();
       return el;
     },

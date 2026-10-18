@@ -28,7 +28,7 @@ import type {
   Template,
   Tone,
 } from "../lib/types";
-import { ConfirmDialog, Dialog, Menu, Segmented, Spinner, Switch, useSaveOnLeave, type MenuItem } from "./ui";
+import { ConfirmDialog, Dialog, Menu, Segmented, Select, Spinner, Switch, useSaveOnLeave, type MenuItem } from "./ui";
 import { forgetPictureCache } from "./Avatar";
 
 function Row({ label, description, children }: { label: string; description?: string; children: ReactNode }) {
@@ -138,7 +138,7 @@ function ProviderCard({ p, onChange, onRemove }: { p: AiProvider; onChange: (p: 
       <div className="set-fields">
         <label className="stack-field">
           <span className="field-label">{t("ai.address")}</span>
-          <input className="input" value={draft.base_url} spellCheck={false} placeholder={p.kind === "azure" ? "https://…openai.azure.com" : "https://…/v1"} onChange={(e) => setDraft({ ...draft, base_url: e.target.value.trim() })} onBlur={() => onChange(draft)} />
+          <input className="input" value={draft.base_url} spellCheck={false} autoCapitalize="off" autoCorrect="off" placeholder={p.kind === "azure" ? "https://…openai.azure.com" : "https://…/v1"} onChange={(e) => setDraft({ ...draft, base_url: e.target.value.trim() })} onBlur={() => onChange(draft)} />
           <span className="field-hint">{t(KIND_LABEL[p.kind])}</span>
         </label>
         {needsKey(draft) && (
@@ -171,16 +171,16 @@ function ProviderCard({ p, onChange, onRemove }: { p: AiProvider; onChange: (p: 
         <label className="stack-field">
           <span className="field-label">{p.kind === "azure" ? t("ai.deployment") : t("ai.model")}</span>
           {models.length > 0 ? (
-            <select className="select" value={draft.model} onChange={(e) => onChange({ ...draft, model: e.target.value })}>
+            <Select className="select" value={draft.model} onChange={(e) => onChange({ ...draft, model: e.target.value })}>
               {!models.includes(draft.model) && draft.model && <option value={draft.model}>{draft.model}</option>}
               {models.map((m) => (
                 <option key={m} value={m}>
                   {m}
                 </option>
               ))}
-            </select>
+            </Select>
           ) : (
-            <input className="input" value={draft.model} spellCheck={false} placeholder={p.kind === "ollama" ? "llama3.2" : ""} onChange={(e) => setDraft({ ...draft, model: e.target.value })} onBlur={() => onChange(draft)} />
+            <input className="input" value={draft.model} spellCheck={false} autoCapitalize="off" autoCorrect="off" placeholder={p.kind === "ollama" ? "llama3.2" : ""} onChange={(e) => setDraft({ ...draft, model: e.target.value })} onBlur={() => onChange(draft)} />
           )}
         </label>
       </div>
@@ -275,19 +275,19 @@ export function AiSection({ settings, accounts, onChange }: { settings: Settings
             <p className="set-desc set-card-desc">{t("ai.whoSeesHint")}</p>
             {local.length > 0 && (
               <Row label={t("ai.default")} description={t("ai.defaultHint")}>
-                <select className="select" aria-label={t("ai.default")} value={ai.default_provider} onChange={(e) => set({ default_provider: e.target.value })}>
+                <Select className="select" aria-label={t("ai.default")} value={ai.default_provider} onChange={(e) => set({ default_provider: e.target.value })}>
                   <option value="">{t("ai.nobody")}</option>
                   {local.map((p) => (
                     <option key={p.id} value={p.id}>
                       {p.name}
                     </option>
                   ))}
-                </select>
+                </Select>
               </Row>
             )}
             {accounts.map((a) => (
               <Row key={a.id} label={accountLabel(a)} description={a.name ? a.email : undefined}>
-                <select
+                <Select
                   className="select"
                   aria-label={t("ai.accountChoice", { name: accountLabel(a) })}
                   value={choiceOf(a)}
@@ -308,7 +308,7 @@ export function AiSection({ settings, accounts, onChange }: { settings: Settings
                       {isLocal(p.base_url) ? t("ai.choiceLocal", { name: p.name }) : t("ai.choiceCloud", { name: p.name, host: hostOf(p.base_url) })}
                     </option>
                   ))}
-                </select>
+                </Select>
               </Row>
             ))}
           </div>
@@ -484,15 +484,15 @@ function SieveServerForm({ initial, onCheck }: { initial: Server; onCheck: (s: S
     >
       <label className="stack-field">
         <span className="field-label">{t("rules.sieveServer")}</span>
-        <input className="input" value={address} spellCheck={false} placeholder="imap.example.org:4190" onChange={(e) => setAddress(e.target.value)} />
+        <input className="input" value={address} spellCheck={false} autoCapitalize="off" autoCorrect="off" placeholder="imap.example.org:4190" onChange={(e) => setAddress(e.target.value)} />
       </label>
       <label className="stack-field">
         <span className="field-label">{t("setup.security")}</span>
-        <select className="select" value={security} onChange={(e) => setSecurity(e.target.value as Security)}>
+        <Select className="select" value={security} onChange={(e) => setSecurity(e.target.value as Security)}>
           <option value="start_tls">{t("setup.starttls")}</option>
           <option value="tls">{t("setup.tls")}</option>
           <option value="plain">{t("setup.plain")}</option>
-        </select>
+        </Select>
       </label>
       <button type="submit" className="btn" disabled={!parsed()}>
         {t("rules.sieveCheck")}
@@ -585,7 +585,7 @@ function RuleEditor({ rule, accounts, onSaved, onClose }: { rule: Rule; accounts
         </label>
         <label className="stack-field">
           <span className="field-label">{t("rules.account")}</span>
-          <select
+          <Select
             className="select"
             value={r.account_id ?? ""}
             onChange={(e) => {
@@ -599,7 +599,7 @@ function RuleEditor({ rule, accounts, onSaved, onClose }: { rule: Rule; accounts
                 {accountLabel(a)}
               </option>
             ))}
-          </select>
+          </Select>
         </label>
       </div>
       <div className="rule-where">
@@ -668,7 +668,7 @@ function RuleEditor({ rule, accounts, onSaved, onClose }: { rule: Rule; accounts
         </legend>
         {body.conditions.map((c, i) => (
           <div key={i} className="rule-line">
-            <select
+            <Select
               className="select"
               aria-label={t("rules.field")}
               value={c.field}
@@ -682,35 +682,35 @@ function RuleEditor({ rule, accounts, onSaved, onClose }: { rule: Rule; accounts
                   {t(label)}
                 </option>
               ))}
-            </select>
+            </Select>
             {c.field === "has_attachment" ? (
-              <select className="select" aria-label={t("rules.value")} value={c.value} onChange={(e) => setCond(i, { ...c, value: e.target.value })}>
+              <Select className="select" aria-label={t("rules.value")} value={c.value} onChange={(e) => setCond(i, { ...c, value: e.target.value })}>
                 <option value="true">{t("rules.yes")}</option>
                 <option value="false">{t("rules.no")}</option>
-              </select>
+              </Select>
             ) : c.field === "category" ? (
               <>
-                <select className="select" aria-label={t("rules.op")} value={c.op} onChange={(e) => setCond(i, { ...c, op: e.target.value as RuleOp })}>
+                <Select className="select" aria-label={t("rules.op")} value={c.op} onChange={(e) => setCond(i, { ...c, op: e.target.value as RuleOp })}>
                   <option value="is">{t("rules.is")}</option>
                   <option value="not_contains">{t("rules.isNot")}</option>
-                </select>
-                <select className="select" aria-label={t("rules.value")} value={c.value} onChange={(e) => setCond(i, { ...c, value: e.target.value })}>
+                </Select>
+                <Select className="select" aria-label={t("rules.value")} value={c.value} onChange={(e) => setCond(i, { ...c, value: e.target.value })}>
                   {CATEGORIES.map(([k, label]) => (
                     <option key={k} value={k}>
                       {t(label)}
                     </option>
                   ))}
-                </select>
+                </Select>
               </>
             ) : (
               <>
-                <select className="select" aria-label={t("rules.op")} value={c.op} onChange={(e) => setCond(i, { ...c, op: e.target.value as RuleOp })}>
+                <Select className="select" aria-label={t("rules.op")} value={c.op} onChange={(e) => setCond(i, { ...c, op: e.target.value as RuleOp })}>
                   {(numeric(c.field) ? NUM_OPS : TEXT_OPS).map(([o, label]) => (
                     <option key={o} value={o}>
                       {t(label)}
                     </option>
                   ))}
-                </select>
+                </Select>
                 <input
                   className="input"
                   aria-label={t("rules.value")}
@@ -737,36 +737,36 @@ function RuleEditor({ rule, accounts, onSaved, onClose }: { rule: Rule; accounts
         </legend>
         {body.actions.map((a, i) => (
           <div key={i} className="rule-line">
-            <select className="select" aria-label={t("rules.action")} value={a.kind} onChange={(e) => setAct(i, newAction(e.target.value as RuleAction["kind"]))}>
+            <Select className="select" aria-label={t("rules.action")} value={a.kind} onChange={(e) => setAct(i, newAction(e.target.value as RuleAction["kind"]))}>
               {ACTIONS.map(([k, label]) => (
                 <option key={k} value={k}>
                   {t(label)}
                 </option>
               ))}
-            </select>
+            </Select>
             {a.kind === "move" &&
               (folderNames.length ? (
-                <select className="select" aria-label={t("rules.folder")} value={a.folder} onChange={(e) => setAct(i, { ...a, folder: e.target.value })}>
+                <Select className="select" aria-label={t("rules.folder")} value={a.folder} onChange={(e) => setAct(i, { ...a, folder: e.target.value })}>
                   <option value="">{t("rules.chooseFolder")}</option>
                   {folderNames.map((n) => (
                     <option key={n} value={n}>
                       {n}
                     </option>
                   ))}
-                </select>
+                </Select>
               ) : (
                 <input className="input" aria-label={t("rules.folder")} value={a.folder} onChange={(e) => setAct(i, { ...a, folder: e.target.value })} />
               ))}
             {a.kind === "label" && <input className="input" aria-label={t("rules.keyword")} placeholder={t("rules.keywordPlaceholder")} value={a.keyword} onChange={(e) => setAct(i, { ...a, keyword: e.target.value.replace(/\s/g, "") })} />}
             {a.kind === "forward" && <input className="input" aria-label={t("rules.forwardTo")} placeholder="name@example.org" value={a.to} onChange={(e) => setAct(i, { ...a, to: e.target.value })} />}
             {a.kind === "category" && (
-              <select className="select" aria-label={t("rules.category")} value={a.category} onChange={(e) => setAct(i, { ...a, category: e.target.value })}>
+              <Select className="select" aria-label={t("rules.category")} value={a.category} onChange={(e) => setAct(i, { ...a, category: e.target.value })}>
                 {CATEGORIES.map(([k, label]) => (
                   <option key={k} value={k}>
                     {t(label)}
                   </option>
                 ))}
-              </select>
+              </Select>
             )}
             <button type="button" className="icon-btn icon-btn-sm" aria-label={t("rules.removeAction")} onClick={() => setBody({ actions: body.actions.filter((_, j) => j !== i) })}>
               <X size={14} strokeWidth={1.75} aria-hidden />
@@ -798,13 +798,13 @@ function RuleEditor({ rule, accounts, onSaved, onClose }: { rule: Rule; accounts
           <span>{t("rules.preview")}</span>
         </button>
         <span className="toolbar-gap" />
-        <select className="select select-sm" aria-label={t("rules.runFolder")} value={runFolder ?? ""} onChange={(e) => setRunFolder(Number(e.target.value))}>
+        <Select className="select select-sm" aria-label={t("rules.runFolder")} value={runFolder ?? ""} onChange={(e) => setRunFolder(Number(e.target.value))}>
           {folders.map((m) => (
             <option key={m.id} value={m.id}>
               {(accounts.length > 1 && r.account_id == null ? `${accountLabel(accounts.find((a) => a.id === m.account_id) ?? accounts[0])} · ` : "") + (m.role === "inbox" ? t("folder.inbox") : m.name)}
             </option>
           ))}
-        </select>
+        </Select>
         <button
           type="button"
           className="btn btn-sm"
@@ -995,20 +995,20 @@ function TemplateEditor({ template, accounts, onSaved, onClose }: { template: Te
               <span className="muted" aria-hidden>
                 ;;
               </span>
-              <input className="input" value={x.trigger ?? ""} spellCheck={false} placeholder={t("tpl.triggerPlaceholder")} onChange={(e) => setX({ ...x, trigger: e.target.value.replace(/[^\p{L}\p{N}_-]/gu, "").toLowerCase() })} />
+              <input className="input" value={x.trigger ?? ""} spellCheck={false} autoCapitalize="off" autoCorrect="off" placeholder={t("tpl.triggerPlaceholder")} onChange={(e) => setX({ ...x, trigger: e.target.value.replace(/[^\p{L}\p{N}_-]/gu, "").toLowerCase() })} />
             </span>
           </label>
         ) : (
           <label className="stack-field">
             <span className="field-label">{t("tpl.account")}</span>
-            <select className="select" value={x.account_id ?? ""} onChange={(e) => setX({ ...x, account_id: e.target.value ? Number(e.target.value) : null })}>
+            <Select className="select" value={x.account_id ?? ""} onChange={(e) => setX({ ...x, account_id: e.target.value ? Number(e.target.value) : null })}>
               <option value="">{t("rules.allAccounts")}</option>
               {accounts.map((a) => (
                 <option key={a.id} value={a.id}>
                   {accountLabel(a)}
                 </option>
               ))}
-            </select>
+            </Select>
           </label>
         )}
       </div>
@@ -1154,7 +1154,7 @@ function CardDavDialog({ onAdded, onClose }: { onAdded: () => void; onClose: () 
     >
       <label className="stack-field">
         <span className="field-label">{t("contacts.service")}</span>
-        <select
+        <Select
           className="select"
           value={preset}
           onChange={(e) => {
@@ -1169,22 +1169,22 @@ function CardDavDialog({ onAdded, onClose }: { onAdded: () => void; onClose: () 
             </option>
           ))}
           <option value={CARDDAV.length}>{t("contacts.otherServer")}</option>
-        </select>
+        </Select>
       </label>
       {nextcloud ? (
         <label className="stack-field">
           <span className="field-label">{t("contacts.host")}</span>
-          <input className="input" value={host} spellCheck={false} placeholder="cloud.example.org" onChange={(e) => setHost(e.target.value.trim())} />
+          <input className="input" value={host} spellCheck={false} autoCapitalize="off" autoCorrect="off" placeholder="cloud.example.org" onChange={(e) => setHost(e.target.value.trim())} />
         </label>
       ) : (
         <label className="stack-field">
           <span className="field-label">{t("contacts.address")}</span>
-          <input className="input" value={url} spellCheck={false} onChange={(e) => setUrl(e.target.value.trim())} />
+          <input className="input" value={url} spellCheck={false} autoCapitalize="off" autoCorrect="off" onChange={(e) => setUrl(e.target.value.trim())} />
         </label>
       )}
       <label className="stack-field">
         <span className="field-label">{t("setup.username")}</span>
-        <input className="input" value={user} spellCheck={false} autoComplete="off" onChange={(e) => setUser(e.target.value)} />
+        <input className="input" value={user} spellCheck={false} autoCapitalize="off" autoCorrect="off" autoComplete="off" onChange={(e) => setUser(e.target.value)} />
       </label>
       <label className="stack-field">
         <span className="field-label">{t("contacts.appPassword")}</span>

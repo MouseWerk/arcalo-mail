@@ -71,7 +71,7 @@ import {
 } from "../lib/calendar";
 import type { CalendarRequest } from "../lib/calendar";
 import type { CalendarEvent, CalendarInfo, CalendarOverview, CalFields, CalUndo, Settings } from "../lib/types";
-import { ConfirmDialog, Segmented } from "./ui";
+import { ConfirmDialog, Segmented, Select } from "./ui";
 
 const VIEW_LABELS: Record<CalView, TKey> = { day: "calv.view.day", workweek: "calv.view.workweek", week: "calv.view.week", month: "calv.view.month", agenda: "calv.view.agenda" };
 const BUSY_LABELS: Record<CalendarEvent["busy"], TKey> = { free: "calv.busy.free", tentative: "calv.busy.tentative", busy: "calv.busy.busy", oof: "calv.busy.oof", elsewhere: "calv.busy.elsewhere" };
@@ -108,6 +108,8 @@ type Props = {
   /** Open on an appointment or a day, or with a new appointment's draft (the assistant's), once. */
   request?: CalendarRequest | null;
   onRequestTaken?: () => void;
+  /** A phone: one day, the list or the month; the weeks need a wider screen. */
+  phone?: boolean;
 };
 
 function IconBtn({ icon: Icon, label, onClick, className, disabled, pressed }: { icon: typeof X; label: string; onClick: (e: React.MouseEvent<HTMLButtonElement>) => void; className?: string; disabled?: boolean; pressed?: boolean }) {
@@ -118,10 +120,12 @@ function IconBtn({ icon: Icon, label, onClick, className, disabled, pressed }: {
   );
 }
 
-export function CalendarView({ settings, onSettings, onShowFolders, request, onRequestTaken }: Props) {
+export function CalendarView({ settings, onSettings, onShowFolders, request, onRequestTaken, phone }: Props) {
   const t = useT();
   const cal = settings.calendar;
-  const [view, setViewState] = useState<CalView>(() => stored("arcalo-mail.calendar.view", ["day", "workweek", "week", "month", "agenda"] as const, "workweek"));
+  const [chosen, setViewState] = useState<CalView>(() => stored("arcalo-mail.calendar.view", ["day", "workweek", "week", "month", "agenda"] as const, "workweek"));
+  // On a phone a week shows as its day.
+  const view: CalView = phone && (chosen === "week" || chosen === "workweek") ? "day" : chosen;
   const [anchor, setAnchorState] = useState(() => session.anchor ?? clockNow());
   const setAnchor = (next: Date | ((d: Date) => Date)) =>
     setAnchorState((d) => {
@@ -350,8 +354,9 @@ export function CalendarView({ settings, onSettings, onShowFolders, request, onR
       .catch((e) => showToast({ title: t("common.notSaved"), detail: String(e), tone: "danger" }));
 
   const errors = overview?.sources.filter((x) => x.error) ?? [];
-  const title = rangeTitle(view, range, anchor);
-  const viewOptions = (["day", "workweek", "week", "month", "agenda"] as CalView[]).map((v) => [v, t(VIEW_LABELS[v])] as [CalView, string]);
+  // A phone names the month over a day, as the day's own head shows its date.
+  const title = rangeTitle(phone && view === "day" ? "month" : view, range, anchor);
+  const viewOptions = ((phone ? ["day", "agenda", "month"] : ["day", "workweek", "week", "month", "agenda"]) as CalView[]).map((v) => [v, t(VIEW_LABELS[v])] as [CalView, string]);
   const writable = calendars.filter((c) => c.writable && c.kind !== "ics" && !c.hidden);
 
   return (
@@ -376,13 +381,13 @@ export function CalendarView({ settings, onSettings, onShowFolders, request, onR
           <div className="calv-views">
             <Segmented label={t("calv.view")} value={view} onChange={setView} options={viewOptions} />
           </div>
-          <select className="select select-sm calv-view-select" aria-label={t("calv.view")} value={view} onChange={(e) => setView(e.target.value as CalView)}>
+          <Select className="select select-sm calv-view-select" aria-label={t("calv.view")} value={view} onChange={(e) => setView(e.target.value as CalView)}>
             {viewOptions.map(([v, label]) => (
               <option key={v} value={v}>
                 {label}
               </option>
             ))}
-          </select>
+          </Select>
           <div className="calv-actions">
             <button type="button" className="btn btn-sm calv-new" onClick={newEntryNow} title={t("calv.newKey")}>
               <Plus size={14} strokeWidth={1.75} aria-hidden />
@@ -1075,12 +1080,12 @@ function WhenInputs({ start, end, onCommit }: { start: Date; end: Date; onCommit
         if (!e.currentTarget.contains(e.relatedTarget as Node | null)) commit();
       }}
     >
-      <input className="input date-input" inputMode="numeric" spellCheck={false} aria-label={t("entries.date")} value={date} onChange={(e) => setDate(e.target.value)} />
-      <input className="input time-input" inputMode="numeric" spellCheck={false} aria-label={t("entries.start")} value={from} onChange={(e) => setFrom(e.target.value)} />
+      <input className="input date-input" inputMode="numeric" spellCheck={false} autoCapitalize="off" autoCorrect="off" aria-label={t("entries.date")} value={date} onChange={(e) => setDate(e.target.value)} />
+      <input className="input time-input" inputMode="numeric" spellCheck={false} autoCapitalize="off" autoCorrect="off" aria-label={t("entries.start")} value={from} onChange={(e) => setFrom(e.target.value)} />
       <span className="muted" aria-hidden>
         –
       </span>
-      <input className="input time-input" inputMode="numeric" spellCheck={false} aria-label={t("entries.end")} value={to} onChange={(e) => setTo(e.target.value)} />
+      <input className="input time-input" inputMode="numeric" spellCheck={false} autoCapitalize="off" autoCorrect="off" aria-label={t("entries.end")} value={to} onChange={(e) => setTo(e.target.value)} />
     </div>
   );
 }
@@ -1155,13 +1160,13 @@ function EntryEditor({ draft, calendars, defaultCalendar, onChange, onClose, onC
       <section className="calv-detail-sec calv-entry-fields">
         <input className="input" value={location} placeholder={t("entries.locationPlaceholder")} aria-label={t("entries.location")} onChange={(e) => setLocation(e.target.value)} />
         {calendars.length > 1 && (
-          <select className="select" aria-label={t("entries.calendar")} value={target ?? ""} onChange={(e) => setTarget(Number(e.target.value))}>
+          <Select className="select" aria-label={t("entries.calendar")} value={target ?? ""} onChange={(e) => setTarget(Number(e.target.value))}>
             {calendars.map((c) => (
               <option key={c.id} value={c.id}>
                 {c.source_name && c.source_name !== c.name ? `${c.name} · ${c.source_name}` : c.name}
               </option>
             ))}
-          </select>
+          </Select>
         )}
         {draft.description && <p className="muted calv-entry-from">{draft.description}</p>}
       </section>

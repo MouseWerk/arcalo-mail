@@ -243,6 +243,20 @@ export const demo = {
     if (!threads) list = list.map((x) => ({ ...x, thread_count: 1 }));
     return { total: list.length, offset, items: list.slice(offset, offset + limit).map(summary) };
   },
+  accountCounts: () =>
+    [...new Set(mailboxes.map((b) => b.account_id))].map((id) => {
+      const inbox = mailboxes.find((b) => b.account_id === id && b.role === "inbox");
+      const list = visible().filter((x) => x.mailbox_id === inbox?.id);
+      return { account_id: id, unread: list.filter((x) => !x.seen).length, total: list.length };
+    }),
+  roleList: (role: string, offset: number, limit: number): Page => {
+    const boxes = new Map(mailboxes.filter((b) => b.role === role).map((b) => [b.id, b.account_id]));
+    const list = visible()
+      .filter((x) => boxes.has(x.mailbox_id))
+      .sort((a, b) => b.date - a.date)
+      .map((x) => ({ ...summary(x), account_id: boxes.get(x.mailbox_id) ?? 1, thread_count: 1 }));
+    return { total: list.length, offset, items: list.slice(offset, offset + limit) };
+  },
   thread: (threadId: number): MessageSummary[] =>
     visible().filter((x) => x.thread_id === threadId).sort((a, b) => a.date - b.date).map(summary),
   message: (id: number): MessageView => {

@@ -10,6 +10,8 @@ export type Layout = "phone" | "tablet" | "desktop";
 
 /** The narrowest window that shows two panes (phones in landscape, small tablets). */
 export const PHONE_MAX = 720;
+/** Lower than this (a phone in landscape), writing and the settings take the whole screen. */
+export const SHORT_MAX = 560;
 /** Touch screens up to this width keep the folders in a drawer. */
 export const TABLET_MAX = 1100;
 

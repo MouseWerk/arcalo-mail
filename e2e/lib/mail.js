@@ -134,17 +134,15 @@ export function localTime(secondsAhead) {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 }
 
-/** Chooses `value` in a `<select>` (an element or a selector) the way a person does. */
+/** Chooses `value` in one of the app's selects (an element or a selector) the way a person
+ *  does: a tap on the field, then on the choice in its menu. */
 export async function choose(app, select, value) {
   const el = typeof select === "string" ? await app.waitFor(select) : select;
-  await app.browser.execute(
-    (e, v) => {
-      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value").set.call(e, v);
-      e.dispatchEvent(new Event("change", { bubbles: true }));
-    },
-    el,
-    value,
-  );
+  await el.click();
+  // Through the harness: a sheet still sliding in waits until the choice stands still.
+  await app.waitFor(`.menu [data-value="${value}"]`);
+  await app.click(`.menu [data-value="${value}"]`);
+  await app.waitUntil(async () => (await el.getAttribute("data-value")) === String(value), 5000, `chose ${value}`);
 }
 
 /** Opens the settings at a section of their navigation. */
@@ -152,4 +150,16 @@ export async function openSettings(app, section) {
   await app.click('.sidebar-head [aria-label="Einstellungen"]');
   await app.waitFor(".settings-nav");
   await clickText(app, ".settings-nav-item", section);
+}
+
+/** Discards the message being written: the footer's button, or on a phone „More“, then the
+ *  entry of that name. */
+export async function discardCompose(app, label) {
+  if ((await app.$$(".compose [data-compose='more']")).length) {
+    await app.click(".compose [data-compose='more']");
+    await clickText(app, ".menu-sheet .menu-item .menu-label", label);
+  } else {
+    await app.click(`.compose-foot [aria-label="${label}"]`);
+  }
+  await app.waitUntil(async () => (await app.$$(".compose")).length === 0, 8000, "compose closed");
 }

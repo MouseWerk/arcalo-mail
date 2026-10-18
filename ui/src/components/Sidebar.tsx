@@ -16,6 +16,7 @@ import {
   ShieldAlert,
   ShieldOff,
   SquarePen,
+  Tag,
   Trash2,
   Upload,
   WifiOff,
@@ -55,9 +56,27 @@ export function folderLabel(m: Mailbox, t: ReturnType<typeof useT>): string {
   return parts[parts.length - 1];
 }
 
-export function folderIcon(m: Mailbox): IconType {
+/** The name in an account's list: a folder of its own that is called like one of the account's
+ *  special folders (Gmail's „[Gmail]/Entwürfe“ shows as „Entwürfe“, and a label „Entwürfe“ may
+ *  exist too) is marked as a folder, so the two are told apart. */
+export function listLabel(m: Mailbox, all: Mailbox[], t: ReturnType<typeof useT>): string {
+  const name = folderLabel(m, t);
+  if (m.role) return name;
+  const key = name.trim().toLowerCase();
+  const taken = all.some((o) => o.role && o.id !== m.id && listedFolder(o) && folderLabel(o, t).trim().toLowerCase() === key);
+  if (!taken) return name;
+  // Nested: its whole path tells it apart.
+  const path = m.delimiter && m.name.includes(m.delimiter) ? m.name.split(m.delimiter).join(" / ") : name;
+  return t(isGmail(all) ? "folder.sameNameLabel" : "folder.sameName", { name: path });
+}
+
+/** Gmail's folders: its own under „[Gmail]/“ (or „[Google Mail]/“ in some countries); the
+ *  others are labels. */
+export const isGmail = (all: Mailbox[]) => all.some((m) => /^\[(Gmail|Google Mail)\]\//.test(m.name));
+
+export function folderIcon(m: Mailbox, gmail = false): IconType {
   if (!m.role && m.name === SCREENED_FOLDER) return ShieldOff;
-  return m.role ? ROLE[m.role].icon : Folder;
+  return m.role ? ROLE[m.role].icon : gmail ? Tag : Folder;
 }
 
 /** Nesting depth of a user folder („Projekte/Website“ is 1). */
@@ -96,7 +115,7 @@ function AccountStatusLine({ a, onSignIn, onSync }: { a: AccountInfo; onSignIn: 
     return (
       <div className="account-status account-status-alert" role="status">
         <CircleAlert size={14} strokeWidth={1.75} aria-hidden />
-        <span>{t("nav.signInNeeded")}</span>
+        <span className="account-status-text">{t("nav.signInNeeded")}</span>
         <button type="button" className="link-btn" onClick={onSignIn}>
           {t("nav.signIn")}
         </button>
@@ -106,7 +125,7 @@ function AccountStatusLine({ a, onSignIn, onSync }: { a: AccountInfo; onSignIn: 
     return (
       <div className="account-status" role="status" title={a.status?.error ?? undefined}>
         <WifiOff size={14} strokeWidth={1.75} aria-hidden />
-        <span>{s.state === "retrying" ? t("nav.retrying", { n: s.in_secs }) : t("nav.offline")}</span>
+        <span className="account-status-text">{s.state === "retrying" ? t("nav.retrying", { n: s.in_secs }) : t("nav.offline")}</span>
         <button type="button" className="icon-btn icon-btn-xs" onClick={onSync} aria-label={t("nav.retryNow")} title={t("nav.retryNow")}>
           <RefreshCw size={12} strokeWidth={1.75} aria-hidden />
         </button>
@@ -115,7 +134,7 @@ function AccountStatusLine({ a, onSignIn, onSync }: { a: AccountInfo; onSignIn: 
   return (
     <div className="account-status" role="status">
       <Spinner />
-      <span>{s.state === "connecting" ? t("nav.connecting") : t("nav.syncing")}</span>
+      <span className="account-status-text">{s.state === "connecting" ? t("nav.connecting") : t("nav.syncing")}</span>
     </div>
   );
 }
@@ -205,11 +224,19 @@ export function Sidebar({
             <ul className="folders">
               {(mailboxes[a.id] ?? [])
                 .filter(listedFolder)
-                .map((m) => {
-                  const Icon = folderIcon(m);
+                .map((m, i, shown) => {
+                  const gmail = isGmail(shown);
+                  const Icon = folderIcon(m, gmail);
                   const isCurrent = m.id === current && !showingOutbox;
                   const count = m.role === "drafts" || m.role === "sent" || m.role === "trash" ? 0 : m.unread;
-                  return (
+                  // The account's own folders (or Gmail's labels) below its special ones.
+                  const own = !m.role && i > 0 && !!shown[i - 1].role;
+                  return [
+                    own && (
+                      <li key={`own-${m.id}`} className="folder-group" role="presentation">
+                        {t(gmail ? "folder.labels" : "folder.own")}
+                      </li>
+                    ),
                     <li key={m.id} className="folder-item">
                       <button
                         type="button"
@@ -224,7 +251,7 @@ export function Sidebar({
                         }}
                       >
                         <Icon size={16} strokeWidth={1.75} aria-hidden />
-                        <span className="folder-name">{folderLabel(m, t)}</span>
+                        <span className="folder-name">{listLabel(m, mailboxes[a.id] ?? [], t)}</span>
                         {m.sync_error && (
                           <span className="folder-alert" title={t("folder.syncError", { error: m.sync_error })} aria-label={t("folder.syncError", { error: m.sync_error })}>
                             <CircleAlert size={14} strokeWidth={1.75} aria-hidden />
@@ -247,8 +274,8 @@ export function Sidebar({
                       >
                         <MoreHorizontal size={14} strokeWidth={1.75} aria-hidden />
                       </button>
-                    </li>
-                  );
+                    </li>,
+                  ];
                 })}
             </ul>
           </section>

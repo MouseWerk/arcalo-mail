@@ -7,7 +7,7 @@ import { test, after, before } from "node:test";
 import assert from "node:assert/strict";
 import { launch, guarded } from "../lib/harness.js";
 import { addAccount, startServer } from "../lib/server.js";
-import { clickText, openSettings, openView } from "../lib/mail.js";
+import { choose, clickText, openSettings, openView } from "../lib/mail.js";
 
 let app;
 let server;
@@ -83,11 +83,8 @@ it("adds a CalDAV server in the settings and shows its appointments", async () =
   await clickText(app, ".set-section .btn span", "CalDAV-Kalender hinzufügen");
   await app.waitFor(".dialog");
   // „Anderer Server“: the test server's address.
-  const select = await app.$(".dialog select");
-  await app.browser.execute((s) => {
-    s.value = String(s.options.length - 1);
-    s.dispatchEvent(new Event("change", { bubbles: true }));
-  }, select);
+  const select = await app.$(".dialog .select-btn");
+  await choose(app, select, String(Number(await select.getAttribute("data-count")) - 1));
   await app.fill(".dialog .stack-field:nth-of-type(2) input", `http://127.0.0.1:${server.control}/caldav/`);
   await app.fill(".dialog .stack-field:nth-of-type(3) input", server.user);
   await app.fill('.dialog input[type="password"]', server.password);

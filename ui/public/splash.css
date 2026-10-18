@@ -36,7 +36,7 @@
 }
 .splash-mark .ribbon.flap { animation-delay: 140ms; animation-duration: 360ms; }
 .splash-mark .ribbon.fold { animation-delay: 300ms; animation-duration: 240ms; }
-.splash-mark .seal { fill: var(--splash-seal); opacity: 0; transform-origin: 500px 551px; transform: scale(0.4); animation: splash-seal 220ms cubic-bezier(0.22, 1, 0.36, 1) 440ms forwards; }
+.splash-mark .seal { fill: var(--splash-seal); opacity: 0; transform-box: view-box; transform-origin: 500px 551px; transform: scale(0.4); animation: splash-seal 220ms cubic-bezier(0.22, 1, 0.36, 1) 440ms forwards; }
 .splash-word { color: var(--splash-ink); font-size: 22px; font-weight: 600; letter-spacing: -0.01em; opacity: 0; transform: translateY(4px); animation: splash-word 300ms cubic-bezier(0.22, 1, 0.36, 1) 360ms forwards; }
 @keyframes splash-draw { to { stroke-dashoffset: 0; } }
 @keyframes splash-seal { to { opacity: 1; transform: none; } }
